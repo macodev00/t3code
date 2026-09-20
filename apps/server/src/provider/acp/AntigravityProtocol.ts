@@ -267,6 +267,7 @@ export function normalizeAntigravitySessionUpdate(
   };
 }
 
+/** Turn a native file-preview path into a workspace path, dropping remote URLs. */
 function localImagePath(imagePath: string | undefined): string | undefined {
   if (!imagePath || imagePath.length > TOOL_TEXT_LIMIT) {
     return undefined;
@@ -344,10 +345,7 @@ export function normalizeAntigravityToolCall(toolCall: AcpToolCallState): AcpToo
   };
 }
 
-/**
- * Execute tools still `inProgress` after end_turn so later native updates can
- * close them without promoting the command to a background `local_bash` task.
- */
+/** Execute tools still inProgress after end_turn so later native updates can close them. */
 export function isAntigravityOpenCommand(toolCall: AcpToolCallState): boolean {
   return toolCall.kind === "execute" && toolCall.status === "inProgress";
 }

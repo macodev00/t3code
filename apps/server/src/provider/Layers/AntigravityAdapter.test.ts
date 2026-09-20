@@ -736,15 +736,11 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
-  /**
-   * Leftover in-progress execute tools must not emit local_bash task events after end_turn.
-   */
+  /** Leftover in-progress execute tools must not emit local_bash task events after end_turn. */
   function doesNotPinMonitoringWhenExecuteStillInProgress() {
     return Effect.gen(assertMonitoringClearsOnEndTurn);
   }
-  /**
-   * Drive the inProgress execute-tool fixture through end_turn and native completion.
-   */
+  /** Drive the inProgress execute-tool fixture through end_turn and native completion. */
   function* assertMonitoringClearsOnEndTurn() {
     const h = yield* makeHarness();
     yield* h.adapter.startSession({

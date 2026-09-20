@@ -247,6 +247,7 @@ const resolveClientFilePath = Effect.fn("AntigravityAdapter.resolveClientFilePat
   },
 );
 
+/** Reads an ACP client text file after resolving it inside the session roots. */
 const readClientTextFile = Effect.fn("AntigravityAdapter.readClientTextFile")(function* (input: {
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
@@ -302,9 +303,7 @@ const writeClientTextFile = Effect.fn("AntigravityAdapter.writeClientTextFile")(
   return {};
 });
 
-/**
- * Keeps one official ACP process per thread and drains a cancelled prompt before steering.
- */
+/** Keeps one official ACP process per thread and drains a cancelled prompt before steering. */
 function* makeAntigravityAdapterEffect(
   settings: AntigravitySettings,
   options: AntigravityAdapterOptions,
@@ -1263,6 +1262,7 @@ function* makeAntigravityAdapterEffect(
     streamEvents: Stream.fromPubSub(events),
   } satisfies Adapter;
 }
+
 /** Keeps one official ACP process per thread and drains a cancelled prompt before steering. */
 export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(
   makeAntigravityAdapterEffect,
