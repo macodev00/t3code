@@ -31,6 +31,7 @@ function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string
   });
 }
 
+/** Collapsible saved-environment card; expanded editor uses a native View so iOS taps reach Label/URL/Save. */
 export function ConnectionEnvironmentRow(props: {
   readonly environment: ConnectedEnvironmentSummary;
   readonly expanded: boolean;
