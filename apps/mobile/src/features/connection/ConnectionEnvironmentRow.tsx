@@ -8,7 +8,6 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useState } from "react";
 import { Platform, Alert, Pressable, View } from "react-native";
-import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
 
 import { AppText as Text } from "../../components/AppText";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
@@ -77,7 +76,7 @@ export function ConnectionEnvironmentRow(props: {
   }, [label, url, props]);
 
   return (
-    <Animated.View layout={LinearTransition.duration(250)} className="bg-grouped-card">
+    <View className="bg-grouped-card">
       <Pressable
         className="flex-row items-center gap-3 px-4 py-3.5 active:opacity-70"
         accessibilityRole="button"
@@ -149,11 +148,9 @@ export function ConnectionEnvironmentRow(props: {
       </Pressable>
 
       {props.expanded ? (
-        <Animated.View
-          entering={FadeIn.duration(200)}
-          exiting={FadeOut.duration(150)}
-          className="gap-3 px-4 pb-4"
-        >
+        // Reanimated entering/layout wrappers steal hits on iOS form sheets;
+        // keep the editor on a native View so Label/URL/Save can focus.
+        <View collapsable={false} className="gap-3 px-4 pb-4">
           {props.environment.isRelayManaged ? (
             <Text className="text-sm text-foreground-muted">
               Managed by T3 Connect. Tunnel details update automatically.
@@ -254,8 +251,8 @@ export function ConnectionEnvironmentRow(props: {
               </Pressable>
             </View>
           )}
-        </Animated.View>
+        </View>
       ) : null}
-    </Animated.View>
+    </View>
   );
 }
