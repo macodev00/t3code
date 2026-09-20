@@ -22,6 +22,8 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as NodeCrypto from "node:crypto";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import {
   makeAntigravityInstallation,
@@ -30,7 +32,10 @@ import {
   type AntigravityInstallationOptions,
 } from "./AntigravityInstallation.ts";
 import { ANTIGRAVITY_AUTH_BROWSER_MARKER } from "./antigravityAuthSupport.ts";
-import type { AntigravityReleaseAsset } from "./antigravityRelease.ts";
+import {
+  normalizeAntigravityReleaseArch,
+  type AntigravityReleaseAsset,
+} from "./antigravityRelease.ts";
 
 const serverContents = "antigravity runtime\n";
 const harnessContents = "local harness\n";
@@ -130,6 +135,7 @@ interface HarnessOptions {
   readonly contentLength?: number;
   readonly contentEncoding?: string;
   readonly platform?: NodeJS.Platform;
+  readonly architecture?: string;
   readonly path?: string;
   readonly previous?: boolean;
   readonly fileSystem?: FileSystem.FileSystem;
@@ -145,9 +151,15 @@ const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
   const baseDir =
     options.baseDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-test-" }));
   const platform = options.platform ?? hostPlatform;
+  const architecture = options.architecture ?? "x64";
   const archive = options.archive ?? completeArchive;
   const asset = options.asset === undefined ? releaseAsset(archive, platform) : options.asset;
-  const managedDirectory = path.join(baseDir, "tools", "antigravity-acp", `${platform}-x64`);
+  const managedDirectory = path.join(
+    baseDir,
+    "tools",
+    "antigravity-acp",
+    `${platform}-${normalizeAntigravityReleaseArch(architecture)}`,
+  );
   if (options.previous) {
     yield* writeRelease(managedDirectory, {
       ...releaseAsset(archive, platform),
@@ -184,7 +196,7 @@ const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
   }).pipe(
     Effect.provideService(FileSystem.FileSystem, trackedFs),
     Effect.provideService(HostProcessPlatform, platform),
-    Effect.provideService(HostProcessArchitecture, "x64"),
+    Effect.provideService(HostProcessArchitecture, architecture as NodeJS.Architecture),
     Effect.provideService(HostProcessEnvironment, { PATH: options.path ?? "" }),
     Effect.provideService(
       HttpClient.HttpClient,
@@ -243,6 +255,16 @@ const expectPreviousRelease = Effect.fn("test.expectPreviousAntigravityRelease")
 });
 
 it.layer(NodeServices.layer)("Antigravity installation", (it) => {
+  it.effect("places linux aarch64 managed runtimes under linux-arm64", () =>
+    Effect.gen(function* () {
+      const { installation } = yield* makeHarness({
+        platform: "linux",
+        architecture: "aarch64",
+      });
+      expect(installation.managedDirectory).toMatch(/[/\\]linux-arm64$/);
+    }),
+  );
+
   it.effect("reports missing Node before downloading the standalone provider runtime", () =>
     Effect.gen(function* () {
       const { installation, requests, validations } = yield* makeHarness();
@@ -739,6 +761,18 @@ it.layer(NodeServices.layer)("Antigravity installation", (it) => {
           executablePath: externalExecutable,
           source: "override",
           managedVersionDirectory: null,
+        });
+        expect(yield* installation.resolve(externalDirectory)).toMatchObject({
+          executablePath: externalExecutable,
+          source: "override",
+          managedVersionDirectory: null,
+        });
+        const relativeFromHome = NodePath.relative(NodeOS.homedir(), externalDirectory);
+        expect(
+          yield* installation.resolve(`~/${relativeFromHome.split(NodePath.sep).join("/")}`),
+        ).toMatchObject({
+          executablePath: externalExecutable,
+          source: "override",
         });
         expect(yield* installation.resolve(executableName)).toMatchObject({
           source: "override",

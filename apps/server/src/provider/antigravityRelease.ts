@@ -75,9 +75,22 @@ const releaseAssets = new Map<string, AntigravityReleaseAsset>([
   ],
 ]);
 
+/** Node reports `arm64`; Linux and Google's ACP registry use `aarch64`. */
+export function normalizeAntigravityReleaseArch(arch: string): string {
+  switch (arch) {
+    case "aarch64":
+      return "arm64";
+    case "x86_64":
+    case "amd64":
+      return "x64";
+    default:
+      return arch;
+  }
+}
+
 export function resolveAntigravityReleaseAsset(
   platform: NodeJS.Platform,
   arch: string,
 ): AntigravityReleaseAsset | null {
-  return releaseAssets.get(`${platform}-${arch}`) ?? null;
+  return releaseAssets.get(`${platform}-${normalizeAntigravityReleaseArch(arch)}`) ?? null;
 }
