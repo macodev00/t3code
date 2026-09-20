@@ -947,6 +947,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       }).pipe(Effect.scoped),
     );
 
+  /** Prompt the session; leftover in-progress execute tools stay unpromoted so Monitoring can clear. */
   const sendTurn: Adapter["sendTurn"] = Effect.fn("AntigravityAdapter.sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
     if (input.modelSelection && input.modelSelection.instanceId !== options.instanceId) {
@@ -967,44 +968,44 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
     );
     let intent: TurnIntent | undefined;
     // The caller holds promptLock while it changes or settles the active turn.
-    const finishTurn = (turn: TurnIntent, payload: TurnCompletedPayload) =>
-      Effect.gen(function* () {
-        if (turn.settled || context.stopped || context.generation !== turn.generation) return;
-        turn.settled = true;
-        // Gemini often returns end_turn while execute tools remain inProgress
-        // and never sends a later completion. Promoting those as local_bash
-        // pinned Monitoring until session teardown. Leave them unpromoted so
-        // the pill clears when the turn finishes; a later native completion
-        // can still close the originating tool call.
-        yield* finishSubagents(
-          context,
-          payload.state === "cancelled"
-            ? "cancelled"
-            : payload.state === "failed"
-              ? "failed"
-              : "idle",
-          payload.errorMessage,
-        );
-        context.activeTurnId = undefined;
-        context.promptFiber = undefined;
-        context.session = {
-          ...context.session,
-          status: payload.state === "failed" ? "error" : "ready",
-          activeTurnId: undefined,
-          updatedAt: yield* nowIso,
-          ...(payload.errorMessage
-            ? { lastError: payload.errorMessage }
-            : { lastError: undefined }),
-        };
-        yield* emit({
-          type: "turn.completed",
-          ...(yield* stamp),
-          provider: PROVIDER,
-          threadId: input.threadId,
-          turnId: turn.turnId,
-          payload,
-        });
-      }).pipe(Effect.uninterruptible);
+    /** Completes the turn without promoting leftover execute tools to local_bash. */
+    function finishTurn(turn: TurnIntent, payload: TurnCompletedPayload) {
+      return Effect.gen(
+        /** Gemini end_turn must not promote leftover execute tools to local_bash. */
+        function* () {
+          if (turn.settled || context.stopped || context.generation !== turn.generation) return;
+          turn.settled = true;
+          yield* finishSubagents(
+            context,
+            payload.state === "cancelled"
+              ? "cancelled"
+              : payload.state === "failed"
+                ? "failed"
+                : "idle",
+            payload.errorMessage,
+          );
+          context.activeTurnId = undefined;
+          context.promptFiber = undefined;
+          context.session = {
+            ...context.session,
+            status: payload.state === "failed" ? "error" : "ready",
+            activeTurnId: undefined,
+            updatedAt: yield* nowIso,
+            ...(payload.errorMessage
+              ? { lastError: payload.errorMessage }
+              : { lastError: undefined }),
+          };
+          yield* emit({
+            type: "turn.completed",
+            ...(yield* stamp),
+            provider: PROVIDER,
+            threadId: input.threadId,
+            turnId: turn.turnId,
+            payload,
+          });
+        },
+      ).pipe(Effect.uninterruptible);
+    }
 
     return yield* Effect.gen(function* () {
       const launch = yield* context.promptLock.withPermit(

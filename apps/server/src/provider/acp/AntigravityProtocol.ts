@@ -343,7 +343,10 @@ export function normalizeAntigravityToolCall(toolCall: AcpToolCallState): AcpToo
   };
 }
 
-/** Execute tools still running so later native updates can close them. */
+/**
+ * Execute tools still `inProgress` after end_turn so later native updates can
+ * close them without promoting the command to a background `local_bash` task.
+ */
 export function isAntigravityOpenCommand(toolCall: AcpToolCallState): boolean {
   return toolCall.kind === "execute" && toolCall.status === "inProgress";
 }
