@@ -650,6 +650,76 @@ describe("ApnsDeliveries", () => {
     },
   );
 
+  it.effect(
+    "queues an update when phase changes from starting to running inside the throttle window",
+    () => {
+      const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
+      const queuedJobs: Array<SignedApnsDeliveryJob> = [];
+      const startingAggregate: RelayAgentActivityAggregateState = {
+        ...aggregate,
+        activities: [
+          {
+            ...aggregate.activities[0]!,
+            phase: "starting",
+            status: "Connecting",
+          },
+        ],
+      };
+      const runningAggregate: RelayAgentActivityAggregateState = {
+        ...startingAggregate,
+        updatedAt: "1970-01-01T00:00:04.000Z",
+        activities: [
+          {
+            ...startingAggregate.activities[0]!,
+            phase: "running",
+            status: "Working",
+            updatedAt: "1970-01-01T00:00:04.000Z",
+          },
+        ],
+      };
+
+      return Effect.gen(function* () {
+        const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
+        const first = yield* deliveries.sendForTarget({
+          target,
+          aggregate: startingAggregate,
+          nowMs: 0,
+        });
+        expect(first?.kind).toBe("live_activity_update");
+
+        const second = yield* deliveries.sendForTarget({
+          target: {
+            ...target,
+            last_aggregate_json: JSON.stringify(startingAggregate),
+            last_live_activity_delivery_at: "1970-01-01T00:00:00.000Z",
+          },
+          aggregate: runningAggregate,
+          nowMs: 4_000,
+        });
+
+        expect(second?.kind).toBe("live_activity_update");
+        expect(queuedJobs).toMatchObject([
+          {
+            payload: {
+              kind: "live_activity_update",
+              target: {
+                token: "activity-token",
+              },
+            },
+          },
+          {
+            payload: {
+              kind: "live_activity_update",
+              target: {
+                token: "activity-token",
+              },
+            },
+          },
+        ]);
+      }).pipe(Effect.provide(makeLayer({ attempts, queuedJobs })));
+    },
+  );
+
   it.effect("queues an end for an active Live Activity when Live Activities are disabled", () => {
     const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
     const queuedJobs: Array<SignedApnsDeliveryJob> = [];

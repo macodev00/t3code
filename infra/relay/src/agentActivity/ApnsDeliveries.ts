@@ -160,6 +160,19 @@ function aggregateNeedsAttention(aggregate: RelayAgentActivityAggregateState): b
   );
 }
 
+function aggregateHasPhaseChange(
+  previous: RelayAgentActivityAggregateState,
+  next: RelayAgentActivityAggregateState,
+): boolean {
+  const previousPhases = new Map(
+    previous.activities.map((row) => [`${row.environmentId}\0${row.threadId}`, row.phase]),
+  );
+  return next.activities.some((row) => {
+    const previousPhase = previousPhases.get(`${row.environmentId}\0${row.threadId}`);
+    return previousPhase !== undefined && previousPhase !== row.phase;
+  });
+}
+
 function shouldUpdateLiveActivity(input: {
   readonly previousAggregate: RelayAgentActivityAggregateState | null;
   readonly nextAggregate: RelayAgentActivityAggregateState;
@@ -182,6 +195,11 @@ function shouldUpdateLiveActivity(input: {
   // new start land in the same window, activeCount is unchanged and the Done
   // transition (and its alert) would otherwise be suppressed.
   if (newlyTerminalRows(input.previousAggregate, input.nextAggregate, true).length > 0) {
+    return true;
+  }
+  // starting→running keeps activeCount at 1 and is not attention/terminal, but
+  // the lock-screen copy changes (Connecting→Working) and is never republished.
+  if (aggregateHasPhaseChange(input.previousAggregate, input.nextAggregate)) {
     return true;
   }
   const lastDeliveryAtMs =
