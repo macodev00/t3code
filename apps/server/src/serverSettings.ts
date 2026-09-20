@@ -344,18 +344,30 @@ function firstConfiguredCustomModelSlug(
   return readCustomModelEntries(legacyProvider.customModels)[0]?.slug;
 }
 
+/** True when this driver is the first enabled instance or legacy provider. */
+function isEnabledTextGenerationFallback(
+  settings: ServerSettings,
+  driver: string,
+  provider: { readonly enabled: boolean; readonly customModels?: unknown },
+): boolean {
+  const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
+  return instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
+}
+
 /** Prefer the enabled instance's default or custom model when the stored selection is unusable. */
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
   // Same precedence as isModelSelectionProviderEnabled: an explicit provider
   // instance wins over the legacy providers map, which decodes to defaults
   // (codex enabled) when the Providers UI has only written providerInstances.
-  const fallbackEntry = Object.entries(settings.providers).find(
-    /** True when this driver is the first enabled instance or legacy provider. */
-    ([driver, provider]) => {
-      const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
-      return instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
-    },
-  );
+  let fallbackEntry:
+    | [string, { readonly enabled: boolean; readonly customModels?: unknown }]
+    | undefined;
+  for (const entry of Object.entries(settings.providers)) {
+    if (isEnabledTextGenerationFallback(settings, entry[0], entry[1])) {
+      fallbackEntry = entry;
+      break;
+    }
+  }
   if (!fallbackEntry) {
     return settings;
   }
