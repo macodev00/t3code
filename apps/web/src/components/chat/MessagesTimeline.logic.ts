@@ -545,7 +545,11 @@ function collapseDuplicateLiveActivityRowIds(rows: MessagesTimelineRow[]): void 
   }
 }
 
-/** Pin chrome rows. Messages and expanded tool details stay measured. */
+/**
+ * Pin chrome rows. Messages, expanded tool details, and in-place agent-spawn
+ * rows stay measured — spawn members expand via `expandedSpawnEntryIds`, not a
+ * following details row.
+ */
 export function getFixedMessagesTimelineItemSize(row: MessagesTimelineRow): number | undefined {
   switch (row.kind) {
     case "working":
@@ -555,6 +559,7 @@ export function getFixedMessagesTimelineItemSize(row: MessagesTimelineRow): numb
     case "work-toggle":
       return row.expanded ? TIMELINE_EXPANDED_WORK_HEADER_HEIGHT : TIMELINE_CHROME_ROW_HEIGHT;
     case "work-live":
+      if (row.entry.agentSpawn) return undefined;
       return row.expanded ? TIMELINE_EXPANDED_WORK_HEADER_HEIGHT : TIMELINE_CHROME_ROW_HEIGHT;
     case "activity-group":
       return row.expanded ? undefined : TIMELINE_CHROME_ROW_HEIGHT;

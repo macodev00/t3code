@@ -4019,6 +4019,47 @@ describe("live tool group placement across a steer", () => {
     ).toBe(TIMELINE_CHROME_ROW_HEIGHT);
   });
 
+  it("does not pin expandable agent-spawn work-live rows to chrome height", () => {
+    const spawnEntry: WorkLogEntry = {
+      id: "spawn-entry",
+      createdAt: startedAt,
+      turnId,
+      label: "Ran 2 subagents",
+      tone: "tool",
+      agentSpawn: { workflowId: null, agentTaskIds: ["agent-a", "agent-b"] },
+    };
+    const spawnLive: MessagesTimelineRow = {
+      kind: "work-live",
+      id: LIVE_ACTIVITY_ROW_ID,
+      createdAt: startedAt,
+      entry: spawnEntry,
+      groupedEntries: [spawnEntry],
+      groupId: "work-group:spawn-entry",
+      expanded: false,
+      active: true,
+    };
+    expect(getFixedMessagesTimelineItemSize(spawnLive)).toBeUndefined();
+    expect(getFixedMessagesTimelineItemSize({ ...spawnLive, expanded: true })).toBeUndefined();
+
+    const following: MessagesTimelineRow = {
+      kind: "working",
+      id: "working-indicator-row",
+      createdAt: startedAt,
+    };
+    const expandedSpawnHeight = 160;
+    expect(TIMELINE_CHROME_ROW_HEIGHT).toBeLessThan(expandedSpawnHeight);
+
+    const layout = layoutMessagesTimelineRows(
+      [spawnLive, following],
+      new Map([[LIVE_ACTIVITY_ROW_ID, expandedSpawnHeight]]),
+    );
+    const spawnRect = layout[0]!;
+    const followingRect = layout[1]!;
+    expect(spawnRect.height).toBe(expandedSpawnHeight);
+    expect(messagesTimelineRowRectsOverlap(spawnRect, followingRect)).toBe(false);
+    expect(followingRect.top).toBeGreaterThanOrEqual(spawnRect.top + spawnRect.height);
+  });
+
   it("does not overlap a steer user row or Working pill with a remasured expanded tool group", () => {
     const { input } = liveInput(10);
     const liveRows = deriveMessagesTimelineRows(input);
