@@ -67,6 +67,9 @@ export function FloatingWorkingControl(props: {
   readonly devicePreview: { readonly count: number; readonly onPress: () => void } | null;
   readonly showScrollToEnd: boolean;
   readonly onScrollToEnd: () => void;
+  // When the overlay reserves FLOATING_WORKING_CONTROL_COVERAGE in flow, sit
+  // inside that slot. Otherwise hang above the overlay (scroll-to-end only).
+  readonly reserveInOverlay?: boolean;
 }) {
   const { width: windowWidth } = useWindowDimensions();
   const [overlayWidth, setOverlayWidth] = useState(windowWidth);
@@ -172,7 +175,7 @@ export function FloatingWorkingControl(props: {
     <Animated.View
       pointerEvents="box-none"
       className="absolute left-0 right-0 z-20 items-center"
-      style={{ top: -CONTROL_OVERLAY_OFFSET }}
+      style={{ top: props.reserveInOverlay === true ? CONTROL_GAP : -CONTROL_OVERLAY_OFFSET }}
       onLayout={(event) => setOverlayWidth(event.nativeEvent.layout.width)}
       entering={NATIVE_LIQUID_GLASS_SUPPORTED ? undefined : CONTROL_ENTERING}
       exiting={NATIVE_LIQUID_GLASS_SUPPORTED ? undefined : CONTROL_EXITING}
