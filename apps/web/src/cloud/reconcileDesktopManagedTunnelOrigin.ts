@@ -2,6 +2,7 @@ import type { CloudLinkTarget } from "./linkEnvironment";
 
 const LOOPBACK_HTTP_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
+/** Dedupes desktop managed-tunnel origin re-registration for a signed-in loopback link. */
 export function desktopManagedTunnelOriginReconcileKey(input: {
   readonly signedIn: boolean;
   readonly target: CloudLinkTarget | null;

@@ -73,6 +73,7 @@ function relayLayer() {
   );
 }
 
+/** Test EnvironmentRegistry with a stub relay-client status. */
 function registryLayer(options?: {
   readonly status?: { readonly status: "available" | "missing"; readonly version: string };
   readonly installEvents?: ReadonlyArray<RelayClientInstallProgressEvent>;

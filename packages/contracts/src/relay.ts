@@ -178,6 +178,7 @@ export const RelayManagedEndpointOrigin = Schema.Struct({
 });
 export type RelayManagedEndpointOrigin = typeof RelayManagedEndpointOrigin.Type;
 
+/** Managed connector config, including optional loopback origin for port-hop restarts. */
 export const RelayManagedEndpointRuntimeConfig = Schema.Struct({
   providerKind: RelayManagedEndpointProviderKind,
   connectorToken: TrimmedNonEmptyString,

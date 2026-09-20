@@ -157,6 +157,7 @@ export const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances"
   },
 );
 
+/** Bootstraps the Electron desktop host and local backend. */
 const bootstrap = Effect.gen(function* () {
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;

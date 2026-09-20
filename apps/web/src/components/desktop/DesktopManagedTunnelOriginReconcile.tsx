@@ -23,6 +23,7 @@ export function DesktopManagedTunnelOriginReconcile() {
   return <ConfiguredDesktopManagedTunnelOriginReconcile />;
 }
 
+/** Re-registers the desktop managed tunnel with the current loopback origin after a port hop. */
 function ConfiguredDesktopManagedTunnelOriginReconcile() {
   const { getToken, isLoaded, isSignedIn } = useAuth({
     treatPendingAsSignedOut: false,
@@ -97,6 +98,7 @@ function ConfiguredDesktopManagedTunnelOriginReconcile() {
   return null;
 }
 
+/** Warns when desktop origin re-registration fails. */
 function logReconcileFailure(cause: unknown) {
   const message = cause instanceof Error ? cause.message : String(cause);
   const traceId = findErrorTraceId(cause);

@@ -50,6 +50,7 @@ const relayClientRpcError = (message: string) => (cause: unknown) =>
     cause,
   });
 
+/** Checks that the relay client is installed, skipping the install prompt when requested. */
 function ensureRelayClientAvailable(
   environmentId: EnvironmentId,
   options?: { readonly installIfMissing?: boolean },
@@ -160,6 +161,7 @@ const environmentApiError = (message: string) => (cause: unknown) => {
 
 const LOOPBACK_HTTP_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
+/** Builds a loopback HTTP origin from the environment base URL. */
 function endpointOrigin(httpBaseUrl: string): RelayManagedEndpointOrigin {
   const url = new URL(httpBaseUrl);
   return {
@@ -168,6 +170,7 @@ function endpointOrigin(httpBaseUrl: string): RelayManagedEndpointOrigin {
   };
 }
 
+/** Returns a loopback origin for local HTTP targets, otherwise null. */
 function loopbackOriginFromHttpBaseUrl(httpBaseUrl: string): RelayManagedEndpointOrigin | null {
   try {
     const url = new URL(httpBaseUrl);
@@ -180,6 +183,7 @@ function loopbackOriginFromHttpBaseUrl(httpBaseUrl: string): RelayManagedEndpoin
   }
 }
 
+/** Attaches the current loopback origin to a managed tunnel runtime config. */
 export function withManagedTunnelRuntimeOrigin(
   runtime: RelayManagedEndpointRuntimeConfig | null,
   httpBaseUrl: string,
@@ -287,6 +291,7 @@ export type CloudLinkMode = "managed" | "publish_only";
 
 const PUBLISH_ONLY_PROVIDER_KIND = "manual" satisfies RelayManagedEndpointProviderKind;
 
+/** Links the primary environment to T3 Connect, optionally without installing the relay client. */
 export function linkPrimaryEnvironmentToCloud(input: {
   readonly target: CloudLinkTarget;
   readonly clerkToken: string;

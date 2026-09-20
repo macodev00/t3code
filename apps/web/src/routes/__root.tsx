@@ -134,6 +134,7 @@ function RootRouteNotFoundView() {
   );
 }
 
+/** Root layout for the web client, including desktop Connect origin reconciliation. */
 function RootRouteView() {
   useEffect(() => installDesktopPasteAsText(window.desktopBridge, window), []);
   const pathname = useLocation({ select: (location) => location.pathname });
