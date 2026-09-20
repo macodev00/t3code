@@ -13,6 +13,7 @@ import {
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
   projectGroupsSpanEnvironments,
+  resolveNewThreadPickerFocusEntry,
 } from "./sidebarProjectGrouping";
 import { orderItemsByPreferredIds } from "./components/Sidebar.logic";
 import { legacyProjectCwdPreferenceKey } from "./uiStateStore";
@@ -456,5 +457,75 @@ describe("environment grouping", () => {
     });
 
     expect(groups.map((group) => group.displayName)).toEqual(["separate", "shared-repo"]);
+  });
+
+  it("expands grouped checkouts into one New Chat row per environment", () => {
+    const primary = makeProject({ repositoryIdentity });
+    const remote = makeProject({
+      id: ProjectId.make("project-remote"),
+      environmentId: remoteEnvironmentId,
+      repositoryIdentity,
+    });
+    const groups = buildSidebarProjectSnapshots({
+      projects: [primary, remote],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+
+    const entries = buildSidebarProjectPickerEntries({
+      groups,
+      preferredProjectRef: {
+        environmentId: remoteEnvironmentId,
+        projectId: remote.id,
+      },
+      expandEnvironmentCopies: true,
+      isEnvironmentReachable: (environmentId) => environmentId === primaryEnvironmentId,
+    });
+
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.targetProject.environmentId)).toEqual([
+      primaryEnvironmentId,
+      remoteEnvironmentId,
+    ]);
+    expect(entries.every((entry) => entry.isPreferred)).toBe(true);
+  });
+
+  it("focuses a reachable sibling when the selected New Chat copy is down", () => {
+    const primary = makeProject({ repositoryIdentity });
+    const remote = makeProject({
+      id: ProjectId.make("project-remote"),
+      environmentId: remoteEnvironmentId,
+      repositoryIdentity,
+    });
+    const groups = buildSidebarProjectSnapshots({
+      projects: [primary, remote],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+    const entries = buildSidebarProjectPickerEntries({
+      groups,
+      preferredProjectRef: {
+        environmentId: remoteEnvironmentId,
+        projectId: remote.id,
+      },
+      expandEnvironmentCopies: true,
+      isEnvironmentReachable: (environmentId) => environmentId === primaryEnvironmentId,
+    });
+
+    const focus = resolveNewThreadPickerFocusEntry({
+      entries,
+      currentProjectRef: {
+        environmentId: remoteEnvironmentId,
+        projectId: remote.id,
+      },
+      isEnvironmentReachable: (environmentId) => environmentId === primaryEnvironmentId,
+    });
+
+    expect(focus?.targetProject).toMatchObject({
+      environmentId: primaryEnvironmentId,
+      id: primary.id,
+    });
   });
 });

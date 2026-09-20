@@ -133,45 +133,133 @@ export function buildSidebarProjectSnapshots(input: {
   });
 }
 
+function projectRefsMatch(
+  left: Pick<ScopedProjectRef, "environmentId" | "projectId">,
+  right: Pick<ScopedProjectRef, "environmentId" | "projectId">,
+): boolean {
+  return left.environmentId === right.environmentId && left.projectId === right.projectId;
+}
+
+function groupContainsProjectRef(
+  group: Pick<SidebarProjectSnapshot, "memberProjectRefs">,
+  projectRef: ScopedProjectRef,
+): boolean {
+  return group.memberProjectRefs.some((memberRef) => projectRefsMatch(memberRef, projectRef));
+}
+
+function selectCollapsedPickerTarget(
+  group: SidebarProjectSnapshot,
+  preferredProjectRef: ScopedProjectRef | null,
+): SidebarProjectGroupMember | undefined {
+  const preferredProject = preferredProjectRef
+    ? (group.memberProjects.find(
+        (project) =>
+          project.environmentId === preferredProjectRef.environmentId &&
+          project.id === preferredProjectRef.projectId,
+      ) ??
+      group.memberProjects.find(
+        (project) => project.environmentId === preferredProjectRef.environmentId,
+      ))
+    : null;
+  return (
+    preferredProject ??
+    group.memberProjects.find(
+      (project) => project.environmentId === group.environmentId && project.id === group.id,
+    ) ??
+    group.memberProjects[0]
+  );
+}
+
+function selectExpandedPickerTargets(
+  group: SidebarProjectSnapshot,
+  preferredProjectRef: ScopedProjectRef | null,
+  isEnvironmentReachable: (environmentId: EnvironmentId) => boolean,
+): SidebarProjectGroupMember[] {
+  const copies: SidebarProjectGroupMember[] = [];
+  const seenEnvironments = new Set<EnvironmentId>();
+  for (const member of group.memberProjects) {
+    if (seenEnvironments.has(member.environmentId)) continue;
+    seenEnvironments.add(member.environmentId);
+    copies.push(member);
+  }
+
+  return copies.sort((left, right) => {
+    const reachDelta =
+      Number(isEnvironmentReachable(right.environmentId)) -
+      Number(isEnvironmentReachable(left.environmentId));
+    if (reachDelta !== 0) return reachDelta;
+    if (!preferredProjectRef) return 0;
+    return (
+      Number(right.environmentId === preferredProjectRef.environmentId) -
+      Number(left.environmentId === preferredProjectRef.environmentId)
+    );
+  });
+}
+
 export function buildSidebarProjectPickerEntries(input: {
   groups: ReadonlyArray<SidebarProjectSnapshot>;
   preferredProjectRef: ScopedProjectRef | null;
+  // New Chat lists each machine copy so a local checkout stays choosable
+  // while a disconnected remote thread is selected. Draft-hero and project
+  // search keep the collapsed one-row-per-group shape.
+  expandEnvironmentCopies?: boolean;
+  isEnvironmentReachable?: (environmentId: EnvironmentId) => boolean;
 }) {
   const preferredProjectRef = input.preferredProjectRef;
+  const isEnvironmentReachable = input.isEnvironmentReachable ?? (() => true);
   const entries = input.groups.flatMap((group): SidebarProjectPickerEntry[] => {
     const isPreferred = preferredProjectRef
-      ? group.memberProjectRefs.some(
-          (projectRef) =>
-            projectRef.environmentId === preferredProjectRef.environmentId &&
-            projectRef.projectId === preferredProjectRef.projectId,
-        )
+      ? groupContainsProjectRef(group, preferredProjectRef)
       : false;
-    const preferredProject = preferredProjectRef
-      ? (group.memberProjects.find(
-          (project) =>
-            project.environmentId === preferredProjectRef.environmentId &&
-            project.id === preferredProjectRef.projectId,
-        ) ??
-        group.memberProjects.find(
-          (project) => project.environmentId === preferredProjectRef.environmentId,
-        ))
-      : null;
-    const targetProject =
-      preferredProject ??
-      group.memberProjects.find(
-        (project) => project.environmentId === group.environmentId && project.id === group.id,
-      ) ??
-      group.memberProjects[0];
-    if (!targetProject) return [];
-
-    return [{ group, targetProject, isPreferred }];
+    const targets = input.expandEnvironmentCopies
+      ? selectExpandedPickerTargets(group, preferredProjectRef, isEnvironmentReachable)
+      : [selectCollapsedPickerTarget(group, preferredProjectRef)].filter(
+          (target): target is SidebarProjectGroupMember => target !== undefined,
+        );
+    return targets.map((targetProject) => ({ group, targetProject, isPreferred }));
   });
-  const preferredIndex = entries.findIndex((entry) => entry.isPreferred);
-  if (preferredIndex <= 0) return entries;
 
+  if (!preferredProjectRef) return entries;
+  const preferredGroupKey = entries.find((entry) => entry.isPreferred)?.group.projectKey;
+  if (!preferredGroupKey || entries[0]?.group.projectKey === preferredGroupKey) {
+    return entries;
+  }
+
+  const preferredEntries = entries.filter((entry) => entry.group.projectKey === preferredGroupKey);
   return [
-    entries[preferredIndex]!,
-    ...entries.slice(0, preferredIndex),
-    ...entries.slice(preferredIndex + 1),
+    ...preferredEntries,
+    ...entries.filter((entry) => entry.group.projectKey !== preferredGroupKey),
   ];
+}
+
+// When the selected chat's copy is down, focus the reachable sibling in the
+// same logical project so the New Chat picker does not land on a dead row.
+export function resolveNewThreadPickerFocusEntry(input: {
+  entries: ReadonlyArray<SidebarProjectPickerEntry>;
+  currentProjectRef: ScopedProjectRef | null;
+  isEnvironmentReachable: (environmentId: EnvironmentId) => boolean;
+}): SidebarProjectPickerEntry | null {
+  const currentProjectRef = input.currentProjectRef;
+  if (!currentProjectRef) return null;
+
+  const currentEntry =
+    input.entries.find((entry) =>
+      projectRefsMatch(
+        { environmentId: entry.targetProject.environmentId, projectId: entry.targetProject.id },
+        currentProjectRef,
+      ),
+    ) ?? null;
+  if (currentEntry && input.isEnvironmentReachable(currentEntry.targetProject.environmentId)) {
+    return currentEntry;
+  }
+
+  const groupKey = currentEntry?.group.projectKey;
+  if (groupKey === undefined) return null;
+  return (
+    input.entries.find(
+      (entry) =>
+        entry.group.projectKey === groupKey &&
+        input.isEnvironmentReachable(entry.targetProject.environmentId),
+    ) ?? null
+  );
 }
