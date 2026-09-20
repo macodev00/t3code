@@ -130,11 +130,15 @@ interface HarnessOptions {
   readonly contentLength?: number;
   readonly contentEncoding?: string;
   readonly platform?: NodeJS.Platform;
+  readonly arch?: NodeJS.Architecture;
+  readonly hostMachine?: string;
   readonly path?: string;
   readonly previous?: boolean;
   readonly fileSystem?: FileSystem.FileSystem;
   readonly validate?: AntigravityInstallationOptions["validate"];
   readonly useDefaultValidation?: boolean;
+  /** When false, resolve the pinned host archive instead of the fixture zip. */
+  readonly pinRelease?: boolean;
 }
 
 const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
@@ -145,9 +149,10 @@ const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
   const baseDir =
     options.baseDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-test-" }));
   const platform = options.platform ?? hostPlatform;
+  const arch = options.arch ?? "x64";
   const archive = options.archive ?? completeArchive;
   const asset = options.asset === undefined ? releaseAsset(archive, platform) : options.asset;
-  const managedDirectory = path.join(baseDir, "tools", "antigravity-acp", `${platform}-x64`);
+  const managedDirectory = path.join(baseDir, "tools", "antigravity-acp", `${platform}-${arch}`);
   if (options.previous) {
     yield* writeRelease(managedDirectory, {
       ...releaseAsset(archive, platform),
@@ -172,7 +177,8 @@ const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
   });
   const installation = yield* makeAntigravityInstallation({
     baseDir,
-    releaseAsset: asset,
+    hostMachine: options.hostMachine ?? arch,
+    ...(options.pinRelease === false ? {} : { releaseAsset: asset }),
     ...(options.useDefaultValidation
       ? {}
       : {
@@ -184,7 +190,7 @@ const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
   }).pipe(
     Effect.provideService(FileSystem.FileSystem, trackedFs),
     Effect.provideService(HostProcessPlatform, platform),
-    Effect.provideService(HostProcessArchitecture, "x64"),
+    Effect.provideService(HostProcessArchitecture, arch),
     Effect.provideService(HostProcessEnvironment, { PATH: options.path ?? "" }),
     Effect.provideService(
       HttpClient.HttpClient,
@@ -926,6 +932,59 @@ it.layer(NodeServices.layer)("Antigravity installation", (it) => {
       expect(yield* installation.start.pipe(Effect.flip)).toMatchObject({ operation: "start" });
       expect(yield* installation.resolve().pipe(Effect.flip)).toMatchObject({
         operation: "resolve",
+      });
+      expect(yield* installation.state).toMatchObject({ phase: "idle", operationId: null });
+      expect(requests).toEqual([]);
+    }),
+  );
+
+  it.effect("pins the official linux-arm64 archive on arm64 hosts without downloading", () =>
+    Effect.gen(function* () {
+      const { installation, requests, path, baseDir } = yield* makeHarness({
+        pinRelease: false,
+        platform: "linux",
+        arch: "arm64",
+      });
+      expect(yield* installation.state).toMatchObject({
+        phase: "idle",
+        totalBytes: 656_572_786,
+        version: "agy_acp_server_1.1.1",
+      });
+      expect(installation.managedDirectory).toBe(
+        path.join(baseDir, "tools", "antigravity-acp", "linux-arm64"),
+      );
+      expect(requests).toEqual([]);
+    }),
+  );
+
+  it.effect("prefers the aarch64 host machine over an x64 Node compile arch", () =>
+    Effect.gen(function* () {
+      const { installation, path, baseDir } = yield* makeHarness({
+        pinRelease: false,
+        platform: "linux",
+        arch: "x64",
+        hostMachine: "aarch64",
+      });
+      expect(yield* installation.state).toMatchObject({
+        totalBytes: 656_572_786,
+        version: "agy_acp_server_1.1.1",
+      });
+      expect(installation.managedDirectory).toBe(
+        path.join(baseDir, "tools", "antigravity-acp", "linux-arm64"),
+      );
+    }),
+  );
+
+  it.effect("refuses linux hosts with no published CPU archive without downloading", () =>
+    Effect.gen(function* () {
+      const { installation, requests } = yield* makeHarness({
+        pinRelease: false,
+        platform: "linux",
+        arch: "ia32",
+      });
+      expect(yield* installation.start.pipe(Effect.flip)).toMatchObject({
+        operation: "start",
+        detail: expect.stringMatching(/does not publish an Antigravity runtime for linux-ia32/u),
       });
       expect(yield* installation.state).toMatchObject({ phase: "idle", operationId: null });
       expect(requests).toEqual([]);

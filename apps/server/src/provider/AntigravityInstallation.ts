@@ -27,6 +27,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import type * as NodeStream from "node:stream";
 import * as Yauzl from "yauzl";
 
@@ -37,6 +38,7 @@ import {
   prepareAntigravityProfile,
 } from "./antigravityAuthSupport.ts";
 import {
+  antigravityReleaseArch,
   resolveAntigravityReleaseAsset,
   type AntigravityReleaseAsset,
 } from "./antigravityRelease.ts";
@@ -120,6 +122,8 @@ export class AntigravityInstallation extends Context.Service<
 export interface AntigravityInstallationOptions {
   readonly baseDir: string;
   readonly releaseAsset?: AntigravityReleaseAsset | null;
+  /** uname -m when known. Defaults to the host machine so aarch64 wins over an x64 Node. */
+  readonly hostMachine?: string;
   readonly validate?: (
     executable: AntigravityExecutable,
     expectedVersion: string,
@@ -275,16 +279,18 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
   const platform = yield* HostProcessPlatform;
   const arch = yield* HostProcessArchitecture;
   const environment = yield* HostProcessEnvironment;
+  const hostMachine = options.hostMachine ?? NodeOS.machine();
+  const releaseArch = antigravityReleaseArch(hostMachine) ?? antigravityReleaseArch(arch) ?? arch;
   const releaseAsset =
     options.releaseAsset === undefined
-      ? resolveAntigravityReleaseAsset(platform, arch)
+      ? resolveAntigravityReleaseAsset(platform, arch, hostMachine)
       : options.releaseAsset;
   const names = executableNames(platform);
   const managedDirectory = path.join(
     options.baseDir,
     "tools",
     "antigravity-acp",
-    `${platform}-${arch}`,
+    `${platform}-${releaseArch}`,
   );
   const versionsDirectory = path.join(managedDirectory, "versions");
   const activePath = path.join(managedDirectory, "active.json");
@@ -432,7 +438,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
         "resolve",
         releaseAsset
           ? "Antigravity is not installed. Install it in this environment or set a custom executable path."
-          : `Google does not publish an Antigravity runtime for ${platform}-${arch}. Use a supported environment or a custom executable.`,
+          : `Google does not publish an Antigravity runtime for ${platform}-${releaseArch}. Use a supported environment or a custom executable.`,
       );
     },
     Effect.mapError(
@@ -798,7 +804,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
         if (!releaseAsset) {
           return yield* installationError(
             "start",
-            `Google does not publish an Antigravity runtime for ${platform}-${arch}. Use a supported remote environment or a custom executable.`,
+            `Google does not publish an Antigravity runtime for ${platform}-${releaseArch}. Use a supported remote environment or a custom executable.`,
           );
         }
         const operationId = yield* crypto.randomUUIDv4;
