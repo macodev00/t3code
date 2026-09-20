@@ -4404,6 +4404,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const existingContext = sessions.get(input.threadId);
       if (existingContext) {
+        // Replacement closes the query and records liveTaskIds as
+        // task.completed(stopped) without session.exited. Keep the live
+        // process when child work is still running; a later idle start can
+        // replace once the set is empty.
+        if (!existingContext.stopped && existingContext.liveTaskIds.size > 0) {
+          yield* emitRuntimeWarning(
+            existingContext,
+            `Claude session replacement deferred: ${existingContext.liveTaskIds.size} live task(s) are still running.`,
+            {
+              existingSessionStatus: existingContext.session.status,
+              liveTaskCount: existingContext.liveTaskIds.size,
+            },
+          );
+          return { ...existingContext.session };
+        }
         yield* Effect.logWarning("claude.session.replacing", {
           threadId: input.threadId,
           existingSessionStatus: existingContext.session.status,

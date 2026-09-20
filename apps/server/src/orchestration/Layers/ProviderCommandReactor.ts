@@ -764,9 +764,13 @@ const make = Effect.gen(function* () {
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
       const previousModelSelection = threadModelSelections.get(threadId);
+      // Claude compares the full ModelSelection, including options. A cache
+      // miss (undefined vs requested) must not restart: the SDK can continue
+      // in-session, and startSession would otherwise replace a live process.
       const shouldRestartForModelSelectionChange =
         preferredProvider === "claudeAgent" &&
         requestedModelSelection !== undefined &&
+        previousModelSelection !== undefined &&
         !Equal.equals(previousModelSelection, requestedModelSelection);
 
       if (
@@ -776,6 +780,25 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelChange &&
         !shouldRestartForModelSelectionChange
       ) {
+        yield* refreshWorkspaceSnapshot;
+        return existingSessionThreadId;
+      }
+
+      // Claude replacement drains liveTaskIds without session.exited. Reuse
+      // the current process while projected background work is still live.
+      if (thread.backgroundLiveness != null) {
+        yield* Effect.logWarning(
+          "provider command reactor deferring provider session restart while background work is live",
+          {
+            threadId,
+            backgroundLiveness: thread.backgroundLiveness,
+            runtimeModeChanged,
+            cwdChanged,
+            instanceChanged,
+            shouldRestartForModelChange,
+            shouldRestartForModelSelectionChange,
+          },
+        );
         yield* refreshWorkspaceSnapshot;
         return existingSessionThreadId;
       }
