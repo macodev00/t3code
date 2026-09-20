@@ -312,7 +312,20 @@ export type TimelineLatestTurn = Pick<
   "turnId" | "state" | "startedAt" | "completedAt"
 >;
 
-const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
+export const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
+
+/** LegendList's default estimate. Chrome rows are much shorter; expanded tool groups are much taller. */
+export const TIMELINE_ESTIMATED_ITEM_SIZE = 90;
+/** Working header: `pt-1` + `h-6` + `pb-2` + `border-b` + row `pb-1.5`. */
+export const TIMELINE_WORKING_ROW_HEIGHT = 43;
+/** Thinking / collapsed work chrome: `min-h-6` + `py-0.5` + row `pb-2`. */
+export const TIMELINE_CHROME_ROW_HEIGHT = 36;
+/** Expanded work-live / work-toggle header: chrome without row `pb-2`. */
+export const TIMELINE_EXPANDED_WORK_HEADER_HEIGHT = 28;
+/** Nested tool list `max-h-[min(18rem,50dvh)]`. */
+export const TIMELINE_EXPANDED_WORK_GROUP_MAX_HEIGHT = 288;
+const TIMELINE_WORK_ENTRY_ROW_HEIGHT = 24;
+const TIMELINE_EXPANDED_WORK_GROUP_PADDING = 4;
 
 type ActivityEntry = Extract<TimelineEntry, { kind: "message" | "work" }>;
 
@@ -487,6 +500,147 @@ function expandedWorkGroupRow(
     groupedEntries,
     isExpandedToolGroup: true,
   };
+}
+
+function remainderIsOnlyUserMessages(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+  fromIndex: number,
+): boolean {
+  for (let index = fromIndex; index < timelineEntries.length; index += 1) {
+    const entry = timelineEntries[index]!;
+    if (entry.kind !== "message" || entry.message.role !== "user") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function workLiveRowIdFromGroupId(groupId: string): string {
+  return `work-live:${groupId.startsWith("work-group:") ? groupId.slice("work-group:".length) : groupId}`;
+}
+
+/** Keep one `live-activity-row` key so LegendList can reuse its measured size. */
+function collapseDuplicateLiveActivityRowIds(rows: MessagesTimelineRow[]): void {
+  let lastLiveIndex = -1;
+  for (let index = 0; index < rows.length; index += 1) {
+    if (rows[index]!.id === LIVE_ACTIVITY_ROW_ID) {
+      lastLiveIndex = index;
+    }
+  }
+  if (lastLiveIndex < 0) {
+    return;
+  }
+  for (let index = 0; index < rows.length; index += 1) {
+    if (index === lastLiveIndex || rows[index]!.id !== LIVE_ACTIVITY_ROW_ID) {
+      continue;
+    }
+    const row = rows[index]!;
+    if (row.kind === "work-live") {
+      rows[index] = { ...row, id: workLiveRowIdFromGroupId(row.groupId) };
+    } else if (row.kind === "activity-group") {
+      rows[index] = { ...row, id: row.groupId };
+    }
+  }
+}
+
+/** Pin chrome rows. Messages and expanded tool details stay measured. */
+export function getFixedMessagesTimelineItemSize(row: MessagesTimelineRow): number | undefined {
+  switch (row.kind) {
+    case "working":
+      return TIMELINE_WORKING_ROW_HEIGHT;
+    case "thinking":
+      return TIMELINE_CHROME_ROW_HEIGHT;
+    case "work-toggle":
+      return row.expanded ? TIMELINE_EXPANDED_WORK_HEADER_HEIGHT : TIMELINE_CHROME_ROW_HEIGHT;
+    case "work-live":
+      return row.expanded ? TIMELINE_EXPANDED_WORK_HEADER_HEIGHT : TIMELINE_CHROME_ROW_HEIGHT;
+    case "activity-group":
+      return row.expanded ? undefined : TIMELINE_CHROME_ROW_HEIGHT;
+    default:
+      return undefined;
+  }
+}
+
+export function estimateMessagesTimelineItemSize(row: MessagesTimelineRow): number {
+  const fixed = getFixedMessagesTimelineItemSize(row);
+  if (fixed !== undefined) {
+    return fixed;
+  }
+  if (row.kind === "work" && row.isExpandedToolGroup) {
+    return Math.min(
+      TIMELINE_EXPANDED_WORK_GROUP_MAX_HEIGHT + TIMELINE_EXPANDED_WORK_GROUP_PADDING,
+      row.groupedEntries.length * TIMELINE_WORK_ENTRY_ROW_HEIGHT +
+        TIMELINE_EXPANDED_WORK_GROUP_PADDING,
+    );
+  }
+  return TIMELINE_ESTIMATED_ITEM_SIZE;
+}
+
+/** Changes when an expanded work row grows, even if `rows.length` stays put. */
+export function messagesTimelineHeightSignature(rows: ReadonlyArray<MessagesTimelineRow>): string {
+  let signature = `${rows.length}`;
+  for (const row of rows) {
+    switch (row.kind) {
+      case "work":
+        if (row.isExpandedToolGroup) {
+          signature += `|${row.id}:${row.groupedEntries.length}`;
+        }
+        break;
+      case "work-live":
+        if (row.expanded) {
+          signature += `|${row.id}:${row.groupedEntries.length}`;
+        }
+        break;
+      case "activity-group":
+        if (row.expanded) {
+          signature += `|${row.id}:${row.entries.length}`;
+        }
+        break;
+      case "work-toggle":
+        if (row.expanded) {
+          signature += `|${row.id}:${row.hiddenCount}`;
+        }
+        break;
+    }
+  }
+  return signature;
+}
+
+export function messagesTimelineListExtraData(
+  listIdentityKey: string,
+  rows: ReadonlyArray<MessagesTimelineRow>,
+): string {
+  return `${listIdentityKey}:${messagesTimelineHeightSignature(rows)}`;
+}
+
+export interface MessagesTimelineRowRect {
+  readonly id: string;
+  readonly top: number;
+  readonly height: number;
+}
+
+/** LegendList placement: fixed chrome, else a measured key, else the 90px estimate. */
+export function layoutMessagesTimelineRows(
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  measuredHeights: ReadonlyMap<string, number> = new Map(),
+): MessagesTimelineRowRect[] {
+  let top = 0;
+  return rows.map((row) => {
+    const height =
+      getFixedMessagesTimelineItemSize(row) ??
+      measuredHeights.get(row.id) ??
+      TIMELINE_ESTIMATED_ITEM_SIZE;
+    const rect = { id: row.id, top, height };
+    top += height;
+    return rect;
+  });
+}
+
+export function messagesTimelineRowRectsOverlap(
+  a: MessagesTimelineRowRect,
+  b: MessagesTimelineRowRect,
+): boolean {
+  return a.top < b.top + b.height && b.top < a.top + a.height;
 }
 
 export function resolveAssistantMessageCopyState({
@@ -1156,7 +1310,7 @@ export function deriveMessagesTimelineRows(input: {
         const active =
           input.isWorking &&
           activityTurnId === unsettledTurnId &&
-          cursor === input.timelineEntries.length &&
+          remainderIsOnlyUserMessages(input.timelineEntries, cursor) &&
           !latestToolFailed &&
           (latestVisibleToolEntry === undefined || latestToolKeepsActivityLive);
         const groupId =
@@ -1251,7 +1405,10 @@ export function deriveMessagesTimelineRows(input: {
           const latestActiveToolEntry = activeInProgressToolEntries.at(-1)!;
           nextRows.push({
             kind: "work-live",
-            id: `work-live:${workGroupIdentity(timelineEntry.id, timelineEntry.entry)}`,
+            id:
+              activeWorkRow === null
+                ? LIVE_ACTIVITY_ROW_ID
+                : `work-live:${workGroupIdentity(timelineEntry.id, timelineEntry.entry)}`,
             createdAt: timelineEntry.createdAt,
             entry: latestActiveToolEntry,
             groupedEntries: visibleGroupedEntries,
@@ -1452,6 +1609,7 @@ export function deriveMessagesTimelineRows(input: {
       createdAt: input.activeTurnStartedAt,
     });
   }
+  collapseDuplicateLiveActivityRowIds(nextRows);
   const rows = attachTrailingToolGroupsToAssistant(nextRows);
   input.queuedMessages?.forEach((queuedMessage, index) => {
     rows.push({
