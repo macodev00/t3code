@@ -157,6 +157,7 @@ import {
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import {
   resolveThreadFeedLiveFollow,
+  resolveThreadFeedVisibleContentPosition,
   type ThreadFeedLiveFollowEvent,
   type ThreadWorkGroupScrollPosition,
 } from "./thread-feed-live-follow";
@@ -2920,9 +2921,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
                     },
                   }
             }
-            maintainVisibleContentPosition={
-              endFollowEnabled && !disclosureToggleSettling ? false : maintainVisibleContentPosition
-            }
+            maintainVisibleContentPosition={resolveThreadFeedVisibleContentPosition({
+              following: endFollowEnabled,
+              disclosureSettling: disclosureToggleSettling,
+              readingPosition: maintainVisibleContentPosition,
+            })}
             data={presentedFeed}
             extraData={listAppearanceData}
             renderItem={renderItem}

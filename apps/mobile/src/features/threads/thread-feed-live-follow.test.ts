@@ -3,8 +3,10 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   resolveThreadFeedLiveFollow,
   resolveThreadFeedSubmissionAnchor,
+  resolveThreadFeedVisibleContentPosition,
   resolveThreadWorkGroupInitialScroll,
   shouldFollowThreadWorkGroupAppend,
+  THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION,
 } from "./thread-feed-live-follow";
 
 describe("tool-group scroll restoration", () => {
@@ -219,5 +221,43 @@ describe("resolveThreadFeedLiveFollow", () => {
 
   it("re-arms after an explicit reset", () => {
     expect(resolveThreadFeedLiveFollow(false, { type: "reset" })).toBe(true);
+  });
+});
+
+describe("resolveThreadFeedVisibleContentPosition", () => {
+  const readingPosition = {
+    data: true,
+    size: true,
+    shouldRestorePosition: () => true,
+  };
+
+  it("keeps size restoration armed while following so the first upward drag cannot measure in a gap", () => {
+    expect(
+      resolveThreadFeedVisibleContentPosition({
+        following: true,
+        disclosureSettling: false,
+        readingPosition,
+      }),
+    ).toEqual(THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION);
+  });
+
+  it("keeps full restoration while reading history", () => {
+    expect(
+      resolveThreadFeedVisibleContentPosition({
+        following: false,
+        disclosureSettling: false,
+        readingPosition,
+      }),
+    ).toBe(readingPosition);
+  });
+
+  it("keeps full restoration while a disclosure settles even if follow is still armed", () => {
+    expect(
+      resolveThreadFeedVisibleContentPosition({
+        following: true,
+        disclosureSettling: true,
+        readingPosition,
+      }),
+    ).toBe(readingPosition);
   });
 });

@@ -65,6 +65,24 @@ export function resolveThreadFeedSubmissionAnchor<AnchorId>(input: {
   return input.queuedMessageCount > 0 ? null : input.submittedMessageId;
 }
 
+// While follow is armed, keep size restoration so estimate→actual corrections
+// cannot land in the render gap after the first upward drag. Data restoration
+// stays off so maintainScrollAtEnd can follow appends (pending messages, stream).
+export const THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION = {
+  data: false,
+  size: true,
+} as const;
+
+export function resolveThreadFeedVisibleContentPosition<Position>(input: {
+  readonly following: boolean;
+  readonly disclosureSettling: boolean;
+  readonly readingPosition: Position;
+}): Position | typeof THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION {
+  return input.following && !input.disclosureSettling
+    ? THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION
+    : input.readingPosition;
+}
+
 export function resolveThreadFeedLiveFollow(
   current: boolean,
   event: ThreadFeedLiveFollowEvent,
