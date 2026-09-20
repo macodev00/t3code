@@ -20,6 +20,7 @@ import { serverEnvironment } from "../../state/server";
 import { ConnectionFormField } from "./ConnectionFormField";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 
+/** Row subtitle for enabled/disabled/error connection state, or null when there is none. */
 function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string | null {
   if (!environment.isEnabled && environment.connectionState !== "unsupported") {
     return "Off";
