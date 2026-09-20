@@ -266,6 +266,7 @@ const USER_INPUT_TOGGLE_TIMING = {
   easing: Easing.out(Easing.cubic),
 };
 
+/** Thread transcript with composer overlay chrome, including the running-turn working pill. */
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const navigation = useNavigation();
   const deviceState = useEnvironmentQuery(

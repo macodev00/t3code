@@ -61,6 +61,7 @@ const AnimatedGlassView = Animated.createAnimatedComponent(UniwindGlassView);
 const CONTROL_OVERLAY_OFFSET = CONTROL_HEIGHT + CONTROL_GAP - COMPOSER_CAPSULE_INSET;
 export const FLOATING_WORKING_CONTROL_COVERAGE = CONTROL_OVERLAY_OFFSET + CONTROL_GAP;
 
+/** Floating working-status pill and scroll-to-end control above the composer. */
 export function FloatingWorkingControl(props: {
   readonly colorScheme: "light" | "dark";
   readonly status: FloatingWorkingStatus | null;
