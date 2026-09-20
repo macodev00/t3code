@@ -62,6 +62,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
   private var autoCorrect = true
   private var spellCheck = true
   private var nativeEventCount = 0
+  private var caretScrollPosted = false
 
   init {
     editor.setBackgroundColor(Color.TRANSPARENT)
@@ -173,12 +174,14 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
             ),
           )
           emitContentSizeIfNeeded()
+          scrollCaretIntoView()
         }
       },
     )
     editor.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
       if (right - left != oldRight - oldLeft) applyTokenSpans()
       emitContentSizeIfNeeded()
+      scrollCaretIntoView()
     }
     addView(
       editor,
@@ -226,6 +229,11 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
       applyingNativeValue = false
     }
     emitContentSizeIfNeeded()
+    // Echo re-renders re-apply chip spans without changing text or caret.
+    // Scrolling on those would yank a manual review scroll back to the caret.
+    if (valueChanged || requestedSelection != null) {
+      scrollCaretIntoView()
+    }
   }
 
   fun setThemeJson(themeJson: String) {
@@ -362,6 +370,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     // state, so a no-op assignment must be skipped.
     if (editor.selectionStart == safeStart && editor.selectionEnd == safeEnd) return
     editor.setSelection(safeStart, safeEnd)
+    scrollCaretIntoView()
   }
 
   private fun updateInputFlags() {
@@ -419,6 +428,22 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
         "eventCount" to nativeEventCount,
       ),
     )
+    scrollCaretIntoView()
+  }
+
+  /**
+   * Keep the caret on screen after typing, caret moves, layout changes, and
+   * controlled text resets. setScrollEnabled only toggles the scrollbar.
+   */
+  private fun scrollCaretIntoView() {
+    if (caretScrollPosted) return
+    caretScrollPosted = true
+    editor.post {
+      caretScrollPosted = false
+      if (editor.layout == null || editor.height <= 0) return@post
+      val offset = editor.selectionEnd.coerceIn(0, editor.length())
+      editor.bringPointIntoView(offset)
+    }
   }
 
   private fun emitContentSizeIfNeeded() {
