@@ -21,6 +21,7 @@ import {
   MobileSecureStorageError,
 } from "../persistence/mobile-secure-storage";
 
+/** In-memory MobileSecureStorage double for catalog persist tests. */
 function makeStorage(initial: Readonly<Record<string, string>>) {
   const values = new Map(Object.entries(initial));
   const deleted: Array<string> = [];
@@ -101,6 +102,7 @@ describe("mobile connection catalog storage", () => {
     }),
   );
 
+  /** Catalog update must leave the previous document when Keychain write fails. */
   it.effect("keeps a saved environment when a catalog write fails", () =>
     Effect.gen(function* () {
       const values = new Map<string, string>();

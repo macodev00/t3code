@@ -111,6 +111,7 @@ export function useRemoteConnectionStatus() {
   };
 }
 
+/** Pairing, reconnect, enable, and trash actions for saved remote environments. */
 export function useRemoteConnections() {
   const controller = useConnectionController();
   const connectionPairingUrl = useAtomValue(connectionPairingUrlAtom);
@@ -165,6 +166,7 @@ export function useRemoteConnections() {
     [controller],
   );
 
+  /** Present the in-tree remove confirm even when the environment is offline. */
   const onRemoveEnvironmentPress = useCallback(
     (environmentId: EnvironmentId) => {
       const environment = connectedEnvironments.find(
@@ -176,6 +178,7 @@ export function useRemoteConnections() {
         isRelayManaged: environment?.isRelayManaged ?? false,
         remove: controller.removeEnvironment,
         presentConfirm: showConfirmDialog,
+        /** Show persist failures in the same in-tree overlay as the confirm. */
         presentError: (title, message) => {
           showConfirmDialog({
             title,

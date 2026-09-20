@@ -17,6 +17,7 @@ export type RemoveEnvironmentConfirmRequest = {
   readonly onConfirm: () => void;
 };
 
+/** Prefer a trimmed display name, otherwise the environment id. */
 function resolveRemoveEnvironmentLabel(
   environmentLabel: string | undefined,
   environmentId: EnvironmentId,
@@ -25,8 +26,11 @@ function resolveRemoveEnvironmentLabel(
   return trimmed === undefined || trimmed.length === 0 ? environmentId : trimmed;
 }
 
-// Removing a T3 Connect environment here leaves its account registration
-// and host space, so point to where it can be deregistered.
+/**
+ * Body copy for the remove-from-this-device confirm. A T3 Connect environment
+ * keeps its account registration and host space, so point to where it can be
+ * deregistered.
+ */
 function removeEnvironmentConfirmMessage(label: string, isRelayManaged: boolean): string {
   if (isRelayManaged) {
     return `Forget ${label} and its cached threads on this device.\n\nIt stays on your T3 Connect account and keeps its host space. Deregister it under T3 Account → T3 Connect to free it.`;
@@ -34,6 +38,7 @@ function removeEnvironmentConfirmMessage(label: string, isRelayManaged: boolean)
   return `Forget ${label} and its cached threads on this device. Switch it off instead to keep it saved.`;
 }
 
+/** Persist-failure copy; use the Error message when one exists. */
 function removeEnvironmentFailureMessage(cause: unknown): string {
   return cause instanceof Error
     ? cause.message
@@ -60,12 +65,14 @@ export function presentRemoveSavedEnvironment(input: {
     message: removeEnvironmentConfirmMessage(label, input.isRelayManaged ?? false),
     confirmText: "Remove",
     destructive: true,
+    /** After confirm, persist catalog removal and surface a Keychain write failure. */
     onConfirm: () => {
       void removeSavedEnvironment(input.remove, input.environmentId, input.presentError);
     },
   });
 }
 
+/** Drop the catalog row, then show an error if the Keychain write fails. */
 async function removeSavedEnvironment(
   remove: (environmentId: EnvironmentId) => Promise<AtomCommandResult<unknown, unknown>>,
   environmentId: EnvironmentId,
