@@ -740,43 +740,47 @@ it.layer(layer)("AntigravityAdapter", (it) => {
    * Leftover in-progress execute tools must not emit local_bash task events after end_turn.
    */
   function doesNotPinMonitoringWhenExecuteStillInProgress() {
-    return Effect.gen(function* () {
-      const h = yield* makeHarness();
-      yield* h.adapter.startSession({
-        threadId,
-        cwd: process.cwd(),
-        runtimeMode: "approval-required",
-      });
-      const sending = yield* h.adapter
-        .sendTurn({ threadId, input: "Start a watcher" })
-        .pipe(Effect.forkChild);
-      const prompt = yield* h.nextPrompt;
-      yield* h.emitNative({
-        _tag: "ToolCallUpdated",
-        toolCall: {
-          toolCallId: "watcher-1",
-          kind: "execute",
-          status: "inProgress",
-          command: "watch files",
-          data: {},
-        },
-        rawPayload: {},
-      });
-      yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
-      yield* Fiber.join(sending);
-      yield* h.waitForEvent((event) => event.type === "turn.completed");
-      expect(h.seen.filter((event) => event.type === "task.started")).toHaveLength(0);
-      expect(h.seen.filter((event) => event.type === "task.completed")).toHaveLength(0);
-      yield* h.emitNative({
-        _tag: "ToolCallUpdated",
-        toolCall: { toolCallId: "watcher-1", kind: "execute", status: "completed", data: {} },
-        rawPayload: {},
-      });
-      const ended = yield* h.waitForEvent((event) => event.type === "item.completed");
-      expect(ended.itemId).toBe("watcher-1");
-      expect(h.seen.filter((event) => event.type === "task.started")).toHaveLength(0);
-      expect(h.seen.filter((event) => event.type === "task.completed")).toHaveLength(0);
+    return Effect.gen(assertMonitoringClearsOnEndTurn);
+  }
+  /**
+   * Drive the inProgress execute-tool fixture through end_turn and native completion.
+   */
+  function* assertMonitoringClearsOnEndTurn() {
+    const h = yield* makeHarness();
+    yield* h.adapter.startSession({
+      threadId,
+      cwd: process.cwd(),
+      runtimeMode: "approval-required",
     });
+    const sending = yield* h.adapter
+      .sendTurn({ threadId, input: "Start a watcher" })
+      .pipe(Effect.forkChild);
+    const prompt = yield* h.nextPrompt;
+    yield* h.emitNative({
+      _tag: "ToolCallUpdated",
+      toolCall: {
+        toolCallId: "watcher-1",
+        kind: "execute",
+        status: "inProgress",
+        command: "watch files",
+        data: {},
+      },
+      rawPayload: {},
+    });
+    yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
+    yield* Fiber.join(sending);
+    yield* h.waitForEvent((event) => event.type === "turn.completed");
+    expect(h.seen.filter((event) => event.type === "task.started")).toHaveLength(0);
+    expect(h.seen.filter((event) => event.type === "task.completed")).toHaveLength(0);
+    yield* h.emitNative({
+      _tag: "ToolCallUpdated",
+      toolCall: { toolCallId: "watcher-1", kind: "execute", status: "completed", data: {} },
+      rawPayload: {},
+    });
+    const ended = yield* h.waitForEvent((event) => event.type === "item.completed");
+    expect(ended.itemId).toBe("watcher-1");
+    expect(h.seen.filter((event) => event.type === "task.started")).toHaveLength(0);
+    expect(h.seen.filter((event) => event.type === "task.completed")).toHaveLength(0);
   }
   it.effect(
     "does not pin Monitoring when an execute tool is still inProgress at end_turn",
