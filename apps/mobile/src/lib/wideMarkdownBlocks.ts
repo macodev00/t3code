@@ -97,7 +97,7 @@ function hasOrderedListItem(text: string): boolean {
   return false;
 }
 
-function isTableDelimiterRow(line: string): boolean {
+export function isTableDelimiterRow(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed.includes("|") || !trimmed.includes("-")) {
     return false;

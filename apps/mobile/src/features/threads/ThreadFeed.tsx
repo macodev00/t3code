@@ -134,6 +134,11 @@ import {
   type LayoutVariant,
 } from "../../lib/layout";
 import {
+  estimateThreadFeedMessageHeight,
+  shouldReplaceThreadFeedItemSize,
+  THREAD_FEED_ESTIMATED_ITEM_SIZE,
+} from "../../lib/threadFeedItemSize";
+import {
   resolveMarkdownFontSizes,
   resolveNativeMarkdownTypography,
 } from "../../lib/appearancePreferences";
@@ -157,6 +162,7 @@ import {
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import {
   resolveThreadFeedLiveFollow,
+  resolveThreadFeedVisibleContentPosition,
   type ThreadFeedLiveFollowEvent,
   type ThreadWorkGroupScrollPosition,
 } from "./thread-feed-live-follow";
@@ -1963,6 +1969,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     () => deriveThreadWorkLogSizing({ baseFontSize: appearance.baseFontSize, fontScale }),
     [appearance.baseFontSize, fontScale],
   );
+  const markdownFontSizes = useMemo(
+    () => resolveMarkdownFontSizes(appearance.baseFontSize),
+    [appearance.baseFontSize],
+  );
   const previousTextSize = useRef(workRowSizing.textSizeKey);
   useLayoutEffect(() => {
     if (previousTextSize.current === workRowSizing.textSizeKey) {
@@ -2470,6 +2480,42 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.latestTurn,
     ],
   );
+  useLayoutEffect(() => {
+    const list = props.listRef.current;
+    if (!list || markdownContentWidth <= 0) {
+      return;
+    }
+    const sizes = list.getState()?.sizes;
+    if (!sizes) {
+      return;
+    }
+    for (const entry of presentedFeed) {
+      if (entry.type !== "message") {
+        continue;
+      }
+      const estimate = estimateThreadFeedMessageHeight({
+        text: renderAssistantCitationsAsText(entry.message.text),
+        contentWidth: markdownContentWidth,
+        bodyLineHeight: markdownFontSizes.bodyLineHeight,
+        codeBlockLineHeight: markdownFontSizes.codeBlockLineHeight,
+      });
+      if (!shouldReplaceThreadFeedItemSize(sizes.get(entry.id), estimate)) {
+        continue;
+      }
+      list.setItemSize(entry.id, {
+        height: estimate,
+        width: Math.max(1, viewportWidth),
+      });
+    }
+  }, [
+    markdownContentWidth,
+    markdownFontSizes.bodyLineHeight,
+    markdownFontSizes.codeBlockLineHeight,
+    presentedFeed,
+    props.listRef,
+    viewportWidth,
+    workRowSizing.textSizeKey,
+  ]);
   const setupAnchorIndex = presentedFeed.findIndex(
     (entry) => entry.type === "message" && entry.message.role === "user",
   );
@@ -2610,6 +2656,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }),
     [shouldRestoreVisibleContentPosition],
   );
+  const listMaintainVisibleContentPosition = useMemo(() => {
+    const followPosition = resolveThreadFeedVisibleContentPosition({
+      endFollowEnabled,
+      disclosureToggleSettling,
+    });
+    return followPosition.data ? maintainVisibleContentPosition : followPosition;
+  }, [disclosureToggleSettling, endFollowEnabled, maintainVisibleContentPosition]);
 
   const onCopyWorkRow = useCallback((rowId: string, value: string) => {
     copyTextWithHaptic(value, {
@@ -2707,8 +2760,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // row above the viewport is assumed to be estimatedItemSize tall, and
   // scrolling up through unmeasured content corrects each row's height as it
   // mounts — the feed visibly jumps. Fixed sizes make the small chrome rows
-  // exact; message rows stay undefined and use LegendList's per-type running
-  // average once one of their type has been measured.
+  // exact. Message rows stay undefined so layout can still correct them; tall
+  // markdown is seeded with setItemSize instead of a fixed size, because a
+  // fixed size would ignore the later measurement.
   const getFixedItemSize = useCallback(
     (entry: ThreadFeedEntry) => {
       if (workRowSizing.fixedRowHeight === undefined) {
@@ -2847,8 +2901,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
 
   return (
     <PresentationSource identifier={fileShareSourceIdentifier} style={{ flex: 1 }}>
-      <View className="flex-1" onLayout={handleViewportLayout}>
-        <View className="flex-1">
+      <View className="flex-1 overflow-hidden" onLayout={handleViewportLayout}>
+        <View className="flex-1 overflow-hidden">
           <KeyboardAwareLegendList
             ref={props.listRef}
             // The empty↔filled key remounts the list when messages first
@@ -2920,9 +2974,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
                     },
                   }
             }
-            maintainVisibleContentPosition={
-              endFollowEnabled && !disclosureToggleSettling ? false : maintainVisibleContentPosition
-            }
+            maintainVisibleContentPosition={listMaintainVisibleContentPosition}
             data={presentedFeed}
             extraData={listAppearanceData}
             renderItem={renderItem}
@@ -2956,7 +3008,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // clamped to 0. This prop disables that clamp; UIKit still bounces
             // user overscroll back to the adjusted rest position.
             scrollToOverflowEnabled
-            estimatedItemSize={180}
+            estimatedItemSize={THREAD_FEED_ESTIMATED_ITEM_SIZE}
             // Chat-style bottom alignment: when a thread is shorter than the
             // viewport, pad above the content so messages rest just above the
             // composer instead of under the header. No effect on threads that

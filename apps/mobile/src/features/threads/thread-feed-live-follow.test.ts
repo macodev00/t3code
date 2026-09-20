@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   resolveThreadFeedLiveFollow,
   resolveThreadFeedSubmissionAnchor,
+  resolveThreadFeedVisibleContentPosition,
   resolveThreadWorkGroupInitialScroll,
   shouldFollowThreadWorkGroupAppend,
 } from "./thread-feed-live-follow";
@@ -219,5 +220,31 @@ describe("resolveThreadFeedLiveFollow", () => {
 
   it("re-arms after an explicit reset", () => {
     expect(resolveThreadFeedLiveFollow(false, { type: "reset" })).toBe(true);
+  });
+});
+
+describe("resolveThreadFeedVisibleContentPosition", () => {
+  it("keeps size stabilization on while following so a tall measure cannot land in a gap", () => {
+    expect(
+      resolveThreadFeedVisibleContentPosition({
+        endFollowEnabled: true,
+        disclosureToggleSettling: false,
+      }),
+    ).toEqual({ data: false, size: true });
+  });
+
+  it("restores data anchoring after follow pauses or a disclosure is settling", () => {
+    expect(
+      resolveThreadFeedVisibleContentPosition({
+        endFollowEnabled: false,
+        disclosureToggleSettling: false,
+      }),
+    ).toEqual({ data: true, size: true });
+    expect(
+      resolveThreadFeedVisibleContentPosition({
+        endFollowEnabled: true,
+        disclosureToggleSettling: true,
+      }),
+    ).toEqual({ data: true, size: true });
   });
 });

@@ -88,3 +88,18 @@ export function resolveThreadFeedLiveFollow(
       return current;
   }
 }
+
+/**
+ * Size anchoring stays on while follow is armed so a tall unmeasured row can
+ * mount on the first drag without a JS MVCP off→on gap. Data anchoring stays
+ * off during follow so maintainScrollAtEnd can absorb pending-message swaps.
+ */
+export function resolveThreadFeedVisibleContentPosition(input: {
+  readonly endFollowEnabled: boolean;
+  readonly disclosureToggleSettling: boolean;
+}): { readonly data: boolean; readonly size: true } {
+  return {
+    data: !(input.endFollowEnabled && !input.disclosureToggleSettling),
+    size: true,
+  };
+}
