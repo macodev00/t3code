@@ -32,6 +32,7 @@ import type * as NodeStream from "node:stream";
 import * as Yauzl from "yauzl";
 
 import { ServerConfig } from "../config.ts";
+import { expandHomePathWith } from "../pathExpansion.ts";
 import { makeAntigravityAcpRuntime } from "./acp/AntigravityAcpSupport.ts";
 import {
   buildAntigravityAcpSpawnInput,
@@ -372,8 +373,15 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
     candidate: string,
     source: "override" | "path",
   ) {
-    if (!(yield* executableFile(candidate))) return null;
-    const executablePath = yield* fs.realPath(candidate);
+    // Manual CDN extracts are often a directory. Health checks resolve the
+    // ACP file inside it instead of treating the folder as missing.
+    const info = yield* fs.stat(candidate).pipe(Effect.option);
+    const executableCandidate =
+      Option.isSome(info) && info.value.type === "Directory"
+        ? path.join(candidate, names.executable)
+        : candidate;
+    if (!(yield* executableFile(executableCandidate))) return null;
+    const executablePath = yield* fs.realPath(executableCandidate);
     const directory = path.dirname(executablePath);
     const harnessPath = path.join(directory, names.harness);
     if (!(yield* executableFile(harnessPath))) return null;
@@ -413,10 +421,11 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
     function* (binaryPath?: string, processEnvironment?: NodeJS.ProcessEnv) {
       const override = binaryPath?.trim();
       if (override) {
+        const expanded = expandHomePathWith(override, path);
         const candidates =
-          path.isAbsolute(override) || override.includes("/") || override.includes("\\")
-            ? [path.resolve(override)]
-            : pathCandidates(override, processEnvironment);
+          path.isAbsolute(expanded) || expanded.includes("/") || expanded.includes("\\")
+            ? [path.resolve(expanded)]
+            : pathCandidates(expanded, processEnvironment);
         for (const candidate of candidates) {
           const selected = yield* fromExternal(candidate, "override");
           if (selected) return selected;

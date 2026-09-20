@@ -22,6 +22,8 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as NodeCrypto from "node:crypto";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import {
   makeAntigravityInstallation,
@@ -746,6 +748,18 @@ it.layer(NodeServices.layer)("Antigravity installation", (it) => {
           source: "override",
           managedVersionDirectory: null,
         });
+        expect(yield* installation.resolve(externalDirectory)).toMatchObject({
+          executablePath: externalExecutable,
+          source: "override",
+          managedVersionDirectory: null,
+        });
+        const relativeFromHome = NodePath.relative(NodeOS.homedir(), externalDirectory);
+        expect(
+          yield* installation.resolve(`~/${relativeFromHome.split(NodePath.sep).join("/")}`),
+        ).toMatchObject({
+          executablePath: externalExecutable,
+          source: "override",
+        });
         expect(yield* installation.resolve(executableName)).toMatchObject({
           source: "override",
         });
@@ -753,9 +767,17 @@ it.layer(NodeServices.layer)("Antigravity installation", (it) => {
         expect(yield* installation.resolve(externalExecutable).pipe(Effect.flip)).toMatchObject({
           operation: "resolve",
         });
+        expect(yield* installation.resolve(externalDirectory).pipe(Effect.flip)).toMatchObject({
+          operation: "resolve",
+        });
         expect(
           yield* installation.resolve(path.join(baseDir, "missing")).pipe(Effect.flip),
         ).toMatchObject({
+          operation: "resolve",
+        });
+        const emptyDirectory = path.join(baseDir, "empty");
+        yield* fs.makeDirectory(emptyDirectory);
+        expect(yield* installation.resolve(emptyDirectory).pipe(Effect.flip)).toMatchObject({
           operation: "resolve",
         });
         yield* expectPreviousRelease(installation);
