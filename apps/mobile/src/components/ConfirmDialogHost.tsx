@@ -42,6 +42,7 @@ export function showConfirmDialog(request: ConfirmDialogRequest): void {
   presentRequest?.({ kind: "confirm", request });
 }
 
+/** Imperative text-input dialog, Alert.prompt-shaped. Requires ConfirmDialogHost. */
 export function showTextInputDialog(request: TextInputDialogRequest): void {
   presentRequest?.({ kind: "text-input", request });
 }
@@ -65,11 +66,13 @@ export function ConfirmDialogHost() {
     };
   }, []);
 
+  /** Dismiss the presented dialog without confirming. */
   const handleCancel = useCallback(() => {
     presented?.request.onCancel?.();
     setPresented(null);
   }, [presented]);
 
+  /** Confirm the presented dialog, passing text-input value when present. */
   const handleConfirm = useCallback(
     (nativeInputValue?: string) => {
       if (presented?.kind === "confirm") {

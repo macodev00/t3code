@@ -11,7 +11,9 @@ import {
 
 const OFFLINE_DIRECT_ID = EnvironmentId.make("offline-direct");
 
+/** Confirm, remove, and persist-failure behavior for Settings → Environments trash. */
 describe("presentRemoveSavedEnvironment", () => {
+  /** Offline rows still get a confirm even without a connected-list label. */
   it("presents a confirm for an offline direct environment even without a list label", () => {
     const presentConfirm = vi.fn();
     const remove = vi.fn();
@@ -33,6 +35,7 @@ describe("presentRemoveSavedEnvironment", () => {
     });
   });
 
+  /** Confirm runs the catalog remove and does not present an error on success. */
   it("removes the catalog target after confirm", async () => {
     const presentConfirm = vi.fn();
     const presentError = vi.fn();
@@ -52,6 +55,7 @@ describe("presentRemoveSavedEnvironment", () => {
     expect(presentError).not.toHaveBeenCalled();
   });
 
+  /** Keychain persist failure is shown and the row is not treated as removed. */
   it("surfaces a persist failure and does not treat the row as removed", async () => {
     const presentConfirm = vi.fn();
     const presentError = vi.fn();

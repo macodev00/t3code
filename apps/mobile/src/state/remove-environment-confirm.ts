@@ -17,6 +17,7 @@ export type RemoveEnvironmentConfirmRequest = {
   readonly onConfirm: () => void;
 };
 
+/** Prefer a trimmed display name, otherwise the environment id. */
 function resolveRemoveEnvironmentLabel(
   environmentLabel: string | undefined,
   environmentId: EnvironmentId,
@@ -25,10 +26,12 @@ function resolveRemoveEnvironmentLabel(
   return trimmed === undefined || trimmed.length === 0 ? environmentId : trimmed;
 }
 
+/** Body copy for the remove-from-this-device confirm. */
 function removeEnvironmentConfirmMessage(label: string): string {
   return `Forget ${label} and its cached threads on this device. Switch it off instead to keep it saved.`;
 }
 
+/** Persist-failure copy; use the Error message when one exists. */
 function removeEnvironmentFailureMessage(cause: unknown): string {
   return cause instanceof Error
     ? cause.message
@@ -54,12 +57,14 @@ export function presentRemoveSavedEnvironment(input: {
     message: removeEnvironmentConfirmMessage(label),
     confirmText: "Remove",
     destructive: true,
+    /** After confirm, persist catalog removal and surface a Keychain write failure. */
     onConfirm: () => {
       void removeSavedEnvironment(input.remove, input.environmentId, input.presentError);
     },
   });
 }
 
+/** Drop the catalog row, then show an error if the Keychain write fails. */
 async function removeSavedEnvironment(
   remove: (environmentId: EnvironmentId) => Promise<AtomCommandResult<unknown, unknown>>,
   environmentId: EnvironmentId,

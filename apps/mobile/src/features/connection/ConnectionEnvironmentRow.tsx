@@ -21,6 +21,7 @@ import { serverEnvironment } from "../../state/server";
 import { ConnectionFormField } from "./ConnectionFormField";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 
+/** Compact connection status under the environment label, or Off when disabled. */
 function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string | null {
   if (!environment.isEnabled && environment.connectionState !== "unsupported") {
     return "Off";
@@ -32,6 +33,7 @@ function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string
   });
 }
 
+/** One saved-environment row in Settings, including the iOS trash control. */
 export function ConnectionEnvironmentRow(props: {
   readonly environment: ConnectedEnvironmentSummary;
   readonly expanded: boolean;
