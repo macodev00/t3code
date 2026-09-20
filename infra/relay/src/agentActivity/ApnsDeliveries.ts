@@ -154,15 +154,28 @@ function parsePreferences(value: string): RelayAgentAwarenessPreferences | null 
   return Option.getOrNull(decodeRelayAgentAwarenessPreferencesJson(value));
 }
 
+/**
+ * True when any activity is waiting for approval or input.
+ *
+ * @param aggregate - Current Live Activity aggregate
+ * @returns Whether the lock screen should show an attention state
+ */
 function aggregateNeedsAttention(aggregate: RelayAgentActivityAggregateState): boolean {
-  return aggregate.activities.some(
-    (row) => row.phase === "waiting_for_approval" || row.phase === "waiting_for_input",
-  );
+  for (const row of aggregate.activities) {
+    if (row.phase === "waiting_for_approval" || row.phase === "waiting_for_input") {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
  * True when a previously observed thread changed phase.
  * Rows are matched by `environmentId` and `threadId`.
+ *
+ * @param previous - Aggregate already delivered to this Live Activity
+ * @param next - Newly observed aggregate
+ * @returns Whether any matched thread changed phase
  */
 function aggregateHasPhaseChange(
   previous: RelayAgentActivityAggregateState,
@@ -184,6 +197,9 @@ function aggregateHasPhaseChange(
 /**
  * Queue a Live Activity update on first delivery, exempt changes
  * (activeCount, attention, newly-terminal, or phase), or after the 15s throttle.
+ *
+ * @param input - Previous/next aggregates, last delivery time, and now
+ * @returns Whether an update should be queued
  */
 function shouldUpdateLiveActivity(input: {
   readonly previousAggregate: RelayAgentActivityAggregateState | null;

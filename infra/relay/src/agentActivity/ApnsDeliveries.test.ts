@@ -259,6 +259,8 @@ function makeLayer(input: {
 /**
  * Regression for starting→running inside the 15s Live Activity throttle:
  * both updates must queue, and the second payload is the running aggregate.
+ *
+ * @returns Effect that drives both deliveries and asserts the queued jobs
  */
 function queuesLiveActivityUpdateOnStartingToRunningPhaseChange() {
   const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
@@ -286,11 +288,7 @@ function queuesLiveActivityUpdateOnStartingToRunningPhaseChange() {
     ],
   };
 
-  /**
-   * Send starting then running four seconds later and assert both
-   * `live_activity_update` jobs, with phase running / Working on the second.
-   */
-  function* sendStartingThenRunningLiveActivityUpdates() {
+  return Effect.gen(function* () {
     const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
     const first = yield* deliveries.sendForTarget({
       target,
@@ -331,11 +329,7 @@ function queuesLiveActivityUpdateOnStartingToRunningPhaseChange() {
         },
       },
     ]);
-  }
-
-  return Effect.gen(sendStartingThenRunningLiveActivityUpdates).pipe(
-    Effect.provide(makeLayer({ attempts, queuedJobs })),
-  );
+  }).pipe(Effect.provide(makeLayer({ attempts, queuedJobs })));
 }
 
 describe("ApnsDeliveries", () => {
