@@ -73,6 +73,7 @@ export const THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION = {
   size: true,
 } as const;
 
+/** Size-only restoration while following so estimate→actual corrections cannot land in a drag gap. */
 export function resolveThreadFeedVisibleContentPosition<Position>(input: {
   readonly following: boolean;
   readonly disclosureSettling: boolean;

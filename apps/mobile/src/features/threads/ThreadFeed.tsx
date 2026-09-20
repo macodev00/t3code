@@ -1948,6 +1948,7 @@ function ThreadFeedPlaceholder(props: {
   );
 }
 
+/** Virtualized thread transcript that pins to live appends and restores history scroll. */
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();

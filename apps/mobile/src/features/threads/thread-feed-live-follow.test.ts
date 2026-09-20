@@ -224,40 +224,57 @@ describe("resolveThreadFeedLiveFollow", () => {
   });
 });
 
-describe("resolveThreadFeedVisibleContentPosition", () => {
-  const readingPosition = {
-    data: true,
-    size: true,
-    shouldRestorePosition: () => true,
-  };
+describe(
+  "resolveThreadFeedVisibleContentPosition",
+  /** Chooses follow vs history visible-content restoration. */
+  () => {
+    const readingPosition = {
+      data: true,
+      size: true,
+      /** LegendList predicate stub; these cases assert object identity, not this callback. */
+      shouldRestorePosition: () => true,
+    };
 
-  it("keeps size restoration armed while following so the first upward drag cannot measure in a gap", () => {
-    expect(
-      resolveThreadFeedVisibleContentPosition({
-        following: true,
-        disclosureSettling: false,
-        readingPosition,
-      }),
-    ).toEqual(THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION);
-  });
+    it(
+      "keeps size restoration armed while following so the first upward drag cannot measure in a gap",
+      /** Returns the size-only follow position so the first upward drag cannot measure in a gap. */
+      () => {
+        expect(
+          resolveThreadFeedVisibleContentPosition({
+            following: true,
+            disclosureSettling: false,
+            readingPosition,
+          }),
+        ).toEqual(THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION);
+      },
+    );
 
-  it("keeps full restoration while reading history", () => {
-    expect(
-      resolveThreadFeedVisibleContentPosition({
-        following: false,
-        disclosureSettling: false,
-        readingPosition,
-      }),
-    ).toBe(readingPosition);
-  });
+    it(
+      "keeps full restoration while reading history",
+      /** Returns the caller's reading position while history is on screen. */
+      () => {
+        expect(
+          resolveThreadFeedVisibleContentPosition({
+            following: false,
+            disclosureSettling: false,
+            readingPosition,
+          }),
+        ).toBe(readingPosition);
+      },
+    );
 
-  it("keeps full restoration while a disclosure settles even if follow is still armed", () => {
-    expect(
-      resolveThreadFeedVisibleContentPosition({
-        following: true,
-        disclosureSettling: true,
-        readingPosition,
-      }),
-    ).toBe(readingPosition);
-  });
-});
+    it(
+      "keeps full restoration while a disclosure settles even if follow is still armed",
+      /** Returns the reading position while a disclosure settles, even if follow is still armed. */
+      () => {
+        expect(
+          resolveThreadFeedVisibleContentPosition({
+            following: true,
+            disclosureSettling: true,
+            readingPosition,
+          }),
+        ).toBe(readingPosition);
+      },
+    );
+  },
+);
