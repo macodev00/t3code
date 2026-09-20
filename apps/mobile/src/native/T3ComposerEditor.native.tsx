@@ -88,12 +88,17 @@ interface NativeComposerEditorProps extends ViewProps {
   readonly autoFocus: boolean;
   readonly autoCorrect: boolean;
   readonly spellCheck: boolean;
+  /** Native text-change handler. */
   readonly onComposerChange: (event: NativeEditorEvent) => void;
+  /** Native caret-move handler. */
   readonly onComposerSelectionChange?: (event: NativeSelectionEvent) => void;
+  /** Native image-paste handler. */
   readonly onComposerPasteImages?: (event: NativePasteImagesEvent) => void;
+  /** Native chip-press handler. */
   readonly onComposerContextPress?: (
     event: NativeSyntheticEvent<{ source: string; start: number; end: number }>,
   ) => void;
+  /** Native T3-context clipboard paste handler. */
   readonly onComposerPasteContext?: (
     event: NativePasteTextEvent & NativeSyntheticEvent<{ fragment: string; html: string }>,
   ) => void;
@@ -319,6 +324,50 @@ export function ComposerEditor({
     setMostRecentEventCount(acknowledgedEventCount);
     forceNativeEventRender(incrementRenderSequence);
   }
+  /** Forward native image-paste URIs to the host. */
+  function handleComposerPasteImages(event: NativePasteImagesEvent) {
+    onPasteImages?.(event.nativeEvent.uris);
+  }
+  /** Forward a native chip press to the host. */
+  function handleComposerContextPress(
+    event: NativeSyntheticEvent<{ source: string; start: number; end: number }>,
+  ) {
+    props.onContextPress?.(event.nativeEvent);
+  }
+  /** Apply a native T3-context paste and notify the host. */
+  function handleComposerPasteContext(
+    event: NativePasteTextEvent & NativeSyntheticEvent<{ fragment: string; html: string }>,
+  ) {
+    const paste = event.nativeEvent;
+    const acknowledgedEventCount = acceptNativeEvent(
+      paste.eventCount,
+      paste.value,
+      paste.selection,
+    );
+    if (acknowledgedEventCount === false) return;
+    onChangeText(paste.value);
+    onSelectionChange?.(paste.selection);
+    props.onPasteContext?.(paste);
+    setMostRecentEventCount(acknowledgedEventCount);
+    forceNativeEventRender(incrementRenderSequence);
+  }
+  /** Apply a native clipboard text paste and notify the host. */
+  function handleComposerPasteText(event: NativePasteTextEvent) {
+    const paste = event.nativeEvent;
+    const acknowledgedEventCount = acceptNativeEvent(
+      paste.eventCount,
+      paste.value,
+      paste.selection,
+    );
+    if (acknowledgedEventCount === false) return;
+    // Synchronize the draft before an async paste captures its insertion target.
+    // React props can still precede the last native keystroke.
+    onChangeText(paste.value);
+    onSelectionChange?.(paste.selection);
+    onPasteText?.(paste);
+    setMostRecentEventCount(acknowledgedEventCount);
+    forceNativeEventRender(incrementRenderSequence);
+  }
   return (
     <TextInputWrapper onPaste={handlePaste} style={[{ minHeight: 0 }, resolvedStyle]}>
       <NativeView
@@ -356,38 +405,10 @@ export function ComposerEditor({
         onComposerContentSizeChange={onNativeContentSizeChange}
         onComposerChange={handleComposerChange}
         onComposerSelectionChange={handleComposerSelectionChange}
-        onComposerPasteImages={(event) => onPasteImages?.(event.nativeEvent.uris)}
-        onComposerContextPress={(event) => props.onContextPress?.(event.nativeEvent)}
-        onComposerPasteContext={(event) => {
-          const paste = event.nativeEvent;
-          const acknowledgedEventCount = acceptNativeEvent(
-            paste.eventCount,
-            paste.value,
-            paste.selection,
-          );
-          if (acknowledgedEventCount === false) return;
-          onChangeText(paste.value);
-          onSelectionChange?.(paste.selection);
-          props.onPasteContext?.(paste);
-          setMostRecentEventCount(acknowledgedEventCount);
-          forceNativeEventRender((sequence) => sequence + 1);
-        }}
-        onComposerPasteText={(event) => {
-          const paste = event.nativeEvent;
-          const acknowledgedEventCount = acceptNativeEvent(
-            paste.eventCount,
-            paste.value,
-            paste.selection,
-          );
-          if (acknowledgedEventCount === false) return;
-          // Synchronize the draft before an async paste captures its insertion target.
-          // React props can still precede the last native keystroke.
-          onChangeText(paste.value);
-          onSelectionChange?.(paste.selection);
-          onPasteText?.(paste);
-          setMostRecentEventCount(acknowledgedEventCount);
-          forceNativeEventRender((sequence) => sequence + 1);
-        }}
+        onComposerPasteImages={handleComposerPasteImages}
+        onComposerContextPress={handleComposerContextPress}
+        onComposerPasteContext={handleComposerPasteContext}
+        onComposerPasteText={handleComposerPasteText}
         onComposerFocus={onFocus}
         onComposerBlur={onBlur}
       />
