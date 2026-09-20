@@ -736,6 +736,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
+  /** Leftover in-progress execute tools must not emit local_bash task events after end_turn. */
   it.effect("does not pin Monitoring when an execute tool is still inProgress at end_turn", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
