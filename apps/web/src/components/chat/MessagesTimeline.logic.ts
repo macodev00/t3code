@@ -502,6 +502,7 @@ function expandedWorkGroupRow(
   };
 }
 
+/** True when every remaining timeline entry is a user message (a mid-turn steer). */
 function remainderIsOnlyUserMessages(
   timelineEntries: ReadonlyArray<TimelineEntry>,
   fromIndex: number,
@@ -515,6 +516,7 @@ function remainderIsOnlyUserMessages(
   return true;
 }
 
+/** Stable non-live work-live row id derived from a work group id. */
 function workLiveRowIdFromGroupId(groupId: string): string {
   return `work-live:${groupId.startsWith("work-group:") ? groupId.slice("work-group:".length) : groupId}`;
 }
@@ -561,6 +563,7 @@ export function getFixedMessagesTimelineItemSize(row: MessagesTimelineRow): numb
   }
 }
 
+/** Fixed chrome height, expanded-group estimate, or LegendList's 90px default. */
 export function estimateMessagesTimelineItemSize(row: MessagesTimelineRow): number {
   const fixed = getFixedMessagesTimelineItemSize(row);
   if (fixed !== undefined) {
@@ -606,6 +609,7 @@ export function messagesTimelineHeightSignature(rows: ReadonlyArray<MessagesTime
   return signature;
 }
 
+/** LegendList extraData key: thread identity plus expanded-row height signature. */
 export function messagesTimelineListExtraData(
   listIdentityKey: string,
   rows: ReadonlyArray<MessagesTimelineRow>,
@@ -636,6 +640,7 @@ export function layoutMessagesTimelineRows(
   });
 }
 
+/** True when two stacked timeline row rectangles share vertical space. */
 export function messagesTimelineRowRectsOverlap(
   a: MessagesTimelineRowRect,
   b: MessagesTimelineRowRect,

@@ -3906,6 +3906,7 @@ describe("live tool group placement across a steer", () => {
   const turnId = TurnId.make("turn-steer-overlap");
   const startedAt = "2026-01-01T00:00:00Z";
 
+  /** Timeline user-message entry for steer-overlap layout tests. */
   const userEntry = (id: string, at: string, text: string) => ({
     id: `${id}-entry`,
     kind: "message" as const,
@@ -3921,6 +3922,7 @@ describe("live tool group placement across a steer", () => {
     },
   });
 
+  /** Sequential command work entries; the last one stays in progress. */
   const commandEntries = (count: number) =>
     Array.from({ length: count }, (_, index) => ({
       id: `tool-entry-${index}`,
@@ -3939,6 +3941,7 @@ describe("live tool group placement across a steer", () => {
       },
     }));
 
+  /** Running-turn timeline input with `toolCount` expanded live command rows. */
   const liveInput = (toolCount: number) => {
     const tools = commandEntries(toolCount);
     const groupId = `work-group:tool:${turnId}:call-0`;
