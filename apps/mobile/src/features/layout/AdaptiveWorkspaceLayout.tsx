@@ -81,6 +81,7 @@ interface AdaptiveWorkspaceContextValue {
   readonly showAuxiliaryPane: (role: WorkspaceAuxiliaryPaneRole) => void;
   readonly toggleAuxiliaryPane: () => void;
   readonly togglePrimarySidebar: () => void;
+  readonly revealPrimarySidebar: () => void;
   readonly setAuxiliaryPaneWidth: (width: number) => void;
 }
 
@@ -107,6 +108,7 @@ const AdaptiveWorkspaceContext = createContext<AdaptiveWorkspaceContextValue>({
   showAuxiliaryPane: () => undefined,
   toggleAuxiliaryPane: () => undefined,
   togglePrimarySidebar: () => undefined,
+  revealPrimarySidebar: () => undefined,
   setAuxiliaryPaneWidth: () => undefined,
 });
 
@@ -238,6 +240,11 @@ function AdaptiveWorkspaceLayoutContent(
   const navigation = useNavigation();
   const activeRoleOwner = useRef<symbol | null>(null);
   const [primarySidebarPreferredVisible, setPrimarySidebarPreferredVisible] = useState(true);
+  // Home always shows the list; persist that so opening a thread does not
+  // immediately hide it again after a Terminal maximize.
+  if (pathname === "/" && !primarySidebarPreferredVisible) {
+    setPrimarySidebarPreferredVisible(true);
+  }
   const showPrimarySidebar = pathname === "/" || primarySidebarPreferredVisible;
   const [supplementaryPanePreferredVisible, setSupplementaryPanePreferredVisible] = useState(true);
   const [supplementaryPanePreferredWidth, setSupplementaryPanePreferredWidth] = useState<
@@ -546,6 +553,7 @@ function AdaptiveWorkspaceLayoutContent(
       showAuxiliaryPane,
       toggleAuxiliaryPane,
       togglePrimarySidebar,
+      revealPrimarySidebar,
       setAuxiliaryPaneWidth,
     }),
     [
@@ -556,6 +564,7 @@ function AdaptiveWorkspaceLayoutContent(
       panes,
       primarySidebarSearchQuery,
       registerWorkspaceInspector,
+      revealPrimarySidebar,
       showAuxiliaryPane,
       setPrimarySidebarSearchQuery,
       setAuxiliaryPaneWidth,

@@ -9,6 +9,7 @@ import { useProjects, useThreadShells } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
+import { shouldOfferSidebarReveal } from "../../lib/layout";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { WorkspaceEmptyDetail } from "../layout/WorkspaceEmptyDetail";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
@@ -27,7 +28,7 @@ import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle
 
 export function HomeRouteScreen() {
   const { width: windowWidth } = useWindowDimensions();
-  const { layout, panes } = useAdaptiveWorkspaceLayout();
+  const { layout, panes, revealPrimarySidebar } = useAdaptiveWorkspaceLayout();
   const projects = useProjects();
   const threads = useThreadShells();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
@@ -135,6 +136,15 @@ export function HomeRouteScreen() {
                     screen: "SettingsContent",
                     params: { screen: "SettingsEnvironmentNew" },
                   })
+              : undefined
+          }
+          onShowThreads={
+            Platform.OS === "android" &&
+            shouldOfferSidebarReveal({
+              primarySidebarVisible: panes.primarySidebarVisible,
+              hasHeaderSidebarToggle: false,
+            })
+              ? revealPrimarySidebar
               : undefined
           }
           onStartNewTask={
