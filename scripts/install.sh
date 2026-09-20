@@ -208,7 +208,16 @@ else
   step "Extracting T3 Code..."
   tar -xzf "${staging}/${archive}" -C "$staging" --strip-components=1
   rm -f "${staging}/${archive}" "${staging}/SHA256SUMS"
-  "${staging}/t3" --version >/dev/null || fail "the downloaded executable does not run"
+  if ! smoke_out="$("${staging}/t3" --version 2>&1)"; then
+    if [ "$platform" = linux ]; then
+      case "$smoke_out" in
+        *"Exec format error"* | *"ENOEXEC"*)
+          fail "the downloaded executable does not run. Oracle Linux UEK8 kernels reject Node SEA notes larger than 4 MB (ENOEXEC). Boot Oracle RHCK or a mainline-based kernel, or build from source and run node apps/server/dist/bin.mjs. ENOEXEC can also mean a corrupt or wrong-architecture file."
+          ;;
+      esac
+    fi
+    fail "the downloaded executable does not run"
+  fi
   printf '%s\n' "$version" > "${staging}/.install-complete"
 
   rm -rf "$target_dir"

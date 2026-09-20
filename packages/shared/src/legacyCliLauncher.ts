@@ -10,6 +10,18 @@
  * Remove it once no supported release predates the executable (after the
  * first stable release that ships it).
  */
+
+/**
+ * UEK8's `load_elf_binary()` returns ENOEXEC when a PT_NOTE exceeds 4 MB.
+ * The CLI is a Node SEA, so that blob is large by design. Node spawn uses
+ * execvp, which retries ENOEXEC via /bin/sh, so the failure often arrives as
+ * status 126 with no error object. ENOEXEC can also mean a corrupt or
+ * wrong-architecture file; this is the likely cause on Linux when the file
+ * exists.
+ */
+export const linuxCliExecFormatErrorHint =
+  "t3: Oracle Linux UEK8 kernels reject Node SEA notes larger than 4 MB (ENOEXEC). Boot Oracle RHCK or a mainline-based kernel, or build from source and run node apps/server/dist/bin.mjs. ENOEXEC can also mean a corrupt or wrong-architecture file.";
+
 export function legacyCliLauncherScript(): string {
   return `import { spawn } from "node:child_process";
 import { constants } from "node:os";
@@ -25,6 +37,9 @@ const child = spawn(executable, process.argv.slice(2), {
 const fail = (error) => {
   if (!error) return;
   process.stderr.write("t3: " + error.message + "\\n");
+  if (error.code === "ENOEXEC" && process.platform === "linux") {
+    process.stderr.write(${JSON.stringify(linuxCliExecFormatErrorHint + "\n")});
+  }
   child.kill("SIGTERM");
   process.exitCode = 1;
 };
@@ -37,6 +52,11 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => child.kill(signal));
 }
 child.on("error", (error) => { fail(error); process.exit(1); });
-child.on("exit", (code, signal) => process.exit(code ?? 128 + (constants.signals[signal] || 1)));
+child.on("exit", (code, signal) => {
+  if (code === 126 && process.platform === "linux") {
+    process.stderr.write(${JSON.stringify(linuxCliExecFormatErrorHint + "\n")});
+  }
+  process.exit(code ?? 128 + (constants.signals[signal] || 1));
+});
 `;
 }
