@@ -288,6 +288,7 @@ function localImagePath(imagePath: string | undefined): string | undefined {
   return /^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:[\\/]/i.test(path) ? undefined : path;
 }
 
+/** Copy native execute command, cwd, and output onto the tool call used by later updates. */
 export function normalizeAntigravityToolCall(toolCall: AcpToolCallState): AcpToolCallState {
   const input = Option.getOrUndefined(decodeNativeToolFields(toolCall.data.rawInput));
   const output = Option.getOrUndefined(decodeNativeToolFields(toolCall.data.rawOutput));

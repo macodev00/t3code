@@ -285,6 +285,7 @@ const readClientTextFile = Effect.fn("AntigravityAdapter.readClientTextFile")(fu
   return { content: lines.slice(start, end).join("\n") };
 });
 
+/** Writes an ACP client text file after resolving it inside the session roots. */
 const writeClientTextFile = Effect.fn("AntigravityAdapter.writeClientTextFile")(function* (input: {
   readonly fileSystem: FileSystem.FileSystem;
   readonly path: Path.Path;
