@@ -947,30 +947,6 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       }).pipe(Effect.scoped),
     );
 
-  const promoteBackgroundCommands = (context: SessionContext) =>
-    context.commandLock.withPermit(
-      Effect.gen(function* () {
-        for (const [id, command] of context.commands) {
-          if (command.promoted) continue;
-          yield* emit({
-            type: "task.started",
-            ...(yield* stamp),
-            provider: PROVIDER,
-            threadId: context.threadId,
-            turnId: command.turnId,
-            payload: {
-              taskId: RuntimeTaskId.make(id),
-              taskType: "local_bash",
-              toolUseId: id,
-              description:
-                command.toolCall.command ?? command.toolCall.title ?? "Antigravity command",
-            },
-          });
-          context.commands.set(id, { ...command, promoted: true });
-        }
-      }),
-    );
-
   const sendTurn: Adapter["sendTurn"] = Effect.fn("AntigravityAdapter.sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
     if (input.modelSelection && input.modelSelection.instanceId !== options.instanceId) {
@@ -995,7 +971,11 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       Effect.gen(function* () {
         if (turn.settled || context.stopped || context.generation !== turn.generation) return;
         turn.settled = true;
-        yield* promoteBackgroundCommands(context);
+        // Gemini often returns end_turn while execute tools remain inProgress
+        // and never sends a later completion. Promoting those as local_bash
+        // pinned Monitoring until session teardown. Leave them unpromoted so
+        // the pill clears when the turn finishes; a later native completion
+        // can still close the originating tool call.
         yield* finishSubagents(
           context,
           payload.state === "cancelled"

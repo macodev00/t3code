@@ -343,7 +343,7 @@ export function normalizeAntigravityToolCall(toolCall: AcpToolCallState): AcpToo
   };
 }
 
-/** Only commands still running after end_turn become background tasks. */
+/** Execute tools still running so later native updates can close them. */
 export function isAntigravityOpenCommand(toolCall: AcpToolCallState): boolean {
   return toolCall.kind === "execute" && toolCall.status === "inProgress";
 }

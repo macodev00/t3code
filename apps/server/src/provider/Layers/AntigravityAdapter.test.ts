@@ -736,7 +736,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
-  it.effect("tracks native commands that survive a turn and clears terminal tasks", () =>
+  it.effect("does not pin Monitoring when an execute tool is still inProgress at end_turn", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
       yield* h.adapter.startSession({
@@ -760,18 +760,19 @@ it.layer(layer)("AntigravityAdapter", (it) => {
         rawPayload: {},
       });
       yield* Deferred.succeed(prompt.result, { stopReason: "end_turn" });
-      const turn = yield* Fiber.join(sending);
-      const started = yield* h.waitForEvent((event) => event.type === "task.started");
-      expect(started.payload.taskType).toBe("local_bash");
-      expect(started.turnId).toBe(turn.turnId);
+      yield* Fiber.join(sending);
+      yield* h.waitForEvent((event) => event.type === "turn.completed");
+      expect(h.seen.filter((event) => event.type === "task.started")).toHaveLength(0);
+      expect(h.seen.filter((event) => event.type === "task.completed")).toHaveLength(0);
       yield* h.emitNative({
         _tag: "ToolCallUpdated",
         toolCall: { toolCallId: "watcher-1", kind: "execute", status: "completed", data: {} },
         rawPayload: {},
       });
-      const ended = yield* h.waitForEvent((event) => event.type === "task.completed");
-      expect(ended.payload.taskId).toBe(started.payload.taskId);
-      expect(ended.payload.status).toBe("completed");
+      const ended = yield* h.waitForEvent((event) => event.type === "item.completed");
+      expect(ended.itemId).toBe("watcher-1");
+      expect(h.seen.filter((event) => event.type === "task.started")).toHaveLength(0);
+      expect(h.seen.filter((event) => event.type === "task.completed")).toHaveLength(0);
     }),
   );
 
