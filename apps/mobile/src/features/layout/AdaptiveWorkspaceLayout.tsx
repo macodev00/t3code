@@ -203,6 +203,7 @@ export function useRegisterWorkspaceInspector(render: (() => ReactNode) | undefi
   );
 }
 
+/** Workspace shell that keeps Home’s thread sidebar visible after a Terminal maximize. */
 export function AdaptiveWorkspaceLayout(props: {
   readonly children: ReactNode;
   readonly pathname: string;
