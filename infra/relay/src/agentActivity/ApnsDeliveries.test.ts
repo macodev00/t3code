@@ -652,6 +652,7 @@ describe("ApnsDeliveries", () => {
 
   it.effect(
     "queues an update when phase changes from starting to running inside the throttle window",
+    /** Sends starting then running inside 15s and expects both live_activity_update jobs. */
     () => {
       const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
       const queuedJobs: Array<SignedApnsDeliveryJob> = [];
@@ -678,45 +679,51 @@ describe("ApnsDeliveries", () => {
         ],
       };
 
-      return Effect.gen(function* () {
-        const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
-        const first = yield* deliveries.sendForTarget({
-          target,
-          aggregate: startingAggregate,
-          nowMs: 0,
-        });
-        expect(first?.kind).toBe("live_activity_update");
+      return Effect.gen(
+        /** Drive sendForTarget twice and assert the second payload is the running aggregate. */
+        function* () {
+          const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
+          const first = yield* deliveries.sendForTarget({
+            target,
+            aggregate: startingAggregate,
+            nowMs: 0,
+          });
+          expect(first?.kind).toBe("live_activity_update");
 
-        const second = yield* deliveries.sendForTarget({
-          target: {
-            ...target,
-            last_aggregate_json: JSON.stringify(startingAggregate),
-            last_live_activity_delivery_at: "1970-01-01T00:00:00.000Z",
-          },
-          aggregate: runningAggregate,
-          nowMs: 4_000,
-        });
+          const second = yield* deliveries.sendForTarget({
+            target: {
+              ...target,
+              last_aggregate_json: JSON.stringify(startingAggregate),
+              last_live_activity_delivery_at: "1970-01-01T00:00:00.000Z",
+            },
+            aggregate: runningAggregate,
+            nowMs: 4_000,
+          });
 
-        expect(second?.kind).toBe("live_activity_update");
-        expect(queuedJobs).toMatchObject([
-          {
-            payload: {
-              kind: "live_activity_update",
-              target: {
-                token: "activity-token",
+          expect(second?.kind).toBe("live_activity_update");
+          expect(queuedJobs).toMatchObject([
+            {
+              payload: {
+                kind: "live_activity_update",
+                target: {
+                  token: "activity-token",
+                },
               },
             },
-          },
-          {
-            payload: {
-              kind: "live_activity_update",
-              target: {
-                token: "activity-token",
+            {
+              payload: {
+                kind: "live_activity_update",
+                target: {
+                  token: "activity-token",
+                },
+                aggregate: {
+                  activities: [{ phase: "running", status: "Working" }],
+                },
               },
             },
-          },
-        ]);
-      }).pipe(Effect.provide(makeLayer({ attempts, queuedJobs })));
+          ]);
+        },
+      ).pipe(Effect.provide(makeLayer({ attempts, queuedJobs })));
     },
   );
 

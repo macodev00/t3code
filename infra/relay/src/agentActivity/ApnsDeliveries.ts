@@ -160,6 +160,7 @@ function aggregateNeedsAttention(aggregate: RelayAgentActivityAggregateState): b
   );
 }
 
+/** True when a previously observed thread changed phase (matched by environment and thread). */
 function aggregateHasPhaseChange(
   previous: RelayAgentActivityAggregateState,
   next: RelayAgentActivityAggregateState,
@@ -173,6 +174,7 @@ function aggregateHasPhaseChange(
   });
 }
 
+/** Queue a Live Activity update for first delivery, exempt changes, or after the 15s throttle. */
 function shouldUpdateLiveActivity(input: {
   readonly previousAggregate: RelayAgentActivityAggregateState | null;
   readonly nextAggregate: RelayAgentActivityAggregateState;
