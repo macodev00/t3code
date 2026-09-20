@@ -1,7 +1,12 @@
 import type { DraftId } from "~/composerDraftStore";
 import { useComposerDraftStore } from "~/composerDraftStore";
-import { resolveEnvironmentMachineKind, type ScopedProjectRef } from "@t3tools/contracts";
+import {
+  resolveEnvironmentMachineKind,
+  type EnvironmentId,
+  type ScopedProjectRef,
+} from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { canCreateProjectInEnvironment } from "@t3tools/client-runtime/operations/projects";
 import { FolderPlusIcon } from "lucide-react";
 import { useCallback, useMemo } from "react";
 
@@ -105,16 +110,37 @@ export function DraftHeroHeadline({
       ),
     [environments],
   );
+  const isEnvironmentReachable = useCallback(
+    (environmentId: EnvironmentId) =>
+      canCreateProjectInEnvironment(
+        environments.find((environment) => environment.environmentId === environmentId)?.connection
+          .phase,
+      ),
+    [environments],
+  );
   const projectPickerEntries = useMemo(
     () =>
       buildSidebarProjectPickerEntries({
         groups: projectGroups,
         preferredProjectRef: activeProjectRef,
+        expandMembers: true,
+        isEnvironmentReachable,
       }),
-    [activeProjectRef, projectGroups],
+    [activeProjectRef, isEnvironmentReachable, projectGroups],
   );
   const projectEntryByKey = useMemo(
-    () => new Map(projectPickerEntries.map((entry) => [entry.group.projectKey, entry] as const)),
+    () =>
+      new Map(
+        projectPickerEntries.map(
+          (entry) =>
+            [
+              scopedProjectKey(
+                scopeProjectRef(entry.targetProject.environmentId, entry.targetProject.id),
+              ),
+              entry,
+            ] as const,
+        ),
+      ),
     [projectPickerEntries],
   );
   const activeProjectGroup =
@@ -125,7 +151,7 @@ export function DraftHeroHeadline({
             (projectRef) => scopedProjectKey(projectRef) === scopedProjectKey(activeProjectRef),
           ),
         ) ?? null);
-  const activeProjectKey = activeProjectGroup?.projectKey ?? "";
+  const activeProjectKey = activeProjectRef === null ? "" : scopedProjectKey(activeProjectRef);
   const activeProjectDisplayName = activeProjectGroup?.displayName ?? activeProjectTitle;
   const hasResolvedProject = activeProjectTitle !== null;
   const canChooseProject = projectPickerEntries.length > 0;
@@ -155,7 +181,7 @@ export function DraftHeroHeadline({
           value={activeProjectKey}
           onValueChange={(value) => {
             const entry = projectEntryByKey.get(value as string);
-            if (!entry || value === activeProjectKey) {
+            if (!entry || !entry.reachable || value === activeProjectKey) {
               return;
             }
             const project = entry.targetProject;
@@ -188,11 +214,15 @@ export function DraftHeroHeadline({
             }
           }}
         >
-          {projectPickerEntries.map(({ group }) => {
+          {projectPickerEntries.map(({ group, targetProject, reachable }) => {
+            const value = scopedProjectKey(
+              scopeProjectRef(targetProject.environmentId, targetProject.id),
+            );
             return (
               <MenuRadioItem
-                key={group.projectKey}
-                value={group.projectKey}
+                key={value}
+                value={value}
+                disabled={!reachable}
                 closeOnClick
                 className="[&>span:last-child]:flex [&>span:last-child]:min-w-0 [&>span:last-child]:items-center [&>span:last-child]:gap-2"
               >
@@ -207,7 +237,7 @@ export function DraftHeroHeadline({
                 </Tooltip>
                 {showProjectEnvironments ? (
                   <ProjectEnvironmentBadge
-                    group={group}
+                    group={{ memberProjects: [targetProject] }}
                     primaryEnvironmentId={primaryEnvironmentId}
                     machineByEnvironmentId={environmentMachineById}
                   />

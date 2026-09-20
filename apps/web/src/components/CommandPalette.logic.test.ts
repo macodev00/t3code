@@ -364,6 +364,19 @@ describe("buildProjectActionItems", () => {
     );
     expect(iconTitles).toEqual(["fleet"]);
   });
+
+  it("marks unreachable projects disabled", () => {
+    const project = makeProject({ title: "fleet" });
+    const [item] = buildProjectActionItems({
+      projects: [{ ...project, displayName: "fleet" }],
+      valuePrefix: "new-thread-in",
+      icon: () => null,
+      runProject: async () => undefined,
+      isDisabled: () => true,
+    });
+
+    expect(item?.disabled).toBe(true);
+  });
 });
 
 describe("buildThreadActionItems", () => {

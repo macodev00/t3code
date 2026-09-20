@@ -2,8 +2,23 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import type { RuntimeMode } from "@t3tools/contracts";
 
 const testState = vi.hoisted(() => {
+  const remoteProject = {
+    id: "project-remote",
+    environmentId: "environment-ssh",
+    workspaceRoot: "/remote/project",
+    defaultThreadEnvMode: null,
+    defaultModelSelection: null,
+  };
+  const localProject = {
+    id: "project-local",
+    environmentId: "environment-primary",
+    workspaceRoot: "/local/project",
+    defaultThreadEnvMode: null,
+    defaultModelSelection: null,
+  };
   let completeProjectFileRead: (value: null) => void = () => undefined;
   let projectFileRead = Promise.resolve<null>(null);
+  let projectFileReadCalls = 0;
   let targetSettings = {
     defaultThreadEnvMode: "local" as "local" | "worktree",
     newWorktreesStartFromOrigin: false,
@@ -16,6 +31,19 @@ const testState = vi.hoisted(() => {
     readonly promotedTo: null;
     readonly threadId: string;
   } | null = null;
+  let projects = [remoteProject];
+  let environments = [
+    {
+      environmentId: "environment-primary",
+      label: "Local",
+      connection: { phase: "connected" },
+    },
+    {
+      environmentId: "environment-ssh",
+      label: "Mac mini",
+      connection: { phase: "connected" },
+    },
+  ];
   const router = {
     state: {
       location: { href: "/" },
@@ -35,6 +63,7 @@ const testState = vi.hoisted(() => {
     setLogicalProjectDraftThreadId: vi.fn(),
     setModelSelection: vi.fn(),
   };
+  const toastAdd = vi.fn();
 
   return {
     completeProjectFileRead: (value: null) => completeProjectFileRead(value),
@@ -42,8 +71,33 @@ const testState = vi.hoisted(() => {
     get projectFileRead() {
       return projectFileRead;
     },
+    get projectFileReadCalls() {
+      return projectFileReadCalls;
+    },
+    incrementProjectFileReadCalls() {
+      projectFileReadCalls += 1;
+    },
     get targetSettings() {
       return targetSettings;
+    },
+    get projects() {
+      return projects;
+    },
+    get environments() {
+      return environments;
+    },
+    toastAdd,
+    remoteProject,
+    localProject,
+    setProjects(nextProjects: typeof projects) {
+      projects = nextProjects;
+    },
+    setEnvironmentPhase(environmentId: string, phase: string) {
+      environments = environments.map((environment) =>
+        environment.environmentId === environmentId
+          ? { ...environment, connection: { phase } }
+          : environment,
+      );
     },
     reset(
       nextStoredDraft: typeof storedDraft,
@@ -59,6 +113,21 @@ const testState = vi.hoisted(() => {
         defaultModelSelection: null,
         defaultRuntimeMode: "full-access",
       };
+      projects = [remoteProject];
+      environments = [
+        {
+          environmentId: "environment-primary",
+          label: "Local",
+          connection: { phase: "connected" },
+        },
+        {
+          environmentId: "environment-ssh",
+          label: "Mac mini",
+          connection: { phase: "connected" },
+        },
+      ];
+      projectFileReadCalls = 0;
+      toastAdd.mockClear();
       router.state.location.href = "/";
       router.navigate.mockClear();
       draftStore.setDraftThreadContext.mockClear();
@@ -92,6 +161,9 @@ vi.mock("@t3tools/client-runtime/environment", () => ({
   scopedProjectKey: () => "remote-project",
   scopeProjectRef: (environmentId: string, projectId: string) => ({ environmentId, projectId }),
   scopeThreadRef: (environmentId: string, threadId: string) => ({ environmentId, threadId }),
+}));
+vi.mock("@t3tools/client-runtime/operations/projects", () => ({
+  canCreateProjectInEnvironment: (phase: string | null | undefined) => phase === "connected",
 }));
 vi.mock("@t3tools/contracts", () => ({
   DEFAULT_RUNTIME_MODE: "default",
@@ -131,13 +203,20 @@ vi.mock("../composerDraftStore", () => {
     useComposerDraftStore,
   };
 });
+vi.mock("../components/ui/toast", () => ({
+  stackedThreadToast: (options: unknown) => options,
+  toastManager: { add: (...args: unknown[]) => testState.toastAdd(...args) },
+}));
 vi.mock("../lib/chatThreadActions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/chatThreadActions")>()),
   hasExplicitComposerModelSelection: () => false,
   resolveNewThreadModelSelectionOverride: () => null,
 }));
 vi.mock("../lib/t3ProjectFileDefaults", () => ({
-  readT3ProjectFileDefaultThreadEnvMode: () => testState.projectFileRead,
+  readT3ProjectFileDefaultThreadEnvMode: () => {
+    testState.incrementProjectFileReadCalls();
+    return testState.projectFileRead;
+  },
 }));
 vi.mock("../lib/utils", () => ({
   newDraftId: () => "draft-delayed",
@@ -149,18 +228,14 @@ vi.mock("../logicalProject", () => ({
   selectProjectGroupingSettings: () => ({}),
 }));
 vi.mock("../state/entities", () => ({
-  readProjects: () => [
-    {
-      id: "project-remote",
-      environmentId: "environment-ssh",
-      workspaceRoot: "/remote/project",
-      defaultThreadEnvMode: null,
-      defaultModelSelection: null,
-    },
-  ],
+  readProjects: () => testState.projects,
   readThreadShell: () => null,
   useProjects: () => [],
   useThread: () => null,
+}));
+vi.mock("../state/environments", () => ({
+  useEnvironments: () => ({ environments: testState.environments }),
+  usePrimaryEnvironmentId: () => "environment-primary",
 }));
 vi.mock("../state/server", () => ({
   environmentServerConfigsAtom: {},
@@ -279,4 +354,51 @@ describe.each([
       );
     },
   );
+
+  it("does not wait on t3.json when the only copy is reconnecting", async () => {
+    testState.reset(draft);
+    testState.setEnvironmentPhase("environment-ssh", "reconnecting");
+    const opened = await useNewThreadHandler()({
+      environmentId: "environment-ssh",
+      projectId: "project-remote",
+    } as never);
+
+    expect(opened).toBeNull();
+    expect(testState.projectFileReadCalls).toBe(0);
+    expect(testState.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        title: "Environment unavailable",
+        description: "Mac mini is not connected.",
+      }),
+    );
+    expect(testState.router.navigate).not.toHaveBeenCalled();
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).not.toHaveBeenCalled();
+  });
+});
+
+describe("useNewThreadHandler environment retarget", () => {
+  it("opens the local copy when the selected remote is reconnecting", async () => {
+    testState.reset(null);
+    testState.setProjects([testState.remoteProject, testState.localProject]);
+    testState.setEnvironmentPhase("environment-ssh", "reconnecting");
+    const pendingOpen = useNewThreadHandler()({
+      environmentId: "environment-ssh",
+      projectId: "project-remote",
+    } as never);
+    testState.completeProjectFileRead(null);
+    const opened = await pendingOpen;
+
+    expect(opened).toEqual({
+      draftId: "draft-delayed",
+      threadId: "thread-delayed",
+    });
+    expect(testState.toastAdd).not.toHaveBeenCalled();
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      { environmentId: "environment-primary", projectId: "project-local" },
+      "draft-delayed",
+      expect.objectContaining({ envMode: "local" }),
+    );
+  });
 });

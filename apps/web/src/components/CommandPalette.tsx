@@ -925,13 +925,32 @@ function OpenCommandPaletteDialog(props: {
       }),
     [activeDraftThread, activeThread, defaultProjectRef, handleNewThread],
   );
+  const isEnvironmentReachable = useCallback(
+    (environmentId: EnvironmentId) =>
+      canCreateProjectInEnvironment(
+        environments.find((environment) => environment.environmentId === environmentId)?.connection
+          .phase,
+      ),
+    [environments],
+  );
   const projectPickerEntries = useMemo(
     () =>
       buildSidebarProjectPickerEntries({
         groups: projectGroups,
         preferredProjectRef: contextualProjectRef,
+        isEnvironmentReachable,
       }),
-    [contextualProjectRef, projectGroups],
+    [contextualProjectRef, isEnvironmentReachable, projectGroups],
+  );
+  const newThreadPickerEntries = useMemo(
+    () =>
+      buildSidebarProjectPickerEntries({
+        groups: projectGroups,
+        preferredProjectRef: contextualProjectRef,
+        expandMembers: true,
+        isEnvironmentReachable,
+      }),
+    [contextualProjectRef, isEnvironmentReachable, projectGroups],
   );
   const pickerProjects = useMemo(
     () =>
@@ -950,6 +969,24 @@ function OpenCommandPaletteDialog(props: {
         ]),
       ),
     [projectPickerEntries],
+  );
+  const newThreadProjects = useMemo(
+    () =>
+      newThreadPickerEntries.map(({ group, targetProject }) => ({
+        ...targetProject,
+        displayName: group.displayName,
+      })),
+    [newThreadPickerEntries],
+  );
+  const newThreadGroupByTargetKey = useMemo(
+    () =>
+      new Map(
+        newThreadPickerEntries.map(({ group, targetProject }) => [
+          `${targetProject.environmentId}:${targetProject.id}`,
+          group,
+        ]),
+      ),
+    [newThreadPickerEntries],
   );
 
   const addProjectEnvironmentOptions = useMemo(() => {
@@ -1260,10 +1297,10 @@ function OpenCommandPaletteDialog(props: {
     () =>
       enumerateCommandPaletteItems(
         buildProjectActionItems({
-          projects: pickerProjects,
+          projects: newThreadProjects,
           valuePrefix: "new-thread-in",
           searchTerms: (project) => {
-            const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
+            const group = newThreadGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
             const location = projectEnvironmentLocationById.get(project.environmentId);
             return [
               ...(group?.memberProjects.flatMap((member) => [member.title, member.workspaceRoot]) ??
@@ -1277,6 +1314,13 @@ function OpenCommandPaletteDialog(props: {
               label: "Remote",
               machine: "server" as const,
             };
+            const environment = environments.find(
+              (candidate) => candidate.environmentId === project.environmentId,
+            );
+            const reachable = isEnvironmentReachable(project.environmentId);
+            const status = environment
+              ? connectionStatusText(environment.connection)
+              : "Unavailable";
             return (
               <span className="flex min-w-0 items-center gap-1">
                 <span className="inline-flex min-w-0 items-center gap-1">
@@ -1290,34 +1334,24 @@ function OpenCommandPaletteDialog(props: {
                   <span className="truncate">{location.label}</span>
                 </span>
                 <CommandPaletteMetaDot />
-                <span className="truncate">{project.workspaceRoot}</span>
+                <span className="truncate">{reachable ? project.workspaceRoot : status}</span>
               </span>
             );
           },
+          isDisabled: (project) => !isEnvironmentReachable(project.environmentId),
           icon: projectFavicon,
           runProject: async (project) => {
-            const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
-            const contextualRefBelongsToGroup =
-              contextualProjectRef !== null &&
-              group?.memberProjectRefs.some(
-                (projectRef) =>
-                  projectRef.environmentId === contextualProjectRef.environmentId &&
-                  projectRef.projectId === contextualProjectRef.projectId,
-              );
-            await handleNewThread(
-              contextualRefBelongsToGroup
-                ? contextualProjectRef
-                : scopeProjectRef(project.environmentId, project.id),
-            );
+            await handleNewThread(scopeProjectRef(project.environmentId, project.id));
           },
         }),
       ),
     [
-      contextualProjectRef,
+      environments,
       handleNewThread,
-      pickerProjects,
+      isEnvironmentReachable,
+      newThreadGroupByTargetKey,
+      newThreadProjects,
       projectEnvironmentLocationById,
-      projectGroupByTargetKey,
     ],
   );
 

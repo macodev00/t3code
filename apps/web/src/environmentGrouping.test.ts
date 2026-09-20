@@ -355,7 +355,73 @@ describe("environment grouping", () => {
       id: remote.id,
     });
     expect(entries[0]?.isPreferred).toBe(true);
+    expect(entries[0]?.reachable).toBe(true);
     expect(entries[1]?.group.displayName).toBe("separate");
+  });
+
+  it("lists each checkout when expanding grouped members", () => {
+    const primary = makeProject({ repositoryIdentity });
+    const remote = makeProject({
+      id: ProjectId.make("project-remote"),
+      environmentId: remoteEnvironmentId,
+      repositoryIdentity,
+    });
+    const groups = buildSidebarProjectSnapshots({
+      projects: [primary, remote],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+
+    const entries = buildSidebarProjectPickerEntries({
+      groups,
+      preferredProjectRef: {
+        environmentId: remoteEnvironmentId,
+        projectId: remote.id,
+      },
+      expandMembers: true,
+      isEnvironmentReachable: (environmentId) => environmentId === primaryEnvironmentId,
+    });
+
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.targetProject.environmentId)).toEqual([
+      primaryEnvironmentId,
+      remoteEnvironmentId,
+    ]);
+    expect(entries[0]?.reachable).toBe(true);
+    expect(entries[1]?.reachable).toBe(false);
+    expect(entries[1]?.isPreferred).toBe(true);
+  });
+
+  it("targets a reachable sibling when the preferred environment is down", () => {
+    const primary = makeProject({ repositoryIdentity });
+    const remote = makeProject({
+      id: ProjectId.make("project-remote"),
+      environmentId: remoteEnvironmentId,
+      repositoryIdentity,
+    });
+    const groups = buildSidebarProjectSnapshots({
+      projects: [primary, remote],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+
+    const [entry] = buildSidebarProjectPickerEntries({
+      groups,
+      preferredProjectRef: {
+        environmentId: remoteEnvironmentId,
+        projectId: remote.id,
+      },
+      isEnvironmentReachable: (environmentId) => environmentId === primaryEnvironmentId,
+    });
+
+    expect(entry?.isPreferred).toBe(true);
+    expect(entry?.reachable).toBe(true);
+    expect(entry?.targetProject).toMatchObject({
+      environmentId: primaryEnvironmentId,
+      id: primary.id,
+    });
   });
 
   it("keeps the current environment when available and falls back otherwise", () => {
