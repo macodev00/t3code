@@ -200,7 +200,10 @@ import {
   worktreeSetupAgentStarted,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
+  TIMELINE_ESTIMATED_ITEM_SIZE,
   TIMELINE_MINIMAP_MIN_ITEMS,
+  getMessagesTimelineFixedItemSize,
+  messagesTimelineLayoutKey,
   type TimelineLatestTurn,
   type WorkGroupScrollAnchor,
 } from "./MessagesTimeline.logic";
@@ -812,6 +815,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     queuedMessages,
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
+  const rootFontSize = readTimelineRootFontSize();
+  const listExtraData = `${listIdentityKey}:${rootFontSize}:${messagesTimelineLayoutKey(rows)}`;
+  const getFixedItemSize = useCallback(
+    (item: MessagesTimelineRow) => getMessagesTimelineFixedItemSize(item, rootFontSize),
+    [rootFontSize],
+  );
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
@@ -1279,11 +1288,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
-            extraData={`${listIdentityKey}:${rows.length}`}
+            extraData={listExtraData}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
             renderItem={renderItem}
-            estimatedItemSize={90}
+            estimatedItemSize={TIMELINE_ESTIMATED_ITEM_SIZE}
+            getFixedItemSize={getFixedItemSize}
             initialScrollAtEnd={citationRequest === null && rememberedPosition?.atEnd !== false}
             // Legend needs a data refresh to mount new pins without a scroll event.
             dataVersion={readyCitationRequest?.key ?? listIdentityKey}
@@ -1353,6 +1363,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
+}
+
+function readTimelineRootFontSize() {
+  if (typeof document === "undefined" || typeof getComputedStyle !== "function") return 16;
+  try {
+    const value = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+    return Number.isFinite(value) && value > 0 ? value : 16;
+  } catch {
+    return 16;
+  }
 }
 
 function getItemType(item: MessagesTimelineRow) {

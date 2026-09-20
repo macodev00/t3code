@@ -19,6 +19,9 @@ vi.mock("@legendapp/list/react", async () => {
 
   const LegendList = (props: {
     data: Array<{ id: string }>;
+    extraData?: string;
+    estimatedItemSize?: number;
+    getFixedItemSize?: (item: { id: string }) => number | undefined;
     keyExtractor: (item: { id: string }) => string;
     renderItem: (args: { item: { id: string } }) => ReactNode;
     ListHeaderComponent?: ReactNode;
@@ -47,6 +50,7 @@ vi.mock("@legendapp/list/react", async () => {
     return (
       <div
         data-testid={legendListTestId}
+        data-extra-data={props.extraData}
         data-anchor-index={props.anchoredEndSpace?.anchorIndex}
         data-anchor-max-size={props.anchoredEndSpace?.anchorMaxSize}
         data-anchor-offset={props.anchoredEndSpace?.anchorOffset}
@@ -102,7 +106,13 @@ vi.mock("@legendapp/list/react", async () => {
       >
         {props.ListHeaderComponent}
         {props.data.map((item) => (
-          <div key={props.keyExtractor(item)}>{props.renderItem({ item })}</div>
+          <div
+            key={props.keyExtractor(item)}
+            data-timeline-layout-id={item.id}
+            data-timeline-layout-height={props.getFixedItemSize?.(item) ?? props.estimatedItemSize}
+          >
+            {props.renderItem({ item })}
+          </div>
         ))}
         {props.ListFooterComponent}
       </div>
@@ -1769,6 +1779,31 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Thinking");
     expect(markup).toContain("lucide-brain");
     expect(markup).toContain('data-timeline-row-id="live-activity-row"');
+  });
+
+  it("pins chrome row sizes and versions extraData by the layout key", () => {
+    const turnId = TurnId.make("turn-live");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        activeTurnStartedAt={MESSAGE_CREATED_AT}
+        latestTurn={{
+          turnId,
+          state: "running",
+          startedAt: MESSAGE_CREATED_AT,
+          completedAt: null,
+        }}
+        runningTurnId={turnId}
+        timelineEntries={[]}
+      />,
+    );
+
+    expect(markup).toContain(`data-extra-data="${buildProps().routeThreadKey}:16:2"`);
+    expect(markup).toContain('data-timeline-layout-id="working-indicator-row"');
+    expect(markup).toContain('data-timeline-layout-height="43"');
+    expect(markup).toContain('data-timeline-layout-id="live-activity-row"');
+    expect(markup).toContain('data-timeline-layout-height="36"');
   });
 
   it("keeps the completed command in the shared activity row with a present-tense label", () => {

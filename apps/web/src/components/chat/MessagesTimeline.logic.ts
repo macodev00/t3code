@@ -32,6 +32,7 @@ import {
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import type { QueuedComposerMessage } from "../../queuedMessageStore";
 import {
+  DEFAULT_INTERFACE_FONT_SIZE,
   type MessageId,
   type OrchestrationLatestTurn,
   type TurnId,
@@ -312,7 +313,9 @@ export type TimelineLatestTurn = Pick<
   "turnId" | "state" | "startedAt" | "completedAt"
 >;
 
-const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
+export const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
+export const WORKING_INDICATOR_ROW_ID = "working-indicator-row";
+export const TIMELINE_ESTIMATED_ITEM_SIZE = 90;
 
 type ActivityEntry = Extract<TimelineEntry, { kind: "message" | "work" }>;
 
@@ -473,6 +476,89 @@ function workGroupIdentity(timelineEntryId: string, entry: WorkLogEntry): string
 
 function workGroupId(timelineEntryId: string, entry: WorkLogEntry): string {
   return `work-group:${workGroupIdentity(timelineEntryId, entry)}`;
+}
+
+function laterSameTurnActivityExists(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+  fromIndex: number,
+  turnId: TurnId | null,
+  collapsedEntryIds: ReadonlySet<string>,
+  foldAnchorEntryIds: { readonly has: (id: string) => boolean },
+): boolean {
+  if (turnId === null) return false;
+  for (let index = fromIndex; index < timelineEntries.length; index += 1) {
+    const entry = timelineEntries[index]!;
+    if (collapsedEntryIds.has(entry.id) || foldAnchorEntryIds.has(entry.id)) continue;
+    if (isActivityEntry(entry) && timelineEntryTurnId(entry) === turnId) return true;
+  }
+  return false;
+}
+
+/**
+ * A mid-turn user message moves the Working header past in-progress tools.
+ * Keep the live tool/activity row on `live-activity-row` so LegendList does
+ * not remount it at `estimatedItemSize` and paint the new user row / Working
+ * pill on top of the still-growing group.
+ */
+function assignLiveActivityRowId(rows: MessagesTimelineRow[]): void {
+  if (rows.some((row) => row.id === LIVE_ACTIVITY_ROW_ID)) return;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if ((row.kind === "work-live" || row.kind === "activity-group") && row.active) {
+      rows[index] = { ...row, id: LIVE_ACTIVITY_ROW_ID };
+      return;
+    }
+  }
+}
+
+/**
+ * LegendList only remasures when extraData changes. Row count misses an
+ * expanded tool group growing in place, so include a height signature for
+ * those variable rows.
+ */
+export function messagesTimelineLayoutKey(rows: ReadonlyArray<MessagesTimelineRow>): string {
+  let key = `${rows.length}`;
+  for (const row of rows) {
+    switch (row.kind) {
+      case "work":
+        if (row.isExpandedToolGroup) {
+          key += `|${row.id}:${row.groupedEntries.length}`;
+        }
+        break;
+      case "work-live":
+        key += `|${row.id}:${row.expanded ? row.groupedEntries.length : 0}`;
+        break;
+      case "activity-group":
+        key += `|${row.id}:${row.expanded ? row.entries.length : 0}`;
+        break;
+      default:
+        break;
+    }
+  }
+  return key;
+}
+
+/** Chrome rows have known rem heights. Expanded details stay measured. */
+export function getMessagesTimelineFixedItemSize(
+  row: MessagesTimelineRow,
+  rootFontSize = DEFAULT_INTERFACE_FONT_SIZE,
+): number | undefined {
+  const px = (rem: number, extraPx = 0) => Math.round(rem * rootFontSize + extraPx);
+  switch (row.kind) {
+    case "working":
+      // pt-1 + h-6 + pb-2 + border-b + wrapper pb-1.5
+      return px(2.625, 1);
+    case "thinking":
+      // min-h-7 + wrapper pb-2
+      return px(2.25);
+    case "work-toggle":
+      return px(2);
+    case "work-live":
+    case "activity-group":
+      return row.expanded ? undefined : px(2);
+    default:
+      return undefined;
+  }
 }
 
 function expandedWorkGroupRow(
@@ -1085,7 +1171,7 @@ export function deriveMessagesTimelineRows(input: {
         : input.activeTurnStartedAt;
     nextRows.push({
       kind: "working",
-      id: "working-indicator-row",
+      id: WORKING_INDICATOR_ROW_ID,
       createdAt: visualResponseStartedAt,
     });
   };
@@ -1156,7 +1242,13 @@ export function deriveMessagesTimelineRows(input: {
         const active =
           input.isWorking &&
           activityTurnId === unsettledTurnId &&
-          cursor === input.timelineEntries.length &&
+          !laterSameTurnActivityExists(
+            input.timelineEntries,
+            cursor,
+            activityTurnId,
+            collapsedEntryIds,
+            foldsByAnchorEntryId,
+          ) &&
           !latestToolFailed &&
           (latestVisibleToolEntry === undefined || latestToolKeepsActivityLive);
         const groupId =
@@ -1430,7 +1522,7 @@ export function deriveMessagesTimelineRows(input: {
           ? [
               {
                 kind: "working",
-                id: "working-indicator-row",
+                id: WORKING_INDICATOR_ROW_ID,
                 createdAt: input.worktreeSetup.startedAt,
               } as const,
               setupRow,
@@ -1445,6 +1537,7 @@ export function deriveMessagesTimelineRows(input: {
   if (input.isWorking && !hasWorkingRow && activeTurnHeaderIndex === input.timelineEntries.length) {
     appendWorkingRow();
   }
+  assignLiveActivityRowId(nextRows);
   if (input.isWorking && !setupRunning && (!hasActivityRow || latestToolFailed)) {
     nextRows.push({
       kind: "thinking",

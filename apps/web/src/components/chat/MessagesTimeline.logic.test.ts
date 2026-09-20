@@ -24,12 +24,17 @@ import {
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
+  getMessagesTimelineFixedItemSize,
   liveWorkEntryLabel,
+  messagesTimelineLayoutKey,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveWorkGroupScrollIndex,
   shouldFollowWorkGroupAppend,
   shouldPreserveAssistantLineBreaks,
+  LIVE_ACTIVITY_ROW_ID,
+  TIMELINE_ESTIMATED_ITEM_SIZE,
+  WORKING_INDICATOR_ROW_ID,
   type MessagesTimelineRow,
   type MessagesTimelineRowsProjection,
   WORKTREE_SETUP_ROW_ID,
@@ -3654,6 +3659,189 @@ describe("deriveMessagesTimelineRows", () => {
       }
     },
   );
+});
+
+describe("mid-turn steer timeline layout", () => {
+  const turnId = TurnId.make("turn-1");
+  const time = (second: number) => `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
+
+  const userEntry = (id: string, second: number, text: string) => ({
+    id: `${id}-entry`,
+    kind: "message" as const,
+    createdAt: time(second),
+    message: {
+      id: id as never,
+      role: "user" as const,
+      text,
+      turnId: null,
+      createdAt: time(second),
+      updatedAt: time(second),
+      streaming: false,
+    },
+  });
+
+  const toolEntry = (id: string, second: number, status: "inProgress" | "completed") => ({
+    id: `${id}-entry`,
+    kind: "work" as const,
+    createdAt: time(second),
+    entry: {
+      id,
+      createdAt: time(second),
+      turnId,
+      label: status === "inProgress" ? `Running ${id}` : `Ran ${id}`,
+      command: `echo ${id}`,
+      requestKind: "command" as const,
+      tone: "tool" as const,
+      toolLifecycleStatus: status,
+      toolCallId: id,
+    },
+  });
+
+  const liveInput = (toolCount: number, extraEntries: ReturnType<typeof userEntry>[] = []) => {
+    const tools = Array.from({ length: toolCount }, (_, index) =>
+      toolEntry(
+        `cmd-${index + 1}`,
+        index + 1,
+        index === toolCount - 1 ? "inProgress" : "completed",
+      ),
+    );
+    const firstTool = tools[0]!;
+    const groupId = `work-group:tool:${turnId}:${firstTool.entry.toolCallId}`;
+    return {
+      timelineEntries: [userEntry("user-1", 0, "run the commands"), ...tools, ...extraEntries],
+      latestTurn: {
+        turnId,
+        state: "running" as const,
+        startedAt: time(0),
+        completedAt: null,
+      },
+      isWorking: true,
+      activeTurnStartedAt: time(0),
+      turnDiffSummaries: [] as const,
+      supportsConversationRollback: false,
+      expandedWorkGroupIds: new Set([groupId]),
+    };
+  };
+
+  type LayoutBox = { id: string; top: number; height: number; bottom: number };
+
+  const measureExpandedDetails = (row: MessagesTimelineRow) =>
+    row.kind === "work" && row.isExpandedToolGroup
+      ? Math.min(288, 48 + row.groupedEntries.length * 24)
+      : undefined;
+
+  const layoutRows = (
+    rows: MessagesTimelineRow[],
+    extraData: string,
+    previous: { extraData: string; sizes: Map<string, number> } | null,
+  ) => {
+    const remasure = previous === null || previous.extraData !== extraData;
+    const sizes = new Map(previous?.sizes);
+    let top = 0;
+    const boxes: LayoutBox[] = rows.map((row) => {
+      const fixed = getMessagesTimelineFixedItemSize(row);
+      let height: number;
+      if (fixed !== undefined) {
+        height = fixed;
+      } else if (!remasure && sizes.has(row.id)) {
+        height = sizes.get(row.id)!;
+      } else {
+        height = measureExpandedDetails(row) ?? sizes.get(row.id) ?? TIMELINE_ESTIMATED_ITEM_SIZE;
+        sizes.set(row.id, height);
+      }
+      const box = { id: row.id, top, height, bottom: top + height };
+      top += height;
+      return box;
+    });
+    return { extraData, sizes, boxes };
+  };
+
+  const boxById = (boxes: LayoutBox[], id: string) => {
+    const box = boxes.find((candidate) => candidate.id === id);
+    if (!box) throw new Error(`missing layout box ${id}`);
+    return box;
+  };
+
+  const overlaps = (a: LayoutBox, b: LayoutBox) => a.top < b.bottom && b.top < a.bottom;
+
+  it("keeps the live tool group identity when a mid-turn user message arrives", () => {
+    const live = deriveMessagesTimelineRows(liveInput(10));
+    const steered = deriveMessagesTimelineRows(
+      liveInput(10, [userEntry("user-steer", 20, "ca7d62b5 is not snake right?")]),
+    );
+
+    const liveWork = live.find((row) => row.kind === "work-live");
+    const steeredWork = steered.find((row) => row.kind === "work-live");
+    const liveDetails = live.find((row) => row.kind === "work" && row.isExpandedToolGroup);
+    const steeredDetails = steered.find((row) => row.kind === "work" && row.isExpandedToolGroup);
+
+    expect(liveWork).toMatchObject({ id: LIVE_ACTIVITY_ROW_ID, expanded: true, active: true });
+    expect(steeredWork).toMatchObject({
+      id: LIVE_ACTIVITY_ROW_ID,
+      groupId: liveWork && liveWork.kind === "work-live" ? liveWork.groupId : undefined,
+      expanded: true,
+      active: true,
+    });
+    expect(steeredDetails?.id).toBe(liveDetails?.id);
+    expect(steered.map((row) => row.id)).toEqual([
+      "user-1-entry",
+      LIVE_ACTIVITY_ROW_ID,
+      liveDetails?.id,
+      "user-steer-entry",
+      WORKING_INDICATOR_ROW_ID,
+    ]);
+  });
+
+  it("changes the layout key when an expanded live tool group grows without adding rows", () => {
+    const small = deriveMessagesTimelineRows(liveInput(3));
+    const grown = deriveMessagesTimelineRows(liveInput(10));
+
+    expect(small.map((row) => row.kind)).toEqual(grown.map((row) => row.kind));
+    expect(small).toHaveLength(grown.length);
+    expect(messagesTimelineLayoutKey(small)).not.toBe(messagesTimelineLayoutKey(grown));
+    expect(messagesTimelineLayoutKey(small).startsWith(`${small.length}|`)).toBe(true);
+  });
+
+  it("does not overlap the steer user row and Working pill with a grown tool group", () => {
+    const small = deriveMessagesTimelineRows(liveInput(3));
+    const grown = deriveMessagesTimelineRows(liveInput(10));
+    const steered = deriveMessagesTimelineRows(
+      liveInput(10, [userEntry("user-steer", 20, "ca7d62b5 is not snake right?")]),
+    );
+    const detailsId = small.find((row) => row.kind === "work" && row.isExpandedToolGroup)?.id;
+    expect(detailsId).toBeDefined();
+
+    const afterSmall = layoutRows(small, messagesTimelineLayoutKey(small), null);
+    const afterGrowth = layoutRows(grown, messagesTimelineLayoutKey(grown), afterSmall);
+    const afterSteer = layoutRows(steered, messagesTimelineLayoutKey(steered), afterGrowth);
+
+    const details = boxById(afterSteer.boxes, detailsId!);
+    const user = boxById(afterSteer.boxes, "user-steer-entry");
+    const working = boxById(afterSteer.boxes, WORKING_INDICATOR_ROW_ID);
+
+    expect(details.height).toBeGreaterThan(TIMELINE_ESTIMATED_ITEM_SIZE);
+    expect(overlaps(details, user)).toBe(false);
+    expect(overlaps(details, working)).toBe(false);
+    expect(user.top).toBeGreaterThanOrEqual(details.bottom);
+    expect(working.top).toBeGreaterThanOrEqual(user.bottom);
+  });
+
+  it("pins chrome row sizes and leaves expanded details measured", () => {
+    const rows = deriveMessagesTimelineRows(liveInput(10));
+    const work = rows.find((row) => row.kind === "work-live");
+    const details = rows.find((row) => row.kind === "work" && row.isExpandedToolGroup);
+    const working = rows.find((row) => row.kind === "working");
+
+    expect(work && getMessagesTimelineFixedItemSize(work)).toBeUndefined();
+    expect(details && getMessagesTimelineFixedItemSize(details)).toBeUndefined();
+    expect(working && getMessagesTimelineFixedItemSize(working)).toBe(43);
+
+    const collapsed = deriveMessagesTimelineRows({
+      ...liveInput(10),
+      expandedWorkGroupIds: new Set(),
+    }).find((row) => row.kind === "work-live");
+    expect(collapsed && getMessagesTimelineFixedItemSize(collapsed)).toBe(32);
+  });
 });
 
 describe("computeStableMessagesTimelineRows", () => {
