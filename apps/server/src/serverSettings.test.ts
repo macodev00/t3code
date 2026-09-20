@@ -685,25 +685,17 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       yield* fileSystem.writeFileString(
         serverConfig.settingsPath,
-        JSON.stringify({
-          providerInstances: {
-            codex: { driver: "codex", enabled: false, config: {} },
-          },
-          defaultModelSelection: {
-            instanceId: "claudeAgent",
-            model: "z-ai/glm-5.3-flash",
-            options: [{ id: "effort", value: "low" }],
-          },
-        }),
+        '{"providerInstances":{"codex":{"driver":"codex","enabled":false,"config":{}}},"defaultModelSelection":{"instanceId":"claudeAgent","model":"z-ai/glm-5.3-flash","options":[{"id":"effort","value":"low"}]}}',
       );
 
       const settings = yield* serverSettings.getSettings;
 
-      assert.deepEqual(settings.textGenerationModelSelection, {
-        instanceId: "claudeAgent",
-        model: "z-ai/glm-5.3-flash",
-        options: [{ id: "effort", value: "low" }],
-      });
+      assert.deepEqual(
+        settings.textGenerationModelSelection,
+        createModelSelection(ProviderInstanceId.make("claudeAgent"), "z-ai/glm-5.3-flash", [
+          { id: "effort", value: "low" },
+        ]),
+      );
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
@@ -714,15 +706,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       yield* fileSystem.writeFileString(
         serverConfig.settingsPath,
-        JSON.stringify({
-          providerInstances: {
-            codex: { driver: "codex", enabled: false, config: {} },
-            claudeAgent: {
-              driver: "claudeAgent",
-              config: { customModels: ["z-ai/glm-5.3-flash"] },
-            },
-          },
-        }),
+        '{"providerInstances":{"codex":{"driver":"codex","enabled":false,"config":{}},"claudeAgent":{"driver":"claudeAgent","config":{"customModels":["z-ai/glm-5.3-flash"]}}}}',
       );
 
       const settings = yield* serverSettings.getSettings;
@@ -739,14 +723,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       yield* fileSystem.writeFileString(
         serverConfig.settingsPath,
-        JSON.stringify({
-          providerInstances: {
-            codex: { driver: "codex", enabled: false, config: {} },
-          },
-          providers: {
-            claudeAgent: { customModels: ["z-ai/glm-5.3-flash"] },
-          },
-        }),
+        '{"providerInstances":{"codex":{"driver":"codex","enabled":false,"config":{}}},"providers":{"claudeAgent":{"customModels":["z-ai/glm-5.3-flash"]}}}',
       );
 
       const settings = yield* serverSettings.getSettings;
