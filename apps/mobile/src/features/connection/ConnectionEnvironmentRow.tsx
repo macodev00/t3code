@@ -8,7 +8,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useState } from "react";
 import { Platform, Alert, Pressable, View } from "react-native";
-import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
+import Animated, { LinearTransition } from "react-native-reanimated";
 
 import { AppText as Text } from "../../components/AppText";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
@@ -142,11 +142,9 @@ export function ConnectionEnvironmentRow(props: {
       </Pressable>
 
       {props.expanded ? (
-        <Animated.View
-          entering={FadeIn.duration(200)}
-          exiting={FadeOut.duration(150)}
-          className="gap-3 px-4 pb-4"
-        >
+        // Reanimated entering/exiting on this editor steals iOS hits inside the
+        // nested form sheet, so Label/URL never become first responder.
+        <View collapsable={false} className="gap-3 px-4 pb-4">
           {props.environment.isRelayManaged ? (
             <Text className="text-sm text-foreground-muted">
               Managed by T3 Connect. Tunnel details update automatically.
@@ -247,7 +245,7 @@ export function ConnectionEnvironmentRow(props: {
               </Pressable>
             </View>
           )}
-        </Animated.View>
+        </View>
       ) : null}
     </Animated.View>
   );
