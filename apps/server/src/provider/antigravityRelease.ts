@@ -92,6 +92,7 @@ const releaseAssets = new Map<string, AntigravityReleaseAsset>([
   ],
 ]);
 
+/** Pick the pinned Antigravity archive, preferring the host machine CPU over Node's compile arch. */
 export function resolveAntigravityReleaseAsset(
   platform: NodeJS.Platform,
   arch: string,

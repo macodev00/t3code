@@ -268,6 +268,7 @@ const openArchive = Effect.fn("AntigravityInstallation.openArchive")(function* (
   return { entryCount: opened.zip.entryCount, next, streamEntry };
 });
 
+/** Own the environment Antigravity runtime, using the host machine arch for managed installs. */
 export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.make")(function* (
   options: AntigravityInstallationOptions,
 ) {
@@ -369,6 +370,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
     } satisfies AntigravityExecutable;
   });
 
+  /** Resolve a custom path, including a directory that contains the ACP executable. */
   const fromExternal = Effect.fn("AntigravityInstallation.fromExternal")(function* (
     candidate: string,
     source: "override" | "path",
@@ -415,6 +417,7 @@ export const makeAntigravityInstallation = Effect.fn("AntigravityInstallation.ma
       .map((directory) => path.resolve(directory, binary));
   };
 
+  /** Find a managed, PATH, or custom Antigravity executable, expanding `~` in overrides. */
   const resolve: AntigravityInstallationService["resolve"] = Effect.fn(
     "AntigravityInstallation.resolve",
   )(

@@ -143,6 +143,7 @@ interface HarnessOptions {
   readonly pinRelease?: boolean;
 }
 
+/** Build an isolated Antigravity installer fixture, optionally pinning the host archive. */
 const makeHarness = Effect.fn("test.makeAntigravityInstallation")(function* (
   options: HarnessOptions = {},
 ) {
