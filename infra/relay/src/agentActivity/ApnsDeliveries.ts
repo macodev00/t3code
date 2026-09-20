@@ -160,21 +160,31 @@ function aggregateNeedsAttention(aggregate: RelayAgentActivityAggregateState): b
   );
 }
 
-/** True when a previously observed thread changed phase (matched by environment and thread). */
+/**
+ * True when a previously observed thread changed phase.
+ * Rows are matched by `environmentId` and `threadId`.
+ */
 function aggregateHasPhaseChange(
   previous: RelayAgentActivityAggregateState,
   next: RelayAgentActivityAggregateState,
 ): boolean {
-  const previousPhases = new Map(
-    previous.activities.map((row) => [`${row.environmentId}\0${row.threadId}`, row.phase]),
-  );
-  return next.activities.some((row) => {
+  const previousPhases = new Map<string, (typeof previous.activities)[number]["phase"]>();
+  for (const row of previous.activities) {
+    previousPhases.set(`${row.environmentId}\0${row.threadId}`, row.phase);
+  }
+  for (const row of next.activities) {
     const previousPhase = previousPhases.get(`${row.environmentId}\0${row.threadId}`);
-    return previousPhase !== undefined && previousPhase !== row.phase;
-  });
+    if (previousPhase !== undefined && previousPhase !== row.phase) {
+      return true;
+    }
+  }
+  return false;
 }
 
-/** Queue a Live Activity update for first delivery, exempt changes, or after the 15s throttle. */
+/**
+ * Queue a Live Activity update on first delivery, exempt changes
+ * (activeCount, attention, newly-terminal, or phase), or after the 15s throttle.
+ */
 function shouldUpdateLiveActivity(input: {
   readonly previousAggregate: RelayAgentActivityAggregateState | null;
   readonly nextAggregate: RelayAgentActivityAggregateState;

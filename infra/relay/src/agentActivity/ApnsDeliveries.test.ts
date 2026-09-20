@@ -256,6 +256,88 @@ function makeLayer(input: {
   );
 }
 
+/**
+ * Regression for starting→running inside the 15s Live Activity throttle:
+ * both updates must queue, and the second payload is the running aggregate.
+ */
+function queuesLiveActivityUpdateOnStartingToRunningPhaseChange() {
+  const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
+  const queuedJobs: Array<SignedApnsDeliveryJob> = [];
+  const startingAggregate: RelayAgentActivityAggregateState = {
+    ...aggregate,
+    activities: [
+      {
+        ...aggregate.activities[0]!,
+        phase: "starting",
+        status: "Connecting",
+      },
+    ],
+  };
+  const runningAggregate: RelayAgentActivityAggregateState = {
+    ...startingAggregate,
+    updatedAt: "1970-01-01T00:00:04.000Z",
+    activities: [
+      {
+        ...startingAggregate.activities[0]!,
+        phase: "running",
+        status: "Working",
+        updatedAt: "1970-01-01T00:00:04.000Z",
+      },
+    ],
+  };
+
+  /**
+   * Send starting then running four seconds later and assert both
+   * `live_activity_update` jobs, with phase running / Working on the second.
+   */
+  function* sendStartingThenRunningLiveActivityUpdates() {
+    const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
+    const first = yield* deliveries.sendForTarget({
+      target,
+      aggregate: startingAggregate,
+      nowMs: 0,
+    });
+    expect(first?.kind).toBe("live_activity_update");
+
+    const second = yield* deliveries.sendForTarget({
+      target: {
+        ...target,
+        last_aggregate_json: JSON.stringify(startingAggregate),
+        last_live_activity_delivery_at: "1970-01-01T00:00:00.000Z",
+      },
+      aggregate: runningAggregate,
+      nowMs: 4_000,
+    });
+
+    expect(second?.kind).toBe("live_activity_update");
+    expect(queuedJobs).toMatchObject([
+      {
+        payload: {
+          kind: "live_activity_update",
+          target: {
+            token: "activity-token",
+          },
+        },
+      },
+      {
+        payload: {
+          kind: "live_activity_update",
+          target: {
+            token: "activity-token",
+          },
+          aggregate: {
+            activities: [{ phase: "running", status: "Working" }],
+          },
+        },
+      },
+    ]);
+  }
+
+  return Effect.gen(sendStartingThenRunningLiveActivityUpdates).pipe(
+    Effect.provide(makeLayer({ attempts, queuedJobs })),
+  );
+}
+
 describe("ApnsDeliveries", () => {
   it.effect("skips Apple delivery when an Android-only relay disables APNs", () => {
     const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
@@ -652,79 +734,7 @@ describe("ApnsDeliveries", () => {
 
   it.effect(
     "queues an update when phase changes from starting to running inside the throttle window",
-    /** Sends starting then running inside 15s and expects both live_activity_update jobs. */
-    () => {
-      const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
-      const queuedJobs: Array<SignedApnsDeliveryJob> = [];
-      const startingAggregate: RelayAgentActivityAggregateState = {
-        ...aggregate,
-        activities: [
-          {
-            ...aggregate.activities[0]!,
-            phase: "starting",
-            status: "Connecting",
-          },
-        ],
-      };
-      const runningAggregate: RelayAgentActivityAggregateState = {
-        ...startingAggregate,
-        updatedAt: "1970-01-01T00:00:04.000Z",
-        activities: [
-          {
-            ...startingAggregate.activities[0]!,
-            phase: "running",
-            status: "Working",
-            updatedAt: "1970-01-01T00:00:04.000Z",
-          },
-        ],
-      };
-
-      return Effect.gen(
-        /** Drive sendForTarget twice and assert the second payload is the running aggregate. */
-        function* () {
-          const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
-          const first = yield* deliveries.sendForTarget({
-            target,
-            aggregate: startingAggregate,
-            nowMs: 0,
-          });
-          expect(first?.kind).toBe("live_activity_update");
-
-          const second = yield* deliveries.sendForTarget({
-            target: {
-              ...target,
-              last_aggregate_json: JSON.stringify(startingAggregate),
-              last_live_activity_delivery_at: "1970-01-01T00:00:00.000Z",
-            },
-            aggregate: runningAggregate,
-            nowMs: 4_000,
-          });
-
-          expect(second?.kind).toBe("live_activity_update");
-          expect(queuedJobs).toMatchObject([
-            {
-              payload: {
-                kind: "live_activity_update",
-                target: {
-                  token: "activity-token",
-                },
-              },
-            },
-            {
-              payload: {
-                kind: "live_activity_update",
-                target: {
-                  token: "activity-token",
-                },
-                aggregate: {
-                  activities: [{ phase: "running", status: "Working" }],
-                },
-              },
-            },
-          ]);
-        },
-      ).pipe(Effect.provide(makeLayer({ attempts, queuedJobs })));
-    },
+    queuesLiveActivityUpdateOnStartingToRunningPhaseChange,
   );
 
   it.effect("queues an end for an active Live Activity when Live Activities are disabled", () => {
