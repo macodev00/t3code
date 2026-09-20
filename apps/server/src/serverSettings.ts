@@ -320,15 +320,20 @@ function restoreUsedProviders(
   };
 }
 
+/** Keep the stored text-generation selection when its instance is enabled; otherwise fall back. */
 function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
   return isModelSelectionProviderEnabled(settings, settings.textGenerationModelSelection)
     ? settings
     : fallbackTextGenerationProvider(settings);
 }
 
+/** Legacy provider entry that may still list customModels. */
+type LegacyCustomModelsProvider = { readonly customModels?: unknown };
+
+/** First custom-model slug from the instance config, else the legacy provider list. */
 function firstConfiguredCustomModelSlug(
   instanceConfig: unknown,
-  legacyProvider: { readonly customModels?: unknown },
+  legacyProvider: LegacyCustomModelsProvider,
 ): string | undefined {
   if (instanceConfig !== null && typeof instanceConfig === "object") {
     const value = (instanceConfig as { customModels?: unknown }).customModels;
@@ -339,14 +344,18 @@ function firstConfiguredCustomModelSlug(
   return readCustomModelEntries(legacyProvider.customModels)[0]?.slug;
 }
 
+/** Prefer the enabled instance's default or custom model when the stored selection is unusable. */
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
   // Same precedence as isModelSelectionProviderEnabled: an explicit provider
   // instance wins over the legacy providers map, which decodes to defaults
   // (codex enabled) when the Providers UI has only written providerInstances.
-  const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
-    const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
-    return instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
-  });
+  const fallbackEntry = Object.entries(settings.providers).find(
+    /** True when this driver is the first enabled instance or legacy provider. */
+    ([driver, provider]) => {
+      const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
+      return instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
+    },
+  );
   if (!fallbackEntry) {
     return settings;
   }
