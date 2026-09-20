@@ -81,6 +81,7 @@ export function deriveThreadComposerOverlayHeight(input: {
   return Math.max(0, input.composerOverlapHeight) + Math.max(0, input.floatingControlCoverage);
 }
 
+/** Seed Android feed bottom inset before the first composer-overlay onLayout. */
 export function deriveThreadFeedInitialContentInset(input: {
   readonly platform: string;
   readonly usesNativeAutomaticInsets: boolean;

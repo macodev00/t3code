@@ -261,6 +261,7 @@ export function FloatingWorkingControl(props: {
   );
 }
 
+/** Compact-status label row inside the floating working capsule. */
 function CompactingLabel(props: { readonly onLayout: (event: LayoutChangeEvent) => void }) {
   return (
     <StatusLabelRow accessibilityLabel="Compacting" className="gap-1.5" onLayout={props.onLayout}>
@@ -275,6 +276,7 @@ function CompactingLabel(props: { readonly onLayout: (event: LayoutChangeEvent) 
   );
 }
 
+/** Dispatch the floating capsule label for the current working-status kind. */
 function FloatingStatusLabel(props: {
   readonly status: FloatingWorkingStatus;
   readonly onLayout: (event: LayoutChangeEvent) => void;
@@ -354,7 +356,7 @@ function FloatingStatusLabel(props: {
   );
 }
 
-// Absolute rows cross-fade around the same center without affecting each other.
+/** Absolutely positioned status row that cross-fades around a shared center. */
 function StatusLabelRow(props: {
   readonly accessibilityLabel: string;
   readonly accessibilityRole?: "button";
@@ -389,6 +391,7 @@ function StatusLabelRow(props: {
   );
 }
 
+/** Live "Working for …" duration label for an in-flight turn. */
 function WorkingDuration(props: {
   readonly startedAt: string;
   readonly onLayout: (event: LayoutChangeEvent) => void;
@@ -417,6 +420,7 @@ function WorkingDuration(props: {
   );
 }
 
+/** Format elapsed working time as seconds, minutes, or a longer duration. */
 function formatWorkingDuration(startedAt: string, nowMs: number): string {
   const startedAtMs = Date.parse(startedAt);
   if (!Number.isFinite(startedAtMs) || nowMs <= startedAtMs) {
@@ -436,6 +440,7 @@ function formatWorkingDuration(startedAt: string, nowMs: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+/** Circular control that jumps the thread feed to the latest content. */
 function ScrollToEndButton(props: { readonly disabled?: boolean; readonly onPress: () => void }) {
   return (
     <ControlPill

@@ -191,6 +191,7 @@ export interface ThreadDetailScreenProps {
   readonly showContent?: boolean;
 }
 
+/** Return the newest streaming assistant message id and text length, if any. */
 function latestStreamingAssistantMessage(
   feed: ReadonlyArray<ThreadFeedEntry>,
 ): { readonly id: string; readonly textLength: number } | null {
@@ -211,6 +212,7 @@ function latestStreamingAssistantMessage(
   return null;
 }
 
+/** Fire selection haptics when a streaming assistant message starts or grows. */
 function useStreamingHaptics(threadId: ThreadId, feed: ReadonlyArray<ThreadFeedEntry>) {
   const lastStreamingAssistantRef = useRef<{
     readonly id: string;
@@ -267,7 +269,7 @@ const USER_INPUT_TOGGLE_TIMING = {
 };
 
 /** Thread transcript with composer overlay chrome, including the running-turn working pill. */
-export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const navigation = useNavigation();
   const deviceState = useEnvironmentQuery(
     deviceEnvironment.state({ environmentId: props.environmentId, input: {} }),
@@ -1108,4 +1110,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       ) : null}
     </View>
   );
-});
+}
+
+const ThreadDetailScreenMemo = memo(ThreadDetailScreen);
+export { ThreadDetailScreenMemo as ThreadDetailScreen };
