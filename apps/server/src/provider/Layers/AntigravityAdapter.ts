@@ -301,8 +301,10 @@ const writeClientTextFile = Effect.fn("AntigravityAdapter.writeClientTextFile")(
   return {};
 });
 
-/** Keeps one official ACP process per thread and drains a cancelled prompt before steering. */
-export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(function* (
+/**
+ * Keeps one official ACP process per thread and drains a cancelled prompt before steering.
+ */
+function* makeAntigravityAdapterEffect(
   settings: AntigravitySettings,
   options: AntigravityAdapterOptions,
 ) {
@@ -1257,4 +1259,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       ),
     streamEvents: Stream.fromPubSub(events),
   } satisfies Adapter;
-});
+}
+export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(
+  makeAntigravityAdapterEffect,
+);

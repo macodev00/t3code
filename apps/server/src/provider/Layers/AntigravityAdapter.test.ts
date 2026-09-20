@@ -736,9 +736,11 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
-  /** Leftover in-progress execute tools must not emit local_bash task events after end_turn. */
-  it.effect("does not pin Monitoring when an execute tool is still inProgress at end_turn", () =>
-    Effect.gen(function* () {
+  /**
+   * Leftover in-progress execute tools must not emit local_bash task events after end_turn.
+   */
+  function doesNotPinMonitoringWhenExecuteStillInProgress() {
+    return Effect.gen(function* () {
       const h = yield* makeHarness();
       yield* h.adapter.startSession({
         threadId,
@@ -774,7 +776,11 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       expect(ended.itemId).toBe("watcher-1");
       expect(h.seen.filter((event) => event.type === "task.started")).toHaveLength(0);
       expect(h.seen.filter((event) => event.type === "task.completed")).toHaveLength(0);
-    }),
+    });
+  }
+  it.effect(
+    "does not pin Monitoring when an execute tool is still inProgress at end_turn",
+    doesNotPinMonitoringWhenExecuteStillInProgress,
   );
 
   it.effect("keeps a launched batch active while child tools continue", () =>
