@@ -2986,16 +2986,12 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         action: "commit",
       });
 
-      expect(generatedPolicy?.kind).toBe("repo_conventions");
-      expect(generatedPolicy?.inferRepositoryConventions).toBe(true);
-      for (const field of [
-        generatedPolicy?.commitInstructions,
-        generatedPolicy?.changeRequestInstructions,
-      ]) {
-        expect(field).toContain(`Local AGENTS.md:\n${instructions}`);
-        expect(field).not.toContain("Local CLAUDE.md:");
-        expect(field?.split(instructions).length).toBe(2);
-      }
+      expect(generatedPolicy).toEqual({
+        kind: "repo_conventions",
+        commitInstructions: `Follow the repository's established commit message style when examples are available.\n\nLocal AGENTS.md:\n${instructions}`,
+        changeRequestInstructions: `Follow the repository's established change request title and body style when examples are available.\n\nLocal AGENTS.md:\n${instructions}`,
+        inferRepositoryConventions: true,
+      });
     }),
   );
 
@@ -3031,15 +3027,12 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         action: "commit",
       });
 
-      expect(generatedPolicy?.kind).toBe("repo_conventions");
-      expect(generatedPolicy?.commitInstructions).toContain(
-        `Local AGENTS.md:\n${agentInstructions}`,
-      );
-      expect(generatedPolicy?.commitInstructions).not.toContain("Local CLAUDE.md:");
-      expect(generatedPolicy?.changeRequestInstructions).toContain(
-        `Local AGENTS.md:\n${agentInstructions}`,
-      );
-      expect(generatedPolicy?.changeRequestInstructions).not.toContain("Local CLAUDE.md:");
+      expect(generatedPolicy).toEqual({
+        kind: "repo_conventions",
+        commitInstructions: `Follow the repository's established commit message style when examples are available.\n\nLocal AGENTS.md:\n${agentInstructions}`,
+        changeRequestInstructions: `Follow the repository's established change request title and body style when examples are available.\n\nLocal AGENTS.md:\n${agentInstructions}`,
+        inferRepositoryConventions: true,
+      });
     }),
   );
 
