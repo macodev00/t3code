@@ -1144,8 +1144,10 @@ function* makeAntigravityAdapterEffect(
       ),
     );
   }
+  /** Prompt the session; leftover in-progress execute tools stay unpromoted so Monitoring can clear. */
   const sendTurn: Adapter["sendTurn"] = Effect.fn("AntigravityAdapter.sendTurn")(sendTurnEffect);
 
+  /** Cancel the active Antigravity prompt for this thread. */
   const interruptTurn: Adapter["interruptTurn"] = (threadId) =>
     Effect.gen(function* () {
       const context = yield* requireSession(threadId);
@@ -1261,6 +1263,7 @@ function* makeAntigravityAdapterEffect(
     streamEvents: Stream.fromPubSub(events),
   } satisfies Adapter;
 }
+/** Keeps one official ACP process per thread and drains a cancelled prompt before steering. */
 export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(
   makeAntigravityAdapterEffect,
 );
