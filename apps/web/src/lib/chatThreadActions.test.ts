@@ -9,8 +9,11 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveThreadActionProjectRef,
   hasExplicitComposerModelSelection,
+  resolveAvailableNewThreadProjectRef,
   resolveNewDraftStartFromOrigin,
   resolveNewThreadModelSelectionOverride,
+  resolveWorkspaceOptionsAfterEnvironmentRetarget,
+  shouldReadProjectFileForNewThreadDefaults,
   startNewThreadFromContext,
   type ChatThreadActionContext,
 } from "./chatThreadActions";
@@ -167,5 +170,84 @@ describe("chatThreadActions", () => {
 
     expect(didStart).toBe(false);
     expect(handleNewThread).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reachable new-thread target", () => {
+    expect(
+      resolveAvailableNewThreadProjectRef({
+        requested: scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID),
+        members: [
+          {
+            environmentId: ENVIRONMENT_ID,
+            projectId: PROJECT_ID,
+            isPrimary: false,
+          },
+          {
+            environmentId: EnvironmentId.make("environment-primary"),
+            projectId: FALLBACK_PROJECT_ID,
+            isPrimary: true,
+          },
+        ],
+        isEnvironmentReachable: () => true,
+      }),
+    ).toEqual(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID));
+  });
+
+  it("retargets an unreachable new-thread request to a primary sibling", () => {
+    const primaryEnvironmentId = EnvironmentId.make("environment-primary");
+    expect(
+      resolveAvailableNewThreadProjectRef({
+        requested: scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID),
+        members: [
+          {
+            environmentId: ENVIRONMENT_ID,
+            projectId: PROJECT_ID,
+            isPrimary: false,
+          },
+          {
+            environmentId: primaryEnvironmentId,
+            projectId: FALLBACK_PROJECT_ID,
+            isPrimary: true,
+          },
+        ],
+        isEnvironmentReachable: (environmentId) => environmentId === primaryEnvironmentId,
+      }),
+    ).toEqual(scopeProjectRef(primaryEnvironmentId, FALLBACK_PROJECT_ID));
+  });
+
+  it("returns the requested project when no sibling is reachable", () => {
+    expect(
+      resolveAvailableNewThreadProjectRef({
+        requested: scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID),
+        members: [
+          {
+            environmentId: ENVIRONMENT_ID,
+            projectId: PROJECT_ID,
+            isPrimary: false,
+          },
+        ],
+        isEnvironmentReachable: () => false,
+      }),
+    ).toEqual(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID));
+  });
+
+  it("clears machine-specific workspace options after retargeting environments", () => {
+    expect(
+      resolveWorkspaceOptionsAfterEnvironmentRetarget({
+        requestedEnvironmentId: ENVIRONMENT_ID,
+        targetEnvironmentId: EnvironmentId.make("environment-primary"),
+        options: { branch: "feature", worktreePath: "/tmp/wt", envMode: "worktree" as const },
+      }),
+    ).toEqual({ branch: null, worktreePath: null, envMode: "worktree" });
+  });
+
+  it("reads t3.json only when the environment is connected and no project setting exists", () => {
+    expect(shouldReadProjectFileForNewThreadDefaults(null, "connected")).toBe(true);
+    expect(shouldReadProjectFileForNewThreadDefaults(undefined, "connected")).toBe(true);
+    expect(shouldReadProjectFileForNewThreadDefaults("worktree", "connected")).toBe(false);
+    expect(shouldReadProjectFileForNewThreadDefaults(null, "reconnecting")).toBe(false);
+    expect(shouldReadProjectFileForNewThreadDefaults(null, "connecting")).toBe(false);
+    expect(shouldReadProjectFileForNewThreadDefaults(null, "offline")).toBe(false);
+    expect(shouldReadProjectFileForNewThreadDefaults(null, null)).toBe(false);
   });
 });

@@ -43,6 +43,7 @@ export interface SidebarProjectPickerEntry {
   group: SidebarProjectSnapshot;
   targetProject: SidebarProjectGroupMember;
   isPreferred: boolean;
+  reachable: boolean;
 }
 
 export function buildPhysicalToLogicalProjectKeyMap(input: {
@@ -136,9 +137,41 @@ export function buildSidebarProjectSnapshots(input: {
 export function buildSidebarProjectPickerEntries(input: {
   groups: ReadonlyArray<SidebarProjectSnapshot>;
   preferredProjectRef: ScopedProjectRef | null;
+  isEnvironmentReachable?: (environmentId: EnvironmentId) => boolean;
+  // New Chat / draft-hero need every checkout: a grouped local+remote
+  // project is two choices, not one row that follows the selected chat.
+  expandMembers?: boolean;
 }) {
   const preferredProjectRef = input.preferredProjectRef;
+  const isEnvironmentReachable = input.isEnvironmentReachable ?? (() => true);
   const entries = input.groups.flatMap((group): SidebarProjectPickerEntry[] => {
+    const preferredMember =
+      (preferredProjectRef
+        ? (group.memberProjects.find(
+            (project) =>
+              project.environmentId === preferredProjectRef.environmentId &&
+              project.id === preferredProjectRef.projectId,
+          ) ??
+          group.memberProjects.find(
+            (project) => project.environmentId === preferredProjectRef.environmentId,
+          ))
+        : null) ?? null;
+    const toEntry = (
+      targetProject: SidebarProjectGroupMember,
+      isPreferred: boolean,
+    ): SidebarProjectPickerEntry => ({
+      group,
+      targetProject,
+      isPreferred,
+      reachable: isEnvironmentReachable(targetProject.environmentId),
+    });
+
+    if (input.expandMembers === true) {
+      return orderPickerMembers(group.memberProjects, preferredMember, isEnvironmentReachable).map(
+        (member) => toEntry(member, member === preferredMember),
+      );
+    }
+
     const isPreferred = preferredProjectRef
       ? group.memberProjectRefs.some(
           (projectRef) =>
@@ -146,32 +179,50 @@ export function buildSidebarProjectPickerEntries(input: {
             projectRef.projectId === preferredProjectRef.projectId,
         )
       : false;
-    const preferredProject = preferredProjectRef
-      ? (group.memberProjects.find(
-          (project) =>
-            project.environmentId === preferredProjectRef.environmentId &&
-            project.id === preferredProjectRef.projectId,
-        ) ??
-        group.memberProjects.find(
-          (project) => project.environmentId === preferredProjectRef.environmentId,
-        ))
-      : null;
-    const targetProject =
-      preferredProject ??
+    const reachablePreferred =
+      preferredMember !== null && isEnvironmentReachable(preferredMember.environmentId)
+        ? preferredMember
+        : null;
+    const reachableMember = group.memberProjects.find((project) =>
+      isEnvironmentReachable(project.environmentId),
+    );
+    const representative =
       group.memberProjects.find(
         (project) => project.environmentId === group.environmentId && project.id === group.id,
-      ) ??
-      group.memberProjects[0];
+      ) ?? group.memberProjects[0];
+    const targetProject =
+      reachablePreferred ?? reachableMember ?? preferredMember ?? representative;
     if (!targetProject) return [];
 
-    return [{ group, targetProject, isPreferred }];
+    return [toEntry(targetProject, isPreferred)];
   });
+
   const preferredIndex = entries.findIndex((entry) => entry.isPreferred);
   if (preferredIndex <= 0) return entries;
 
-  return [
-    entries[preferredIndex]!,
-    ...entries.slice(0, preferredIndex),
-    ...entries.slice(preferredIndex + 1),
-  ];
+  const preferredGroupKey = entries[preferredIndex]!.group.projectKey;
+  const preferredGroupEntries: SidebarProjectPickerEntry[] = [];
+  const otherEntries: SidebarProjectPickerEntry[] = [];
+  for (const entry of entries) {
+    if (entry.group.projectKey === preferredGroupKey) {
+      preferredGroupEntries.push(entry);
+    } else {
+      otherEntries.push(entry);
+    }
+  }
+  return [...preferredGroupEntries, ...otherEntries];
+}
+
+function orderPickerMembers(
+  members: ReadonlyArray<SidebarProjectGroupMember>,
+  preferredMember: SidebarProjectGroupMember | null,
+  isEnvironmentReachable: (environmentId: EnvironmentId) => boolean,
+) {
+  return members.toSorted((left, right) => {
+    const reachability =
+      Number(isEnvironmentReachable(right.environmentId)) -
+      Number(isEnvironmentReachable(left.environmentId));
+    if (reachability !== 0) return reachability;
+    return Number(right === preferredMember) - Number(left === preferredMember);
+  });
 }
