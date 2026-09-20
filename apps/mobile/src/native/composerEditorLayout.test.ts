@@ -1,80 +1,67 @@
-import { describe, expect, it } from "vite-plus/test";
+import { expect, it } from "vite-plus/test";
 
 import { composerEditorLaidOutHeight, verticalPaddingFromViewStyle } from "./composerEditorLayout";
 
-describe("composer editor auto-height", () => {
-  it("uses a collapsed fixed height instead of growing with content", () => {
-    expect(
-      composerEditorLaidOutHeight({
-        contentHeight: 240,
-        height: 36,
-        minHeight: 72,
-        maxHeight: 160,
-        verticalPadding: 0,
-      }),
-    ).toBe(36);
-  });
+/** Assert auto-height growth, max-height capping, and padding precedence. */
+function testComposerEditorAutoHeight() {
+  expect(
+    composerEditorLaidOutHeight({
+      contentHeight: 240,
+      height: 36,
+      minHeight: 72,
+      maxHeight: 160,
+      verticalPadding: 0,
+    }),
+  ).toBe(36);
+  expect(
+    composerEditorLaidOutHeight({
+      contentHeight: 20,
+      minHeight: 72,
+      maxHeight: 160,
+      verticalPadding: 8,
+    }),
+  ).toBe(72);
+  expect(
+    composerEditorLaidOutHeight({
+      contentHeight: 100,
+      minHeight: 72,
+      maxHeight: 160,
+      verticalPadding: 8,
+    }),
+  ).toBe(108);
+  expect(
+    composerEditorLaidOutHeight({
+      contentHeight: 100,
+      minHeight: 72,
+      maxHeight: 160,
+      verticalPadding: 0,
+    }),
+  ).toBe(100);
+  expect(
+    composerEditorLaidOutHeight({
+      contentHeight: 400,
+      minHeight: 72,
+      maxHeight: 160,
+      verticalPadding: 8,
+    }),
+  ).toBe(160);
+  expect(verticalPaddingFromViewStyle({ paddingVertical: 4 })).toBe(8);
+  expect(verticalPaddingFromViewStyle({ paddingTop: 4, paddingBottom: 6 })).toBe(10);
+  expect(verticalPaddingFromViewStyle({ padding: 3 })).toBe(6);
+  expect(
+    verticalPaddingFromViewStyle({
+      padding: 2,
+      paddingVertical: 4,
+      paddingTop: 1,
+    }),
+  ).toBe(5);
+  expect(
+    verticalPaddingFromViewStyle({
+      paddingVertical: 4,
+      paddingBottom: 10,
+    }),
+  ).toBe(14);
+}
 
-  it("grows from the minimum until the content fills the expanded frame", () => {
-    expect(
-      composerEditorLaidOutHeight({
-        contentHeight: 20,
-        minHeight: 72,
-        maxHeight: 160,
-        verticalPadding: 8,
-      }),
-    ).toBe(72);
-    expect(
-      composerEditorLaidOutHeight({
-        contentHeight: 100,
-        minHeight: 72,
-        maxHeight: 160,
-        verticalPadding: 8,
-      }),
-    ).toBe(108);
-  });
-
-  it("does not add Yoga padding when the native view fills the bounds", () => {
-    expect(
-      composerEditorLaidOutHeight({
-        contentHeight: 100,
-        minHeight: 72,
-        maxHeight: 160,
-        verticalPadding: 0,
-      }),
-    ).toBe(100);
-  });
-
-  it("stops at maxHeight so a long prompt scrolls inside the editor", () => {
-    expect(
-      composerEditorLaidOutHeight({
-        contentHeight: 400,
-        minHeight: 72,
-        maxHeight: 160,
-        verticalPadding: 8,
-      }),
-    ).toBe(160);
-  });
-
-  it("counts vertical padding once from paddingVertical", () => {
-    expect(verticalPaddingFromViewStyle({ paddingVertical: 4 })).toBe(8);
-    expect(verticalPaddingFromViewStyle({ paddingTop: 4, paddingBottom: 6 })).toBe(10);
-    expect(verticalPaddingFromViewStyle({ padding: 3 })).toBe(6);
-  });
-
-  it("lets paddingTop and paddingBottom override paddingVertical", () => {
-    expect(
-      verticalPaddingFromViewStyle({
-        padding: 2,
-        paddingVertical: 4,
-        paddingTop: 1,
-      }),
-    ).toBe(5);
-    expect(
-      verticalPaddingFromViewStyle({
-        paddingVertical: 4,
-        paddingBottom: 10,
-      }),
-    ).toBe(14);
-  });
-});
+/** Register auto-height layout assertions with the test runner. */
+it("composer editor auto-height", testComposerEditorAutoHeight);

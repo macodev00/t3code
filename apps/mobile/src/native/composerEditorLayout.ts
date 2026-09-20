@@ -1,3 +1,4 @@
+/** Return a finite numeric style length, or undefined for non-numeric values. */
 export function numericStyleLength(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

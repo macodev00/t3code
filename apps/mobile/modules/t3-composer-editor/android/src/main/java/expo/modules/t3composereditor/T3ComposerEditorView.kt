@@ -20,6 +20,7 @@ import android.view.Gravity
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -153,14 +154,17 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     }
     editor.addTextChangedListener(
       object : TextWatcher {
+        /** No-op; text is published after the edit lands. */
         override fun beforeTextChanged(
           text: CharSequence?,
           start: Int,
           count: Int,
           after: Int
         ) = Unit
+        /** No-op; text is published after the edit lands. */
         override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
 
+        /** Publish the typed text and scroll the caret into view. */
         override fun afterTextChanged(editable: Editable?) {
           if (applyingNativeValue) return
           val nextValue = editable.toString()
@@ -178,11 +182,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
         }
       },
     )
-    editor.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
-      if (right - left != oldRight - oldLeft) applyTokenSpans()
-      emitContentSizeIfNeeded()
-      scrollCaretIntoView()
-    }
+    editor.addOnLayoutChangeListener(::onEditorLayoutChanged)
     addView(
       editor,
       LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
@@ -190,6 +190,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
   }
 
   @Suppress("ReturnCount")
+  /** Apply a controlled document and scroll the caret when text or selection changes. */
   fun setControlledDocumentJson(documentJson: String) {
     val document = try {
       JSONObject(documentJson)
@@ -236,6 +237,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     }
   }
 
+  /** Apply text, placeholder, selection, and chip colors from the theme JSON. */
   fun setThemeJson(themeJson: String) {
     try {
       val theme = JSONObject(themeJson)
@@ -358,10 +360,12 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     imm?.hideSoftInputFromWindow(editor.windowToken, 0)
   }
 
+  /** Apply an explicit selection from the JS host. */
   fun setSelection(start: Int, end: Int) {
     applySelection(start, end)
   }
 
+  /** Set the editor selection and scroll the caret into view. */
   private fun applySelection(start: Int, end: Int) {
     val textLength = editor.text?.length ?: 0
     val safeStart = start.coerceIn(0, textLength)
@@ -373,6 +377,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     scrollCaretIntoView()
   }
 
+  /** Apply autocorrect and spell-check flags to the editor input type. */
   private fun updateInputFlags() {
     var flags =
       InputType.TYPE_CLASS_TEXT or
@@ -416,6 +421,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
       "end" to maxOf(start, end).coerceAtLeast(0),
     )
 
+  /** Publish a caret move and scroll it into view. */
   private fun emitSelectionChange(start: Int, end: Int) {
     // Caret moves advance the revision counter like text edits do: a
     // controlled payload computed before this move is stale and must fail the
@@ -431,6 +437,23 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     scrollCaretIntoView()
   }
 
+  /** Re-apply chips on width changes and keep the caret on screen after layout. */
+  private fun onEditorLayoutChanged(
+    _view: View,
+    left: Int,
+    _top: Int,
+    right: Int,
+    _bottom: Int,
+    oldLeft: Int,
+    _oldTop: Int,
+    oldRight: Int,
+    _oldBottom: Int,
+  ) {
+    if (right - left != oldRight - oldLeft) applyTokenSpans()
+    emitContentSizeIfNeeded()
+    scrollCaretIntoView()
+  }
+
   /**
    * Keep the caret on screen after typing, caret moves, layout changes, and
    * controlled text resets. setScrollEnabled only toggles the scrollbar.
@@ -438,14 +461,18 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
   private fun scrollCaretIntoView() {
     if (caretScrollPosted) return
     caretScrollPosted = true
-    editor.post {
-      caretScrollPosted = false
-      if (editor.layout == null || editor.height <= 0) return@post
-      val offset = editor.selectionEnd.coerceIn(0, editor.length())
-      editor.bringPointIntoView(offset)
-    }
+    editor.post(::bringCaretIntoViewNow)
   }
 
+  /** Apply bringPointIntoView after the current layout pass. */
+  private fun bringCaretIntoViewNow() {
+    caretScrollPosted = false
+    if (editor.layout == null || editor.height <= 0) return
+    val offset = editor.selectionEnd.coerceIn(0, editor.length())
+    editor.bringPointIntoView(offset)
+  }
+
+  /** Emit native content height when the measured text height changes. */
   private fun emitContentSizeIfNeeded() {
     val height = editor.layout?.height ?: editor.measuredHeight
     val contentHeight = height + contentInsetVertical * 2
