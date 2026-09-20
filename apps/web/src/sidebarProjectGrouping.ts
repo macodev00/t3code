@@ -175,20 +175,25 @@ function selectExpandedPickerTargets(
   preferredProjectRef: ScopedProjectRef | null,
   isEnvironmentReachable: (environmentId: EnvironmentId) => boolean,
 ): SidebarProjectGroupMember[] {
-  const copies: SidebarProjectGroupMember[] = [];
-  const seenEnvironments = new Set<EnvironmentId>();
-  for (const member of group.memberProjects) {
-    if (seenEnvironments.has(member.environmentId)) continue;
-    seenEnvironments.add(member.environmentId);
-    copies.push(member);
-  }
-
-  return copies.sort((left, right) => {
+  // memberProjects is already physical-key deduped. Same-environment worktrees
+  // are distinct checkouts, so New Chat must keep each one instead of collapsing
+  // by environmentId (that omitted the active worktree and created on the first).
+  return [...group.memberProjects].sort((left, right) => {
     const reachDelta =
       Number(isEnvironmentReachable(right.environmentId)) -
       Number(isEnvironmentReachable(left.environmentId));
     if (reachDelta !== 0) return reachDelta;
     if (!preferredProjectRef) return 0;
+    const preferredMemberDelta =
+      Number(
+        right.environmentId === preferredProjectRef.environmentId &&
+          right.id === preferredProjectRef.projectId,
+      ) -
+      Number(
+        left.environmentId === preferredProjectRef.environmentId &&
+          left.id === preferredProjectRef.projectId,
+      );
+    if (preferredMemberDelta !== 0) return preferredMemberDelta;
     return (
       Number(right.environmentId === preferredProjectRef.environmentId) -
       Number(left.environmentId === preferredProjectRef.environmentId)

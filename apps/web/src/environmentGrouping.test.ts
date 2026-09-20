@@ -528,4 +528,69 @@ describe("environment grouping", () => {
       id: primary.id,
     });
   });
+
+  it("keeps two same-environment worktrees as New Chat rows and prefers the active checkout", () => {
+    const mainWorktree = makeProject({
+      repositoryIdentity,
+      workspaceRoot: "/tmp/shared-repo",
+    });
+    const featureWorktree = makeProject({
+      id: ProjectId.make("project-worktree"),
+      workspaceRoot: "/tmp/shared-repo-feature",
+      repositoryIdentity,
+    });
+    const remote = makeProject({
+      id: ProjectId.make("project-remote"),
+      environmentId: remoteEnvironmentId,
+      workspaceRoot: "/remote/shared-repo",
+      repositoryIdentity,
+    });
+    const groups = buildSidebarProjectSnapshots({
+      projects: [mainWorktree, featureWorktree, remote],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.memberProjects.map((project) => project.id)).toEqual([
+      mainWorktree.id,
+      featureWorktree.id,
+      remote.id,
+    ]);
+
+    const preferredProjectRef = {
+      environmentId: primaryEnvironmentId,
+      projectId: featureWorktree.id,
+    };
+    const entries = buildSidebarProjectPickerEntries({
+      groups,
+      preferredProjectRef,
+      expandEnvironmentCopies: true,
+      isEnvironmentReachable: () => true,
+    });
+
+    expect(entries.map((entry) => entry.targetProject.id)).toEqual([
+      featureWorktree.id,
+      mainWorktree.id,
+      remote.id,
+    ]);
+    expect(entries.map((entry) => entry.targetProject.workspaceRoot)).toEqual([
+      "/tmp/shared-repo-feature",
+      "/tmp/shared-repo",
+      "/remote/shared-repo",
+    ]);
+    expect(entries.every((entry) => entry.isPreferred)).toBe(true);
+
+    const focus = resolveNewThreadPickerFocusEntry({
+      entries,
+      currentProjectRef: preferredProjectRef,
+      isEnvironmentReachable: () => true,
+    });
+    expect(focus?.targetProject).toMatchObject({
+      environmentId: primaryEnvironmentId,
+      id: featureWorktree.id,
+      workspaceRoot: "/tmp/shared-repo-feature",
+    });
+  });
 });
