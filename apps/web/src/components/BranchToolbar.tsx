@@ -234,7 +234,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                     value="auto"
                     disabled={envLocked}
                     onClick={() => {
-                      if (autoEnvironmentLabel) onAutoEnvironment?.();
+                      onAutoEnvironment?.();
                     }}
                   >
                     <span className="flex min-w-0 items-center gap-1.5">
