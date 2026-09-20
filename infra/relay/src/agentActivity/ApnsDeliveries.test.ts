@@ -146,6 +146,12 @@ const target: LiveActivities.TargetRow = {
   last_live_activity_delivery_at: null,
 };
 
+/**
+ * Test layer: capture delivery attempts and queued APNs jobs for assertions.
+ *
+ * @param input - Sinks and optional overrides for rows, config, and HTTP
+ * @returns Layer providing ApnsDeliveries and its test doubles
+ */
 function makeLayer(input: {
   readonly attempts: Array<DeliveryAttempts.DeliveryAttemptInput>;
   readonly sourceJobClaims?: ReadonlyMap<string, DeliveryAttempts.DeliverySourceJobClaimResult>;

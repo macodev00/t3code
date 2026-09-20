@@ -143,6 +143,12 @@ const decodeRelayAgentAwarenessPreferencesJson = Schema.decodeUnknownOption(
 );
 const decodeSignedApnsDeliveryJob = Schema.decodeUnknownEffect(SignedApnsDeliveryJob);
 
+/**
+ * Decode a stored Live Activity aggregate JSON payload.
+ *
+ * @param value - Serialized aggregate, if any
+ * @returns The aggregate, or null when missing or invalid
+ */
 function parseAggregate(value: string | null): RelayAgentActivityAggregateState | null {
   if (!value) {
     return null;
@@ -150,6 +156,12 @@ function parseAggregate(value: string | null): RelayAgentActivityAggregateState 
   return Option.getOrNull(decodeRelayAgentActivityAggregateStateJson(value));
 }
 
+/**
+ * Decode a device's awareness preference JSON payload.
+ *
+ * @param value - Serialized preferences
+ * @returns The preferences, or null when invalid
+ */
 function parsePreferences(value: string): RelayAgentAwarenessPreferences | null {
   return Option.getOrNull(decodeRelayAgentAwarenessPreferencesJson(value));
 }
