@@ -195,6 +195,23 @@ function aggregateHasPhaseChange(
 }
 
 /**
+ * Epoch ms for the last Live Activity delivery, or NaN if the timestamp is invalid.
+ *
+ * @param lastDeliveryAt - ISO timestamp from the target row, if any
+ * @returns null when unset, NaN when unparseable, otherwise epoch milliseconds
+ */
+function lastLiveActivityDeliveryAtMs(lastDeliveryAt: string | null): number | null {
+  if (lastDeliveryAt === null) {
+    return null;
+  }
+  const parsed = DateTime.make(lastDeliveryAt);
+  if (Option.isNone(parsed)) {
+    return Number.NaN;
+  }
+  return parsed.value.epochMilliseconds;
+}
+
+/**
  * Queue a Live Activity update on first delivery, exempt changes
  * (activeCount, attention, newly-terminal, or phase), or after the 15s throttle.
  *
@@ -230,13 +247,7 @@ function shouldUpdateLiveActivity(input: {
   if (aggregateHasPhaseChange(input.previousAggregate, input.nextAggregate)) {
     return true;
   }
-  const lastDeliveryAtMs =
-    input.lastDeliveryAt === null
-      ? null
-      : Option.match(DateTime.make(input.lastDeliveryAt), {
-          onNone: () => Number.NaN,
-          onSome: (dt) => dt.epochMilliseconds,
-        });
+  const lastDeliveryAtMs = lastLiveActivityDeliveryAtMs(input.lastDeliveryAt);
   return (
     lastDeliveryAtMs === null ||
     Number.isNaN(lastDeliveryAtMs) ||
