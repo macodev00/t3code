@@ -183,6 +183,10 @@ export const RelayManagedEndpointRuntimeConfig = Schema.Struct({
   connectorToken: TrimmedNonEmptyString,
   tunnelId: Schema.optional(TrimmedNonEmptyString),
   tunnelName: Schema.optional(TrimmedNonEmptyString),
+  // Carried by the environment when it applies relay config so a later origin
+  // change (desktop backend port hop) restarts the local connector. Optional
+  // for configs stored before this field existed.
+  origin: Schema.optional(RelayManagedEndpointOrigin),
 });
 export type RelayManagedEndpointRuntimeConfig = typeof RelayManagedEndpointRuntimeConfig.Type;
 

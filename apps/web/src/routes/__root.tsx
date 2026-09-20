@@ -27,6 +27,7 @@ import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPrompt
 import { SnapShotCoordinator } from "../components/desktop/SnapShotCoordinator";
 import { DesktopAppActivationCoordinator } from "../components/desktop/DesktopAppActivationCoordinator";
 import { RunningThreadKeepAlive } from "../components/desktop/RunningThreadKeepAlive";
+import { DesktopManagedTunnelOriginReconcile } from "../components/desktop/DesktopManagedTunnelOriginReconcile";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { ThreadNotificationCoordinator } from "../components/ThreadNotificationCoordinator";
 import { ProjectCloneToastCoordinator } from "../components/ProjectCloneToastCoordinator";
@@ -224,6 +225,7 @@ function RootRouteView() {
           {isElectron ? <RunningThreadKeepAlive /> : null}
           <RelayClientInstallDialog />
           <ConnectOnboardingDialog />
+          {primaryEnvironmentAuthenticated ? <DesktopManagedTunnelOriginReconcile /> : null}
           <SshPasswordPromptDialog />
           <SnapShotCoordinator />
           <ThreadNotificationCoordinator />

@@ -112,6 +112,8 @@ function runtimeConfigKey(config: RelayManagedEndpointRuntimeConfig): string {
     connectorToken: config.connectorToken,
     tunnelId: config.tunnelId ?? null,
     tunnelName: config.tunnelName ?? null,
+    originHost: config.origin?.localHttpHost ?? null,
+    originPort: config.origin?.localHttpPort ?? null,
   });
 }
 
