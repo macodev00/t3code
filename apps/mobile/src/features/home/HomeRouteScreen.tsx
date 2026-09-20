@@ -26,6 +26,7 @@ import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle
 
 /* ─── Route screen ───────────────────────────────────────────────────── */
 
+/** Home list, or split-view empty detail that can restore a hidden Android sidebar. */
 export function HomeRouteScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const { layout, panes, revealPrimarySidebar } = useAdaptiveWorkspaceLayout();

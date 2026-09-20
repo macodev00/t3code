@@ -7,6 +7,7 @@ import { MaterialNewThreadButton } from "../../components/MaterialNewThreadButto
 import { MaterialFloatingActionButton } from "../../components/MaterialFloatingActionButton";
 import { EmptyState } from "../../components/EmptyState";
 
+/** Empty split-view detail with optional Show threads and new-task actions. */
 export function WorkspaceEmptyDetail(props: {
   readonly onShowThreads?: () => void;
   readonly onStartNewTask?: () => void;

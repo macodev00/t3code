@@ -386,6 +386,7 @@ describe("deriveWorkspacePaneLayout", () => {
   });
 });
 
+/** Hidden-sidebar reveal is offered only when the header has no toggle. */
 describe("shouldOfferSidebarReveal", () => {
   it("offers the sidebar back when it is hidden and the header has no toggle", () => {
     expect(

@@ -81,6 +81,7 @@ interface AdaptiveWorkspaceContextValue {
   readonly showAuxiliaryPane: (role: WorkspaceAuxiliaryPaneRole) => void;
   readonly toggleAuxiliaryPane: () => void;
   readonly togglePrimarySidebar: () => void;
+  /** Show the thread sidebar, closing a suppressing inspector if needed. */
   readonly revealPrimarySidebar: () => void;
   readonly setAuxiliaryPaneWidth: (width: number) => void;
 }
@@ -225,6 +226,7 @@ export function AdaptiveWorkspaceLayout(props: {
   );
 }
 
+/** Owns sidebar preference and pane layout for the split or compact workspace. */
 function AdaptiveWorkspaceLayoutContent(
   props: {
     readonly children: ReactNode;
@@ -367,6 +369,7 @@ function AdaptiveWorkspaceLayoutContent(
     }
     setPrimarySidebarPreferredVisible((current) => !current);
   }, [panes.primarySidebarSuppressedByAuxiliary, panes.primarySidebarVisible, pathname]);
+  /** Force the thread sidebar visible after fullscreen Terminal hid it. */
   const revealPrimarySidebar = useCallback(() => {
     if (panes.primarySidebarSuppressedByAuxiliary) {
       setFileInspectorPreferredVisible(false);

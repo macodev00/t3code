@@ -92,6 +92,7 @@ import {
 } from "./thread-inspector-content-stack";
 import { threadRouteIsHydrating } from "./thread-route-hydration";
 
+/** Thread chrome that restores a hidden Android split-view sidebar. */
 function ThreadHeader(
   props: Parameters<typeof useThreadHeaderOptions>[0] & {
     readonly hasThreadCwd: boolean;
