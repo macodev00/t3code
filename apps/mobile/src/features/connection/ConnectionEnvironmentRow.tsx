@@ -235,6 +235,8 @@ export function ConnectionEnvironmentRow(props: {
               </Pressable>
 
               <Pressable
+                accessibilityLabel="Remove environment"
+                accessibilityRole="button"
                 className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-danger-border bg-danger active:opacity-70"
                 onPress={() => props.onRemove(props.environment.environmentId)}
               >

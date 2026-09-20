@@ -1,5 +1,8 @@
+import { BearerConnectionTarget } from "@t3tools/client-runtime/connection";
+import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import { vi } from "vite-plus/test";
 
 vi.mock("react-native", () => ({
@@ -13,7 +16,10 @@ vi.mock("expo-secure-store", () => ({
 }));
 
 import { CONNECTION_CATALOG_KEY, LEGACY_CONNECTIONS_KEY, make } from "./catalog-store";
-import { MobileSecureStorage } from "../persistence/mobile-secure-storage";
+import {
+  MobileSecureStorage,
+  MobileSecureStorageError,
+} from "../persistence/mobile-secure-storage";
 
 function makeStorage(initial: Readonly<Record<string, string>>) {
   const values = new Map(Object.entries(initial));
@@ -92,6 +98,54 @@ describe("mobile connection catalog storage", () => {
       yield* catalog.update((document) => document);
       expect(memory.values.has(CONNECTION_CATALOG_KEY)).toBe(true);
       expect(memory.values.has(LEGACY_CONNECTIONS_KEY)).toBe(false);
+    }),
+  );
+
+  it.effect("keeps a saved environment when a catalog write fails", () =>
+    Effect.gen(function* () {
+      const values = new Map<string, string>();
+      let failWrite = false;
+      const storage = MobileSecureStorage.of({
+        getItem: (key) => Effect.sync(() => values.get(key) ?? null),
+        setItem: (key, value) =>
+          Effect.gen(function* () {
+            if (failWrite) {
+              return yield* new MobileSecureStorageError({
+                operation: "write",
+                key,
+                cause: new Error("keychain write failed"),
+              });
+            }
+            values.set(key, value);
+          }),
+        removeItem: (key) =>
+          Effect.sync(() => {
+            values.delete(key);
+          }),
+      });
+      const catalog = yield* make().pipe(Effect.provideService(MobileSecureStorage, storage));
+      const environmentId = EnvironmentId.make("offline-direct");
+
+      yield* catalog.update((document) => ({
+        ...document,
+        targets: [
+          new BearerConnectionTarget({
+            environmentId,
+            label: "Stale Mac",
+            connectionId: "bearer-offline-direct",
+          }),
+        ],
+      }));
+      expect((yield* catalog.read).targets).toHaveLength(1);
+
+      failWrite = true;
+      const removed = yield* catalog
+        .update((document) => ({ ...document, targets: [] }))
+        .pipe(Effect.exit);
+
+      expect(Exit.isFailure(removed)).toBe(true);
+      expect((yield* catalog.read).targets).toHaveLength(1);
+      expect((yield* catalog.read).targets[0]?.environmentId).toBe(environmentId);
     }),
   );
 });

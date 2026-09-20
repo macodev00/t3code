@@ -5,11 +5,13 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useMemo } from "react";
 import { Alert } from "react-native";
 
+import { showConfirmDialog } from "../components/ConfirmDialogHost";
 import { useConnectionController } from "../features/connection/useConnectionController";
 import { environmentPresentations } from "./presentation";
 import { useWorkspaceState } from "../state/workspace";
 import type { SavedRemoteConnection } from "../lib/connection";
 import { appAtomRegistry } from "./atom-registry";
+import { presentRemoveSavedEnvironment } from "./remove-environment-confirm";
 import type { ConnectedEnvironmentSummary, EnvironmentRuntimeState } from "./remote-runtime-types";
 import { environmentSession } from "./session";
 import { environmentCatalog } from "../connection/catalog";
@@ -165,26 +167,22 @@ export function useRemoteConnections() {
 
   const onRemoveEnvironmentPress = useCallback(
     (environmentId: EnvironmentId) => {
-      const environment = connectedEnvironments.find(
-        (candidate) => candidate.environmentId === environmentId,
-      );
-      if (!environment) {
-        return;
-      }
-      Alert.alert(
-        "Remove from this device?",
-        `Forget ${environment.environmentLabel} and its cached threads on this device. Switch it off instead to keep it saved.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Remove",
-            style: "destructive",
-            onPress: () => {
-              void controller.removeEnvironment(environmentId);
-            },
-          },
-        ],
-      );
+      presentRemoveSavedEnvironment({
+        environmentId,
+        environmentLabel: connectedEnvironments.find(
+          (candidate) => candidate.environmentId === environmentId,
+        )?.environmentLabel,
+        remove: controller.removeEnvironment,
+        presentConfirm: showConfirmDialog,
+        presentError: (title, message) => {
+          showConfirmDialog({
+            title,
+            message,
+            confirmText: "OK",
+            onConfirm: () => undefined,
+          });
+        },
+      });
     },
     [connectedEnvironments, controller],
   );
