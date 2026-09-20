@@ -674,6 +674,85 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const settings = yield* serverSettings.getSettings;
 
       assert.equal(settings.textGenerationModelSelection.instanceId, "claudeAgent");
+      assert.equal(settings.textGenerationModelSelection.model, "claude-haiku-4-5");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("uses the instance default model when falling back for text generation", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          providerInstances: {
+            codex: { driver: "codex", enabled: false, config: {} },
+          },
+          defaultModelSelection: {
+            instanceId: "claudeAgent",
+            model: "z-ai/glm-5.3-flash",
+            options: [{ id: "effort", value: "low" }],
+          },
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.deepEqual(settings.textGenerationModelSelection, {
+        instanceId: "claudeAgent",
+        model: "z-ai/glm-5.3-flash",
+        options: [{ id: "effort", value: "low" }],
+      });
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("uses a configured custom model when falling back for text generation", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          providerInstances: {
+            codex: { driver: "codex", enabled: false, config: {} },
+            claudeAgent: {
+              driver: "claudeAgent",
+              config: { customModels: ["z-ai/glm-5.3-flash"] },
+            },
+          },
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.equal(settings.textGenerationModelSelection.instanceId, "claudeAgent");
+      assert.equal(settings.textGenerationModelSelection.model, "z-ai/glm-5.3-flash");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("uses a legacy custom model when falling back for text generation", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          providerInstances: {
+            codex: { driver: "codex", enabled: false, config: {} },
+          },
+          providers: {
+            claudeAgent: { customModels: ["z-ai/glm-5.3-flash"] },
+          },
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.equal(settings.textGenerationModelSelection.instanceId, "claudeAgent");
+      assert.equal(settings.textGenerationModelSelection.model, "z-ai/glm-5.3-flash");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
