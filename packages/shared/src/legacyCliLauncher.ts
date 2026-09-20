@@ -22,6 +22,7 @@
 export const linuxCliExecFormatErrorHint =
   "t3: Oracle Linux UEK8 kernels reject Node SEA notes larger than 4 MB (ENOEXEC). Boot Oracle RHCK or a mainline-based kernel, or build from source and run node apps/server/dist/bin.mjs. ENOEXEC can also mean a corrupt or wrong-architecture file.";
 
+/** Return `dist/bin.mjs` source that forwards the process to the sibling platform `t3` executable. */
 export function legacyCliLauncherScript(): string {
   return `import { spawn } from "node:child_process";
 import { constants } from "node:os";
