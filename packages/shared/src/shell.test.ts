@@ -490,7 +490,7 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
     }),
   );
 
-  it.effect("escapes the executable and arguments for Windows command shims", () =>
+  it.effect("spawns Windows command shims via ComSpec without shell:true", () =>
     Effect.gen(function* () {
       const command = yield* resolveSpawnCommand(
         "vp",
@@ -498,21 +498,53 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
         { env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" } },
       ).pipe(
         Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(HostProcessEnvironment, {
+          ComSpec: "C:\\Windows\\System32\\cmd.exe",
+        }),
         Effect.provideService(
           SpawnExecutableResolution,
           () => "C:\\Program Files\\npm & tools\\vp.cmd",
         ),
       );
 
-      expect(command.shell).toBe(true);
-      expect(command.command).not.toContain(" & ");
-      expect(command.command).toContain("^&");
+      expect(command.shell).toBe(false);
+      expect(command.command).toBe("C:\\Windows\\System32\\cmd.exe");
       expect(command.args).toEqual([
-        '^"run^"',
-        '^"value^ ^&^ calc^"',
-        '^"^%PATH^%^"',
-        '^"quote\\^"value^"',
+        "/d",
+        "/s",
+        "/c",
+        [
+          '"',
+          '^"C:\\Program^ Files\\npm^ ^&^ tools\\vp.cmd^"',
+          " ",
+          '^"run^"',
+          " ",
+          '^"value^ ^&^ calc^"',
+          " ",
+          '^"^%PATH^%^"',
+          " ",
+          '^"quote\\^"value^"',
+          '"',
+        ].join(""),
       ]);
+    }),
+  );
+
+  it.effect("spawns Windows .bat shims via ComSpec without shell:true", () =>
+    Effect.gen(function* () {
+      const command = yield* resolveSpawnCommand("tool", ["arg"], {
+        env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+      }).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(HostProcessEnvironment, { comspec: "cmd.exe" }),
+        Effect.provideService(SpawnExecutableResolution, () => "C:\\tools\\run.bat"),
+      );
+
+      expect(command).toEqual({
+        command: "cmd.exe",
+        args: ["/d", "/s", "/c", '"^"C:\\tools\\run.bat^" ^"arg^""'],
+        shell: false,
+      });
     }),
   );
 

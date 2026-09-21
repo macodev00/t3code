@@ -49,11 +49,10 @@ export class CommandResolutionError extends Data.TaggedError("CommandResolutionE
 const WINDOWS_SHELL_META_CHARS = /([()\][%!^"`<>&|;, *?])/g;
 
 /**
- * Escapes a single argument for `cmd.exe` shell mode (`spawn(..., { shell: true })`
- * on Windows). Node joins the command and arguments with spaces and hands the
- * resulting string to `cmd.exe` without any quoting, so every dynamic argument
- * must be escaped to survive both cmd.exe parsing and the target program's
- * `CommandLineToArgvW` parsing. Mirrors cross-spawn's argument escaping.
+ * Escapes a single argument for a `cmd.exe /d /s /c` command line. cmd.exe
+ * receives one concatenated string, so every dynamic argument must be escaped
+ * to survive both cmd.exe parsing and the target program's `CommandLineToArgvW`
+ * parsing. Mirrors cross-spawn's argument escaping.
  */
 function escapeWindowsShellArg(arg: string): string {
   // Double up backslashes that precede a double quote, then escape the quote
@@ -67,16 +66,21 @@ function escapeWindowsShellArg(arg: string): string {
   return escaped.replace(WINDOWS_SHELL_META_CHARS, "^$1");
 }
 
+function sanitizeCmdExeArgs(args: ReadonlyArray<string>): Array<string> {
+  return args.map(escapeWindowsShellArg);
+}
+
 /**
- * Escapes arguments for shell-mode spawns: applies {@link escapeWindowsShellArg}
- * when the platform is `win32` (where `shell: true` routes through `cmd.exe`)
- * and returns the arguments untouched everywhere else.
+ * Builds the single `/c` string for `cmd.exe /d /s /c`. Outer quotes match
+ * Node's former `shell: true` expansion so `/s` strips that pair and leaves
+ * the caret-escaped inner quotes intact.
  */
-function sanitizeShellModeArgsForPlatform(
-  args: ReadonlyArray<string>,
-  platform: NodeJS.Platform,
-): Array<string> {
-  return platform === "win32" ? args.map(escapeWindowsShellArg) : [...args];
+function buildCmdExeCommandLine(resolvedCommand: string, args: ReadonlyArray<string>): string {
+  return `"${[escapeWindowsShellArg(resolvedCommand), ...sanitizeCmdExeArgs(args)].join(" ")}"`;
+}
+
+function resolveWindowsComSpec(env: NodeJS.ProcessEnv): string {
+  return env.ComSpec || env.comspec || env.COMSPEC || "cmd.exe";
 }
 
 export interface ResolvedSpawnCommand {
@@ -649,10 +653,12 @@ export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(functi
     return { command: resolvedCommand, args: [...args], shell: false };
   }
 
+  // Spawn ComSpec directly. `shell: true` plus an args array is Node's
+  // DEP0190 path (insecure concatenate, plus a visible cmd.exe console).
   return {
-    command: escapeWindowsShellArg(resolvedCommand),
-    args: sanitizeShellModeArgsForPlatform(args, platform),
-    shell: true,
+    command: resolveWindowsComSpec(hostEnvironment),
+    args: ["/d", "/s", "/c", buildCmdExeCommandLine(resolvedCommand, args)],
+    shell: false,
   };
 });
 
