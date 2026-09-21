@@ -560,7 +560,9 @@ export function getFixedMessagesTimelineItemSize(row: MessagesTimelineRow): numb
     case "work-toggle":
       return row.expanded ? TIMELINE_EXPANDED_WORK_HEADER_HEIGHT : TIMELINE_CHROME_ROW_HEIGHT;
     case "work-live":
-      if (row.entry.agentSpawn) return undefined;
+      // AgentSpawnRow grows in place via expandedSpawnEntryIds; a numeric
+      // getFixedItemSize skips LegendList measurement and overlaps the next row.
+      if (row.entry.agentSpawn !== undefined) return undefined;
       return row.expanded ? TIMELINE_EXPANDED_WORK_HEADER_HEIGHT : TIMELINE_CHROME_ROW_HEIGHT;
     case "activity-group":
       return row.expanded ? undefined : TIMELINE_CHROME_ROW_HEIGHT;
@@ -615,12 +617,17 @@ export function messagesTimelineHeightSignature(rows: ReadonlyArray<MessagesTime
   return signature;
 }
 
-/** LegendList extraData key: thread identity plus expanded-row height signature. */
+/** LegendList extraData key: thread identity, expanded-row growth, and spawn expansion. */
 export function messagesTimelineListExtraData(
   listIdentityKey: string,
   rows: ReadonlyArray<MessagesTimelineRow>,
+  expandedSpawnEntryIds?: ReadonlySet<string>,
 ): string {
-  return `${listIdentityKey}:${messagesTimelineHeightSignature(rows)}`;
+  const spawnKey =
+    expandedSpawnEntryIds !== undefined && expandedSpawnEntryIds.size > 0
+      ? `|spawn:${[...expandedSpawnEntryIds].toSorted().join(",")}`
+      : "";
+  return `${listIdentityKey}:${messagesTimelineHeightSignature(rows)}${spawnKey}`;
 }
 
 export interface MessagesTimelineRowRect {

@@ -4023,26 +4023,56 @@ describe("live tool group placement across a steer", () => {
   });
 
   it("does not pin expandable agent-spawn work-live rows to chrome height", () => {
-    const spawnEntry: WorkLogEntry = {
-      id: "spawn-entry",
-      createdAt: startedAt,
-      turnId,
-      label: "Ran 2 subagents",
-      tone: "tool",
-      agentSpawn: { workflowId: null, agentTaskIds: ["agent-a", "agent-b"] },
+    const spawnLiveInput = {
+      timelineEntries: [
+        userEntry("user-1", startedAt, "inspect the repo"),
+        {
+          id: "spawn-entry",
+          kind: "work" as const,
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "spawn-entry",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId,
+            label: "Ran 2 subagents",
+            tone: "tool" as const,
+            agentSpawn: { workflowId: null, agentTaskIds: ["agent-a", "agent-b"] },
+            toolLifecycleStatus: "inProgress" as const,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId,
+        state: "running" as const,
+        startedAt,
+        completedAt: null,
+      },
+      runningTurnId: turnId,
+      isWorking: true,
+      activeTurnStartedAt: startedAt,
+      turnDiffSummaries: [] as TurnDiffSummary[],
+      supportsConversationRollback: false,
+      liveAgentTaskIds: new Set(["agent-a", "agent-b"]),
     };
-    const spawnLive: MessagesTimelineRow = {
+    const rows = deriveMessagesTimelineRows(spawnLiveInput);
+    const spawnLive = rows.find((row) => row.kind === "work-live");
+    expect(spawnLive).toMatchObject({
       kind: "work-live",
       id: LIVE_ACTIVITY_ROW_ID,
-      createdAt: startedAt,
-      entry: spawnEntry,
-      groupedEntries: [spawnEntry],
-      groupId: "work-group:spawn-entry",
-      expanded: false,
-      active: true,
-    };
-    expect(getFixedMessagesTimelineItemSize(spawnLive)).toBeUndefined();
-    expect(getFixedMessagesTimelineItemSize({ ...spawnLive, expanded: true })).toBeUndefined();
+      entry: { agentSpawn: { agentTaskIds: ["agent-a", "agent-b"] } },
+    });
+    expect(spawnLive && getFixedMessagesTimelineItemSize(spawnLive)).toBeUndefined();
+    expect(
+      spawnLive && getFixedMessagesTimelineItemSize({ ...spawnLive, expanded: true }),
+    ).toBeUndefined();
+    expect(messagesTimelineListExtraData("thread-1", rows)).not.toBe(
+      messagesTimelineListExtraData("thread-1", rows, new Set(["spawn-entry"])),
+    );
+
+    const commandLive = deriveMessagesTimelineRows(liveInput(2).input).find(
+      (row) => row.kind === "work-live",
+    );
+    expect(commandLive && getFixedMessagesTimelineItemSize(commandLive)).toBeDefined();
 
     const following: MessagesTimelineRow = {
       kind: "working",
@@ -4053,7 +4083,7 @@ describe("live tool group placement across a steer", () => {
     expect(TIMELINE_CHROME_ROW_HEIGHT).toBeLessThan(expandedSpawnHeight);
 
     const layout = layoutMessagesTimelineRows(
-      [spawnLive, following],
+      [spawnLive!, following],
       new Map([[LIVE_ACTIVITY_ROW_ID, expandedSpawnHeight]]),
     );
     const spawnRect = layout[0]!;

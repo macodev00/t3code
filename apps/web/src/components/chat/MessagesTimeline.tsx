@@ -817,8 +817,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
   const listExtraData = useMemo(
-    () => messagesTimelineListExtraData(listIdentityKey, rows),
-    [listIdentityKey, rows],
+    () => messagesTimelineListExtraData(listIdentityKey, rows, paintedExpandedSpawnEntryIds),
+    [listIdentityKey, rows, paintedExpandedSpawnEntryIds],
   );
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const restoreRowIndex =
