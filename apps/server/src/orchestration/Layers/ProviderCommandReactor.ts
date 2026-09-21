@@ -783,8 +783,7 @@ const make = Effect.gen(function* () {
         requestedModelSelection !== undefined &&
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
-      const previousModelSelection =
-        threadModelSelections.get(threadId) ?? thread.modelSelection;
+      const previousModelSelection = threadModelSelections.get(threadId) ?? thread.modelSelection;
       // Claude compares the full ModelSelection, including options. Cache
       // misses fall back to the thread's persisted selection so same-model
       // option changes still restart, without treating undefined vs

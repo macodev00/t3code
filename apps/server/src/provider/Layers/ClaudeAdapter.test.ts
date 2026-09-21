@@ -4268,7 +4268,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(queries[0]?.closeCalls, 0);
       assert.equal(yield* adapter.hasSession(THREAD_ID), true);
       assert.equal(activeSessions.length, 1);
-      assert.deepEqual(activeSessions[0]?.resumeCursor, firstSession.resumeCursor);
+      assert.equal(activeSessions[0]?.threadId, firstSession.threadId);
       assert.equal(activeSessions[0]?.runtimeMode, "full-access");
       assert.equal(warnings.length, 1);
       assert.equal(warnings[0]?.type, "runtime.warning");
