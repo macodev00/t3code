@@ -222,6 +222,14 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     destroyTerminal()
   }
 
+  /**
+   * Configure the hidden IME EditText that captures terminal keystrokes.
+   *
+   * Uses suggestion-off class-text input instead of the visible-password
+   * variation, which made autofill services treat this as a credential field.
+   * On API 26+, the terminal view, container, and input opt out of autofill
+   * and drop autofill hints so password managers do not hijack focus.
+   */
   private fun configureInputView() {
     inputView.setSingleLine(true)
     inputView.setTextColor(Color.TRANSPARENT)
