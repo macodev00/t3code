@@ -1149,6 +1149,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             );
           }
 
+          const readyUnchecked = {
+            ...previousProvider,
+            status: "ready",
+            auth: { status: "unknown" },
+            checkedAt: "2026-09-02T00:01:00.000Z",
+            models: [],
+          } satisfies ServerProvider;
+          assert.deepStrictEqual(
+            mergeProviderSnapshot(previousProvider, readyUnchecked).models,
+            previousProvider.models,
+          );
+
           for (const authStatus of ["unknown", "authenticated"] as const) {
             const failedProvider = {
               ...previousProvider,
@@ -1227,17 +1239,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
         } as const satisfies ServerProvider;
 
         it("keeps the saved Google account through restart health checks", () => {
-          const merged = mergeProviderSnapshot(signedIn, restartProbe);
-          const { message: _uncheckedMessage, ...probeWithoutMessage } = restartProbe;
-          assert.deepStrictEqual(merged, {
-            ...probeWithoutMessage,
-            status: "ready",
-            auth: signedIn.auth,
-            models: signedIn.models,
-          });
-          assert.equal("message" in merged, false);
-          // The next periodic probe reads the merged snapshot as its previous state.
-          assert.deepStrictEqual(mergeProviderSnapshot(merged, restartProbe), merged);
+          for (const status of ["warning", "ready"] as const) {
+            const probe = { ...restartProbe, status };
+            const merged = mergeProviderSnapshot(signedIn, probe);
+            const { message: _uncheckedMessage, ...probeWithoutMessage } = probe;
+            assert.deepStrictEqual(merged, {
+              ...probeWithoutMessage,
+              status: "ready",
+              auth: signedIn.auth,
+              models: signedIn.models,
+            });
+            assert.equal("message" in merged, false);
+            // The next periodic probe reads the merged snapshot as its previous state.
+            assert.deepStrictEqual(mergeProviderSnapshot(merged, probe), merged);
+          }
         });
 
         it("carries the account through the boot probe and a failed probe without hiding them", () => {

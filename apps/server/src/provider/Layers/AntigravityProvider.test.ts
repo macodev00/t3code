@@ -295,10 +295,11 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
         const snapshot = yield* harness.provider.snapshot.getSnapshot;
         expect(snapshot).toMatchObject({
           installed: true,
-          status: "warning",
+          status: "ready",
           version: "agy_acp_server_20260818_01_RC01",
           auth: { status: "unknown" },
           models: [],
+          message: "Antigravity is installed. Google account access is not checked yet.",
         });
         expect(yield* Ref.get(harness.probeCalls)).toBe(1);
       }),
@@ -482,7 +483,7 @@ it.layer(testLayer)("Antigravity provider snapshots", (it) => {
 
         expect(snapshot).toMatchObject({
           installed: true,
-          status: "warning",
+          status: "ready",
           auth: { status: "unknown" },
         });
       }),

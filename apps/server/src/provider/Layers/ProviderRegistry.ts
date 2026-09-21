@@ -115,9 +115,13 @@ const shouldRetainMissingProviderModels = (provider: ServerProvider): boolean =>
   }
 
   // Successful discovery replaces these inventories so cached retired models disappear.
-  // Antigravity's local health check does not authenticate or discover models.
+  // Antigravity's local health check does not authenticate or discover models, and a
+  // passed probe now reports ready while Google auth is still unknown.
   const isPendingAntigravityAuthentication =
-    isAntigravity && provider.status === "warning" && provider.auth.status === "unknown";
+    isAntigravity &&
+    provider.installed &&
+    provider.auth.status === "unknown" &&
+    (provider.status === "warning" || provider.status === "ready");
   const isPendingInitialProbe =
     provider.enabled && !provider.installed && provider.status === "warning";
   const didInstalledProviderProbeFail = provider.installed && provider.status === "error";

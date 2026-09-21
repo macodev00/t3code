@@ -197,20 +197,19 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       if (state.authRevision !== before.authRevision) return state;
       const { message: _previousMessage, ...draft } = state.draft;
       const authenticated = draft.auth.status === "authenticated";
+      const unauthenticated = draft.auth.status === "unauthenticated";
       const message =
         errorMessage ??
-        (authenticated
-          ? undefined
-          : draft.auth.status === "unauthenticated"
-            ? SIGN_IN_MESSAGE
-            : AUTH_UNCHECKED_MESSAGE);
+        (authenticated ? undefined : unauthenticated ? SIGN_IN_MESSAGE : AUTH_UNCHECKED_MESSAGE);
       return {
         ...state,
         draft: {
           ...draft,
           installed: !missingInstallation,
           version: initialized?.agentInfo?.version || draft.version,
-          status: errorMessage ? "error" : authenticated ? "ready" : "warning",
+          // initialize() proves the binary, not Google auth. Unchecked access is
+          // informational; only a confirmed sign-out stays a warning.
+          status: errorMessage ? "error" : unauthenticated ? "warning" : "ready",
           checkedAt: updatedAt,
           ...(missingInstallation
             ? {
