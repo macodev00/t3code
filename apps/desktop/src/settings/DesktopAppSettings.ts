@@ -57,8 +57,10 @@ export interface DesktopSettingsChange {
 }
 
 const DEFAULT_TAILSCALE_SERVE_PORT = 443;
-const MIN_MAIN_WINDOW_SIZE = {
-  width: 840,
+// Electron sizes are DIP. 600 fits half-screen snap on 1536-wide scaled
+// desktops (768 logical px at 125–250%) while still leaving a usable floor.
+export const MIN_MAIN_WINDOW_SIZE = {
+  width: 600,
   height: 620,
 } as const;
 export const DesktopWindowBoundsSchema = Schema.Struct({
