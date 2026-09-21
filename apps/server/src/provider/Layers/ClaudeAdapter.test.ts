@@ -46,7 +46,11 @@ import {
   SYNTHETIC_CLAUDE_STANDARD_MODEL,
   SYNTHETIC_CLAUDE_THINKING_MODEL,
 } from "../ClaudeModelCatalog.testFixtures.ts";
-import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
+import {
+  ProviderAdapterProcessError,
+  ProviderAdapterRequestError,
+  ProviderAdapterValidationError,
+} from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import type { ClaudeScopedLimitNames } from "./claudeUsageLimits.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
@@ -4245,22 +4249,27 @@ describe("ClaudeAdapterLive", () => {
         Effect.forkChild,
       );
 
-      const secondSession = yield* adapter.startSession({
-        threadId: THREAD_ID,
-        provider: ProviderDriverKind.make("claudeAgent"),
-        runtimeMode: "full-access",
-        resumeCursor: firstSession.resumeCursor,
-      });
+      const replaceError = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "approval-required",
+          resumeCursor: firstSession.resumeCursor,
+        })
+        .pipe(Effect.flip);
 
       const warnings = Array.from(yield* Fiber.join(warningFiber));
       const activeSessions = yield* adapter.listSessions();
 
+      assert.instanceOf(replaceError, ProviderAdapterRequestError);
+      assert.equal(replaceError.method, "startSession");
+      assert.match(replaceError.detail, /live task/);
       assert.equal(queries.length, 1);
       assert.equal(queries[0]?.closeCalls, 0);
       assert.equal(yield* adapter.hasSession(THREAD_ID), true);
       assert.equal(activeSessions.length, 1);
-      assert.equal(secondSession.threadId, firstSession.threadId);
-      assert.deepEqual(activeSessions[0]?.resumeCursor, secondSession.resumeCursor);
+      assert.deepEqual(activeSessions[0]?.resumeCursor, firstSession.resumeCursor);
+      assert.equal(activeSessions[0]?.runtimeMode, "full-access");
       assert.equal(warnings.length, 1);
       assert.equal(warnings[0]?.type, "runtime.warning");
       if (warnings[0]?.type === "runtime.warning") {

@@ -639,6 +639,26 @@ const make = Effect.gen(function* () {
       });
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
+    if (
+      activeThreadSession !== null &&
+      thread.runtimeMode !== activeThreadSession.runtimeMode &&
+      thread.backgroundLiveness != null
+    ) {
+      yield* Effect.logWarning(
+        "provider command reactor rejecting runtime-mode replacement while background work is live",
+        {
+          threadId,
+          backgroundLiveness: thread.backgroundLiveness,
+          currentRuntimeMode: activeThreadSession.runtimeMode,
+          desiredRuntimeMode,
+        },
+      );
+      return yield* new ProviderAdapterRequestError({
+        provider: preferredProvider,
+        method: "thread.turn.start",
+        detail: `Thread '${threadId}' cannot apply runtime mode '${desiredRuntimeMode}' while background work is live. Wait for background tasks to finish, then retry.`,
+      });
+    }
     if (options?.pendingTurnStart === true && thread.session?.status !== "running") {
       yield* setThreadSession({
         threadId,
@@ -763,14 +783,15 @@ const make = Effect.gen(function* () {
         requestedModelSelection !== undefined &&
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
-      const previousModelSelection = threadModelSelections.get(threadId);
-      // Claude compares the full ModelSelection, including options. A cache
-      // miss (undefined vs requested) must not restart: the SDK can continue
-      // in-session, and startSession would otherwise replace a live process.
+      const previousModelSelection =
+        threadModelSelections.get(threadId) ?? thread.modelSelection;
+      // Claude compares the full ModelSelection, including options. Cache
+      // misses fall back to the thread's persisted selection so same-model
+      // option changes still restart, without treating undefined vs
+      // requested as a change.
       const shouldRestartForModelSelectionChange =
         preferredProvider === "claudeAgent" &&
         requestedModelSelection !== undefined &&
-        previousModelSelection !== undefined &&
         !Equal.equals(previousModelSelection, requestedModelSelection);
 
       if (
@@ -786,6 +807,9 @@ const make = Effect.gen(function* () {
 
       // Claude replacement drains liveTaskIds without session.exited. Reuse
       // the current process while projected background work is still live.
+      // Runtime-mode changes are rejected above: sendTurn keeps the
+      // startSession permission callback, so a stale bypassPermissions
+      // session must not be treated as ready.
       if (thread.backgroundLiveness != null) {
         yield* Effect.logWarning(
           "provider command reactor deferring provider session restart while background work is live",

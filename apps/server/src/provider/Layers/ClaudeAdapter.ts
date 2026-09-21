@@ -4406,18 +4406,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       if (existingContext) {
         // Replacement closes the query and records liveTaskIds as
         // task.completed(stopped) without session.exited. Keep the live
-        // process when child work is still running; a later idle start can
-        // replace once the set is empty.
+        // process when child work is still running, but do not report the
+        // stale session as a successful start — callers would bind the
+        // requested runtime mode / model selection and send the turn.
         if (!existingContext.stopped && existingContext.liveTaskIds.size > 0) {
           yield* emitRuntimeWarning(
             existingContext,
-            `Claude session replacement deferred: ${existingContext.liveTaskIds.size} live task(s) are still running.`,
+            `Claude session replacement blocked: ${existingContext.liveTaskIds.size} live task(s) are still running.`,
             {
               existingSessionStatus: existingContext.session.status,
               liveTaskCount: existingContext.liveTaskIds.size,
             },
           );
-          return { ...existingContext.session };
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "startSession",
+            detail: `Claude session replacement is blocked: ${existingContext.liveTaskIds.size} live task(s) are still running. Retry after background work finishes.`,
+          });
         }
         yield* Effect.logWarning("claude.session.replacing", {
           threadId: input.threadId,

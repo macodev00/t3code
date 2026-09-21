@@ -401,9 +401,14 @@ describe("ProviderCommandReactor", () => {
       },
     };
 
+    const threadBackgroundLiveness = ThreadBackgroundLiveness.make();
+    const threadBackgroundLivenessLayer = Layer.succeed(
+      ThreadBackgroundLiveness.ThreadBackgroundLivenessService,
+      threadBackgroundLiveness,
+    );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
-      Layer.provide(ThreadBackgroundLiveness.layer),
+      Layer.provide(threadBackgroundLivenessLayer),
       Layer.provide(ThreadPlanProgress.layer),
       Layer.provide(OrchestrationProjectionPipelineLive),
       Layer.provide(OrchestrationEventStoreLive),
@@ -412,7 +417,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
-      Layer.provide(ThreadBackgroundLiveness.layer),
+      Layer.provide(threadBackgroundLivenessLayer),
       Layer.provide(ThreadPlanProgress.layer),
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
@@ -629,6 +634,7 @@ describe("ProviderCommandReactor", () => {
       drain,
       startReactor,
       runEffect,
+      threadBackgroundLiveness,
       get titleRegenerationCompletionDispatchAttempts() {
         return titleRegenerationCompletionDispatchAttempts;
       },
@@ -3302,6 +3308,284 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.startSession.mock.calls.length).toBe(1);
     expect(harness.stopSession.mock.calls.length).toBe(0);
+  });
+
+  it("restarts a claude session when provider options change before the model-selection cache is primed", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-sonnet-4-6",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-claude-options-cache-miss-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-claude-options-cache-miss-1"),
+          role: "user",
+          text: "first claude turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-claude-options-cache-miss-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-claude-options-cache-miss-2"),
+          role: "user",
+          text: "second claude turn",
+          attachments: [],
+        },
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+          [{ id: "fastMode", value: true }],
+        ),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      resumeCursor: { opaque: "resume-1" },
+      modelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-sonnet-4-6",
+        [{ id: "fastMode", value: true }],
+      ),
+    });
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+  });
+
+  it("rejects a runtime-mode replacement while background work is live", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-live-full-access"),
+        threadId,
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-runtime-mode-live-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-runtime-mode-live-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    harness.threadBackgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "task-live",
+      taskType: "local_agent",
+      status: "in_progress",
+      kind: "started",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-live-approval-required"),
+        threadId,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.runtimeSessions[0]?.runtimeMode).toBe("full-access");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-runtime-mode-live-2"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-runtime-mode-live-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+        false
+      );
+    });
+
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+
+    const blocked = await harness.readModel();
+    const blockedThread = blocked.threads.find((entry) => entry.id === threadId);
+    expect(
+      blockedThread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toMatchObject({
+      payload: {
+        detail: expect.stringContaining("cannot apply runtime mode 'approval-required'"),
+      },
+    });
+    expect(blockedThread?.session?.runtimeMode).toBe("full-access");
+
+    harness.threadBackgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "task-live",
+      taskType: "local_agent",
+      status: "completed",
+      kind: "completed",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-runtime-mode-live-3"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-runtime-mode-live-3"),
+          role: "user",
+          text: "third",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      threadId,
+      resumeCursor: { opaque: "resume-1" },
+      runtimeMode: "approval-required",
+    });
+
+    const recovered = await harness.readModel();
+    const recoveredThread = recovered.threads.find((entry) => entry.id === threadId);
+    expect(recoveredThread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("reuses a live claude session when provider options change during background work", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-sonnet-4-6",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-claude-live-options-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-claude-live-options-1"),
+          role: "user",
+          text: "first claude turn",
+          attachments: [],
+        },
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+          [{ id: "effort", value: "medium" }],
+        ),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    harness.threadBackgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "task-live",
+      taskType: "local_agent",
+      status: "in_progress",
+      kind: "started",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-claude-live-options-2"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-claude-live-options-2"),
+          role: "user",
+          text: "second claude turn",
+          attachments: [],
+        },
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+          [{ id: "effort", value: "max" }],
+        ),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      threadId,
+      modelSelection: createModelSelection(
+        ProviderInstanceId.make("claudeAgent"),
+        "claude-sonnet-4-6",
+        [{ id: "effort", value: "max" }],
+      ),
+    });
   });
 
   it("restarts the provider session when runtime mode is updated on the thread", async () => {
