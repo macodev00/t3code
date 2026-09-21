@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { desktopManagedTunnelOriginReconcileKey } from "./reconcileDesktopManagedTunnelOrigin";
+import {
+  DESKTOP_MANAGED_TUNNEL_ORIGIN_RECONCILE_MAX_ATTEMPTS,
+  desktopManagedTunnelOriginReconcileKey,
+  desktopManagedTunnelOriginReconcileRetryDelayMs,
+} from "./reconcileDesktopManagedTunnelOrigin";
 import type { CloudLinkTarget } from "./linkEnvironment";
 
 const TARGET: CloudLinkTarget = {
@@ -65,5 +69,23 @@ describe("desktopManagedTunnelOriginReconcileKey", () => {
         managedTunnelActive: true,
       }),
     ).toBeNull();
+  });
+});
+
+describe("desktopManagedTunnelOriginReconcileRetryDelayMs", () => {
+  it("backs off after each failed attempt and stops at the bound", () => {
+    expect(desktopManagedTunnelOriginReconcileRetryDelayMs(1)).toBe(1_000);
+    expect(desktopManagedTunnelOriginReconcileRetryDelayMs(2)).toBe(2_000);
+    expect(desktopManagedTunnelOriginReconcileRetryDelayMs(3)).toBe(4_000);
+    expect(
+      desktopManagedTunnelOriginReconcileRetryDelayMs(
+        DESKTOP_MANAGED_TUNNEL_ORIGIN_RECONCILE_MAX_ATTEMPTS,
+      ),
+    ).toBeNull();
+  });
+
+  it("does not schedule a retry for a non-attempt", () => {
+    expect(desktopManagedTunnelOriginReconcileRetryDelayMs(0)).toBeNull();
+    expect(desktopManagedTunnelOriginReconcileRetryDelayMs(1.5)).toBeNull();
   });
 });
