@@ -270,6 +270,7 @@ export interface ThreadFeedProps {
   readonly usesAutomaticContentInsets?: boolean;
   readonly onHeaderMaterialVisibilityChange?: (visible: boolean) => void;
   readonly onEndFollowEnabledChange?: (enabled: boolean) => void;
+  readonly onIsAtEndChange?: (isAtEnd: boolean) => void;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   /** Non-null when older turns exist beyond the loaded window. */
@@ -2335,16 +2336,19 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       // header height back or the material toggles a full header too late.
       reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
       // LegendList recomputes its inset-aware end distance before invoking
-      // this handler, so getState() is current. Only the actual end re-arms
-      // follow: its broader maintain-scroll threshold is large enough for a
-      // streaming chunk to pull a user back before their upward drag escapes.
-      // A live user-scroll session still wins even if the first scroll event
-      // remains inside LegendList's at-end tolerance.
+      // this handler, so getState() is current. Follow re-arms at the actual
+      // end or anywhere inside LegendList's maintain-at-end tolerance: a swipe
+      // back to the live edge usually rests a few pixels short of the exact
+      // end, in space the end inset covers, and the strict test would leave
+      // the scroll-to-end control stuck visible. A live user-scroll session
+      // still wins even if the first scroll event remains inside LegendList's
+      // at-end tolerance, so a streaming chunk cannot pull a drag back.
       const listState = props.listRef.current?.getState();
       if (listState) {
         transitionEndFollow({
           type: "scroll",
           isAtEnd: listState.isAtEnd,
+          nearEnd: listState.isWithinMaintainScrollAtEndThreshold,
           userScrollSessionActive: userScrollSessionRef.current,
         });
       }
@@ -2365,16 +2369,20 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     transitionEndFollow({ type: "user-scroll-begin" });
   }, [clearUserScrollSettle, transitionEndFollow]);
   const finishUserScroll = useCallback(
-    (releaseIsAtEnd?: boolean) => {
+    (release?: { readonly isAtEnd: boolean; readonly nearEnd: boolean }) => {
       clearUserScrollSettle();
       const userScrollSessionActive = userScrollSessionRef.current;
       userScrollSessionRef.current = false;
+      const listState = props.listRef.current?.getState();
       transitionEndFollow({
         type: "user-scroll-end",
-        // With no momentum, preserve the finger-release position. Streaming
-        // growth during the native momentum-detection window must not turn a
-        // release at the live edge into an opt-out from follow.
-        isAtEnd: releaseIsAtEnd ?? props.listRef.current?.getState().isAtEnd ?? false,
+        // With no momentum, preserve the finger-release position (at or within
+        // the re-arm tolerance of the live edge). Streaming growth during the
+        // native momentum-detection window must not turn a release at the live
+        // edge into an opt-out from follow, or a release away from it into an
+        // opt-in.
+        isAtEnd: release?.isAtEnd ?? listState?.isAtEnd ?? false,
+        nearEnd: release?.nearEnd ?? listState?.isWithinMaintainScrollAtEndThreshold ?? false,
         userScrollSessionActive,
       });
     },
@@ -2387,8 +2395,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // mirrors the native-event handoff used by the home thread list's scroll gate.
   const handleScrollEndDrag = useCallback(() => {
     clearUserScrollSettle();
-    const releaseIsAtEnd = props.listRef.current?.getState().isAtEnd ?? false;
-    userScrollSettleTimerRef.current = setTimeout(() => finishUserScroll(releaseIsAtEnd), 160);
+    const listState = props.listRef.current?.getState();
+    const release = {
+      isAtEnd: listState?.isAtEnd ?? false,
+      nearEnd: listState?.isWithinMaintainScrollAtEndThreshold ?? false,
+    };
+    userScrollSettleTimerRef.current = setTimeout(() => finishUserScroll(release), 160);
   }, [clearUserScrollSettle, finishUserScroll, props.listRef]);
   const handleMomentumScrollBegin = useCallback(() => {
     if (userScrollSessionRef.current) {
@@ -2485,6 +2497,17 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }
   }, [listMountKey, props.contentInsetEndAdjustment, props.listRef]);
 
+  // Subscribe to edge transitions without updating the screen on every scroll.
+  useLayoutEffect(() => {
+    const listState = props.listRef.current?.getState();
+    const onIsAtEndChange = props.onIsAtEndChange;
+    if (!listState || !onIsAtEndChange) {
+      return;
+    }
+    onIsAtEndChange(listState.isAtEnd);
+    return listState.listen("isAtEnd", onIsAtEndChange);
+  }, [listMountKey, props.listRef, props.onIsAtEndChange]);
+
   const anchoredEndSpace = useMemo(
     () =>
       resolveChatListAnchoredEndSpace(
@@ -2557,6 +2580,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         // Reconcile follow before a later layout or resume can re-pin it.
         const listState = props.listRef.current?.getState();
         if (listState) {
+          // Row resizing can change the end without notifying the edge subscription.
+          props.onIsAtEndChange?.(listState.isAtEnd);
           transitionEndFollow({
             type: "disclosure-settled",
             isAtEnd: listState.isAtEnd,
@@ -2569,7 +2594,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         disclosureSettleSecondFrameRef.current = null;
       });
     });
-  }, [props.listRef, transitionEndFollow]);
+  }, [props.listRef, props.onIsAtEndChange, transitionEndFollow]);
 
   const suspendEndScrollMaintenanceForDisclosure = useCallback((anchorKey: string | null) => {
     disclosureAnchorKeyRef.current = anchorKey;
