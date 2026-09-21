@@ -73,7 +73,11 @@ vi.mock("../../localApi", () => ({
   ensureLocalApi: () => ({ dialogs: { confirm: setup.confirm } }),
 }));
 
-import { ProviderSetupSection } from "./ProviderSetupSection";
+import {
+  AntigravityGoogleSignInButton,
+  offersAntigravityGoogleSignIn,
+  ProviderSetupSection,
+} from "./ProviderSetupSection";
 
 const environmentId = EnvironmentId.make("remote-google");
 const instanceId = ProviderInstanceId.make("antigravity_work");
@@ -386,4 +390,109 @@ describe("Antigravity setup", () => {
       expect(setup.startAuth).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps Google sign-in in setup when the binary is healthy and auth is unchecked", () => {
+    setup.auth = authState({ phase: "idle", flowId: null, authorizationUrl: null });
+    const view = renderSetup({
+      provider: { ...provider, status: "ready", auth: { status: "unknown" } },
+    });
+    expect(button(view, "Sign in with Google")).not.toBeNull();
+    expect(
+      visitElements(
+        view,
+        (element) => element.props.children === "Sign in with your Google account.",
+      ),
+    ).not.toBeNull();
+  });
+});
+
+function renderCardSignIn(
+  options: {
+    provider?: ServerProvider;
+    authMethod?: "oauth-personal" | "gemini-api-key";
+    onStarted?: () => void;
+  } = {},
+) {
+  hooks.beginRender();
+  return AntigravityGoogleSignInButton({
+    environmentId,
+    instanceId,
+    provider: options.provider ?? { ...provider, status: "ready", auth: { status: "unknown" } },
+    authMethod: options.authMethod ?? "oauth-personal",
+    onStarted: options.onStarted,
+  });
+}
+
+describe("Antigravity Google sign-in on the provider card", () => {
+  beforeEach(() => {
+    hooks.reset();
+    vi.clearAllMocks();
+    setup.auth = authState({ phase: "idle", flowId: null, authorizationUrl: null });
+    setup.startAuth.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
+  });
+
+  it("starts Google OAuth from Settings when auth has not been checked", async () => {
+    const onStarted = vi.fn();
+    const view = renderCardSignIn({
+      provider: { ...provider, status: "ready", auth: { status: "unknown" } },
+      onStarted,
+    });
+    click(view, "Sign in with Google");
+    await flushPromises();
+
+    expect(onStarted).toHaveBeenCalledTimes(1);
+    expect(setup.startAuth).toHaveBeenCalledWith({ environmentId, input: { instanceId } });
+  });
+
+  it("coalesces repeated card sign-in clicks while start is pending", async () => {
+    let completeStart: (value: { _tag: "Success"; value: undefined }) => void = () => {
+      throw new Error("Missing start resolver.");
+    };
+    const pending = new Promise<{ _tag: "Success"; value: undefined }>((resolve) => {
+      completeStart = resolve;
+    });
+    setup.startAuth.mockReturnValueOnce(pending);
+    const view = renderCardSignIn();
+    click(view, "Sign in with Google");
+    click(view, "Sign in with Google");
+
+    expect(setup.startAuth).toHaveBeenCalledTimes(1);
+    completeStart({ _tag: "Success", value: undefined });
+    await flushPromises();
+  });
+
+  it("does not offer Google sign-in for an API key method or a signed-in account", () => {
+    expect(
+      renderCardSignIn({
+        provider: { ...provider, status: "ready", auth: { status: "authenticated" } },
+      }),
+    ).toBeNull();
+    expect(renderCardSignIn({ authMethod: "gemini-api-key" })).toBeNull();
+    expect(setup.startAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe("offersAntigravityGoogleSignIn", () => {
+  it("requires an installed Antigravity instance that can run Google OAuth", () => {
+    expect(offersAntigravityGoogleSignIn(provider, "oauth-personal")).toBe(true);
+    expect(
+      offersAntigravityGoogleSignIn(
+        { ...provider, status: "ready", auth: { status: "unknown" } },
+        "oauth-business",
+      ),
+    ).toBe(true);
+    expect(offersAntigravityGoogleSignIn({ ...provider, installed: false }, "oauth-personal")).toBe(
+      false,
+    );
+    expect(
+      offersAntigravityGoogleSignIn(
+        { ...provider, auth: { status: "authenticated" } },
+        "oauth-personal",
+      ),
+    ).toBe(false);
+    expect(offersAntigravityGoogleSignIn(provider, "gemini-api-key")).toBe(false);
+    const { setup: _setup, ...withoutSetup } = provider;
+    expect(offersAntigravityGoogleSignIn(withoutSetup, "oauth-personal")).toBe(false);
+    expect(offersAntigravityGoogleSignIn(undefined, "oauth-personal")).toBe(false);
+  });
 });

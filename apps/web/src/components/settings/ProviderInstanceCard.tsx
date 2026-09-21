@@ -372,6 +372,11 @@ interface ProviderInstanceCardProps {
    * omit it.
    */
   readonly headerAction?: ReactNode | undefined;
+  /**
+   * Optional Google sign-in control for Antigravity. Rendered on the list row
+   * and at the top of the editor so OAuth can start from Settings.
+   */
+  readonly signInAction?: ReactNode | undefined;
   readonly setup?: ReactNode;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
@@ -414,6 +419,7 @@ export function ProviderInstanceCard({
   onUpdate,
   onDelete,
   headerAction,
+  signInAction,
   setup,
   hiddenModels,
   favoriteModels,
@@ -670,13 +676,16 @@ export function ProviderInstanceCard({
             </span>
           </span>
         </div>
-        <span className="flex h-5 shrink-0 items-center">
-          <Switch
-            checked={enabled}
-            disabled={readOnly}
-            onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
-            aria-label={`Enable ${displayName}`}
-          />
+        <span className="flex shrink-0 items-center gap-2">
+          {signInAction}
+          <span className="flex h-5 items-center">
+            <Switch
+              checked={enabled}
+              disabled={readOnly}
+              onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
+              aria-label={`Enable ${displayName}`}
+            />
+          </span>
         </span>
       </div>
     );
@@ -810,7 +819,12 @@ export function ProviderInstanceCard({
         <SettingsRow
           title="Display name"
           status={
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">{editorStatusNode}</div>
+            <div className="flex min-w-0 flex-col items-start gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+                {editorStatusNode}
+              </div>
+              {signInAction}
+            </div>
           }
           control={
             <div

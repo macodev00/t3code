@@ -25,6 +25,26 @@ describe("getProviderSummary", () => {
     });
   });
 
+  it("treats installed Antigravity with unchecked Google auth as sign-in required", () => {
+    const message = "Antigravity is installed. Google account access is not checked yet.";
+    const antigravity = {
+      ...provider,
+      instanceId: ProviderInstanceId.make("antigravity"),
+      driver: ProviderDriverKind.make("antigravity"),
+      auth: { status: "unknown" as const },
+      message,
+    };
+
+    expect(getProviderSummary(antigravity)).toEqual({
+      headline: "Installed · Sign-in required",
+      detail: message,
+    });
+    expect(getProviderSummary({ ...antigravity, status: "warning" })).toEqual({
+      headline: "Installed · Sign-in required",
+      detail: message,
+    });
+  });
+
   it("does not hide a provider error behind a previous authenticated state", () => {
     expect(
       getProviderSummary({

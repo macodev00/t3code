@@ -55,6 +55,20 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
       detail: provider.message ?? null,
     };
   }
+  // Antigravity's health probe does not check Google. Installed + unknown auth
+  // is first-time setup, not a failed probe — keep it informational and point
+  // at sign-in instead of "Needs attention" / a generic Available state.
+  if (
+    provider.driver === "antigravity" &&
+    provider.installed &&
+    provider.auth.status === "unknown" &&
+    (provider.status === "ready" || provider.status === "warning")
+  ) {
+    return {
+      headline: "Installed · Sign-in required",
+      detail: provider.message ?? null,
+    };
+  }
   if (provider.status === "warning") {
     return {
       headline: "Needs attention",
