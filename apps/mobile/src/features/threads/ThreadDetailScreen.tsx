@@ -266,6 +266,22 @@ const USER_INPUT_TOGGLE_TIMING = {
   easing: Easing.out(Easing.cubic),
 };
 
+/** Hide the scroll-to-end control until the feed is ready and away from the live edge. */
+function shouldShowThreadDetailScrollToEnd(input: {
+  readonly contentPresentationKind: ThreadContentPresentation["kind"];
+  readonly endFollowEnabled: boolean;
+  readonly isAtEnd: boolean;
+}) {
+  return (
+    input.contentPresentationKind === "ready" &&
+    shouldShowThreadFeedScrollToEnd({
+      endFollowEnabled: input.endFollowEnabled,
+      isAtEnd: input.isAtEnd,
+    })
+  );
+}
+
+/** Thread transcript and composer; hides scroll-to-end while the feed is already at the live edge. */
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const navigation = useNavigation();
   const deviceState = useEnvironmentQuery(
@@ -846,9 +862,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     });
   }, [freeze, scrollMessageToEnd]);
 
-  const showScrollToEndButton =
-    contentPresentationKind === "ready" &&
-    shouldShowThreadFeedScrollToEnd({ endFollowEnabled, isAtEnd });
+  const showScrollToEndButton = shouldShowThreadDetailScrollToEnd({
+    contentPresentationKind,
+    endFollowEnabled,
+    isAtEnd,
+  });
   const { themeAppearance } = useAppearancePreferences();
   const isDarkMode = themeAppearance === "dark";
 

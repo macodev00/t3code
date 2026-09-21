@@ -76,6 +76,7 @@ export function resolveThreadFeedSubmissionAnchor<AnchorId>(input: {
   return input.queuedMessageCount > 0 ? null : input.submittedMessageId;
 }
 
+/** Hide the scroll-to-end control unless live-follow is paused and the feed is away from the end. */
 export function shouldShowThreadFeedScrollToEnd(input: {
   readonly endFollowEnabled: boolean;
   readonly isAtEnd: boolean;
@@ -86,6 +87,7 @@ export function shouldShowThreadFeedScrollToEnd(input: {
   return !input.endFollowEnabled && !input.isAtEnd;
 }
 
+/** Pause follow during a user-scroll session; re-arm at the end or within the maintain-at-end tolerance. */
 export function resolveThreadFeedLiveFollow(
   current: boolean,
   event: ThreadFeedLiveFollowEvent,

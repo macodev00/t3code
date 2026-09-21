@@ -1919,6 +1919,35 @@ function LegacyUserMessageContent(props: UserMessageContentProps) {
   );
 }
 
+/** Map LegendList state to the exact-end and near-end flags live-follow uses to re-arm. */
+function readThreadFeedEndState(
+  listState:
+    | {
+        readonly isAtEnd: boolean;
+        readonly isWithinMaintainScrollAtEndThreshold: boolean;
+      }
+    | null
+    | undefined,
+) {
+  return {
+    isAtEnd: listState?.isAtEnd ?? false,
+    nearEnd: listState?.isWithinMaintainScrollAtEndThreshold ?? false,
+  };
+}
+
+/** Report the current end edge and subscribe to later isAtEnd transitions. */
+function subscribeThreadFeedIsAtEnd(
+  listRef: RefObject<LegendListRef | null>,
+  onIsAtEndChange: ((isAtEnd: boolean) => void) | undefined,
+) {
+  const listState = listRef.current?.getState();
+  if (!listState || !onIsAtEndChange) {
+    return;
+  }
+  onIsAtEndChange(listState.isAtEnd);
+  return listState.listen("isAtEnd", onIsAtEndChange);
+}
+
 function ThreadFeedPlaceholder(props: {
   readonly bottomInset: number;
   readonly detail: string;
@@ -1948,6 +1977,7 @@ function ThreadFeedPlaceholder(props: {
   );
 }
 
+/** Virtualized transcript that reports live-edge position for the scroll-to-end control. */
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
@@ -2347,8 +2377,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       if (listState) {
         transitionEndFollow({
           type: "scroll",
-          isAtEnd: listState.isAtEnd,
-          nearEnd: listState.isWithinMaintainScrollAtEndThreshold,
+          ...readThreadFeedEndState(listState),
           userScrollSessionActive: userScrollSessionRef.current,
         });
       }
@@ -2368,12 +2397,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     // maintainScrollAtEnd between touch-down and the drag leaving its threshold.
     transitionEndFollow({ type: "user-scroll-begin" });
   }, [clearUserScrollSettle, transitionEndFollow]);
+  /** End a user-scroll session using the finger-release end position, not later stream growth. */
   const finishUserScroll = useCallback(
-    (release?: { readonly isAtEnd: boolean; readonly nearEnd: boolean }) => {
+    function finishUserScroll(release?: { readonly isAtEnd: boolean; readonly nearEnd: boolean }) {
       clearUserScrollSettle();
       const userScrollSessionActive = userScrollSessionRef.current;
       userScrollSessionRef.current = false;
-      const listState = props.listRef.current?.getState();
+      const fallback = readThreadFeedEndState(props.listRef.current?.getState());
       transitionEndFollow({
         type: "user-scroll-end",
         // With no momentum, preserve the finger-release position (at or within
@@ -2381,8 +2411,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         // native momentum-detection window must not turn a release at the live
         // edge into an opt-out from follow, or a release away from it into an
         // opt-in.
-        isAtEnd: release?.isAtEnd ?? listState?.isAtEnd ?? false,
-        nearEnd: release?.nearEnd ?? listState?.isWithinMaintainScrollAtEndThreshold ?? false,
+        isAtEnd: release?.isAtEnd ?? fallback.isAtEnd,
+        nearEnd: release?.nearEnd ?? fallback.nearEnd,
         userScrollSessionActive,
       });
     },
@@ -2395,11 +2425,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // mirrors the native-event handoff used by the home thread list's scroll gate.
   const handleScrollEndDrag = useCallback(() => {
     clearUserScrollSettle();
-    const listState = props.listRef.current?.getState();
-    const release = {
-      isAtEnd: listState?.isAtEnd ?? false,
-      nearEnd: listState?.isWithinMaintainScrollAtEndThreshold ?? false,
-    };
+    const release = readThreadFeedEndState(props.listRef.current?.getState());
     userScrollSettleTimerRef.current = setTimeout(() => finishUserScroll(release), 160);
   }, [clearUserScrollSettle, finishUserScroll, props.listRef]);
   const handleMomentumScrollBegin = useCallback(() => {
@@ -2498,15 +2524,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }, [listMountKey, props.contentInsetEndAdjustment, props.listRef]);
 
   // Subscribe to edge transitions without updating the screen on every scroll.
-  useLayoutEffect(() => {
-    const listState = props.listRef.current?.getState();
-    const onIsAtEndChange = props.onIsAtEndChange;
-    if (!listState || !onIsAtEndChange) {
-      return;
-    }
-    onIsAtEndChange(listState.isAtEnd);
-    return listState.listen("isAtEnd", onIsAtEndChange);
-  }, [listMountKey, props.listRef, props.onIsAtEndChange]);
+  useLayoutEffect(
+    () => subscribeThreadFeedIsAtEnd(props.listRef, props.onIsAtEndChange),
+    [listMountKey, props.listRef, props.onIsAtEndChange],
+  );
 
   const anchoredEndSpace = useMemo(
     () =>
