@@ -65,7 +65,7 @@ function lastLiveActivityDeliveryAtMs(lastDeliveryAt: string | null): number | n
 
 /**
  * Queue a Live Activity update on first delivery, exempt changes
- * (activeCount, attention, newly-terminal, or phase), or after the 15s throttle.
+ * (activeCount, attention transition, newly-terminal, or phase), or after the 15s throttle.
  *
  * @param input - Previous/next aggregates, last delivery time, and now
  * @returns Whether an update should be queued
@@ -85,7 +85,10 @@ export function shouldUpdateLiveActivity(input: {
   if (input.previousAggregate.activeCount !== input.nextAggregate.activeCount) {
     return true;
   }
-  if (aggregateNeedsAttention(input.nextAggregate)) {
+  if (
+    aggregateNeedsAttention(input.previousAggregate) !==
+    aggregateNeedsAttention(input.nextAggregate)
+  ) {
     return true;
   }
   // A thread finishing must never be throttled away: when a completion and a

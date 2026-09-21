@@ -722,6 +722,51 @@ describe("ApnsDeliveries", () => {
   );
 
   it.effect(
+    "throttles timestamp-only changes while an activity already awaits input",
+    () => {
+      const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
+      const queuedJobs: Array<SignedApnsDeliveryJob> = [];
+      const waitingAggregate: RelayAgentActivityAggregateState = {
+        ...aggregate,
+        activities: [
+          {
+            ...aggregate.activities[0]!,
+            phase: "waiting_for_input",
+            status: "Input",
+          },
+        ],
+      };
+      const laterWaitingAggregate: RelayAgentActivityAggregateState = {
+        ...waitingAggregate,
+        updatedAt: "1970-01-01T00:00:04.000Z",
+        activities: [
+          {
+            ...waitingAggregate.activities[0]!,
+            updatedAt: "1970-01-01T00:00:04.000Z",
+          },
+        ],
+      };
+
+      return Effect.gen(function* () {
+        const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
+        const result = yield* deliveries.sendForTarget({
+          target: {
+            ...target,
+            last_aggregate_json: JSON.stringify(waitingAggregate),
+            last_live_activity_delivery_at: "1970-01-01T00:00:04.000Z",
+          },
+          aggregate: laterWaitingAggregate,
+          nowMs: 5_000,
+        });
+
+        expect(result).toBeNull();
+        expect(queuedJobs).toEqual([]);
+        expect(attempts).toEqual([]);
+      }).pipe(Effect.provide(makeLayer({ attempts, queuedJobs })));
+    },
+  );
+
+  it.effect(
     "throttles updates for changed aggregates with stable counts and no pending attention",
     () => {
       const attempts: Array<DeliveryAttempts.DeliveryAttemptInput> = [];
