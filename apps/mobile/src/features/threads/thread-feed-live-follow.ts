@@ -73,7 +73,13 @@ export const THREAD_FEED_FOLLOWING_VISIBLE_CONTENT_POSITION = {
   size: true,
 } as const;
 
-/** Size-only restoration while following so estimate→actual corrections cannot land in a drag gap. */
+/**
+ * Size-only restoration while following so estimate→actual corrections cannot land in a drag gap.
+ *
+ * @param input.following - Live-follow is armed
+ * @param input.disclosureSettling - A disclosure animation is still settling
+ * @param input.readingPosition - Full restoration used while reading history
+ */
 export function resolveThreadFeedVisibleContentPosition<Position>(input: {
   readonly following: boolean;
   readonly disclosureSettling: boolean;
@@ -84,6 +90,7 @@ export function resolveThreadFeedVisibleContentPosition<Position>(input: {
     : input.readingPosition;
 }
 
+/** Updates live-follow from a user scroll, layout, or disclosure event. */
 export function resolveThreadFeedLiveFollow(
   current: boolean,
   event: ThreadFeedLiveFollowEvent,

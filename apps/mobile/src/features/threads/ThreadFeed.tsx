@@ -1919,6 +1919,7 @@ function LegacyUserMessageContent(props: UserMessageContentProps) {
   );
 }
 
+/** Empty-state copy shown when the transcript has no messages yet. */
 function ThreadFeedPlaceholder(props: {
   readonly bottomInset: number;
   readonly detail: string;
@@ -1949,7 +1950,7 @@ function ThreadFeedPlaceholder(props: {
 }
 
 /** Virtualized thread transcript that pins to live appends and restores history scroll. */
-export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
+function ThreadFeedImpl(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3017,4 +3018,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       </View>
     </PresentationSource>
   );
-});
+}
+
+export const ThreadFeed = memo(ThreadFeedImpl);
