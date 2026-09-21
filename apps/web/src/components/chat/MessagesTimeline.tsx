@@ -180,7 +180,9 @@ import {
   deriveMessagesTimelineRowsWithState,
   deriveUnsettledTurnId,
   type MessagesTimelineRowsProjection,
+  getFixedMessagesTimelineItemSize,
   liveWorkEntryLabel,
+  messagesTimelineListExtraData,
   workEntryIsActiveTurnActivity,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
@@ -812,6 +814,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     queuedMessages,
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
+  const listExtraData = useMemo(
+    () => messagesTimelineListExtraData(listIdentityKey, rows, paintedExpandedSpawnEntryIds),
+    [listIdentityKey, rows, paintedExpandedSpawnEntryIds],
+  );
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
@@ -1279,11 +1285,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
-            extraData={`${listIdentityKey}:${rows.length}`}
+            extraData={listExtraData}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
             renderItem={renderItem}
             estimatedItemSize={90}
+            getFixedItemSize={getFixedMessagesTimelineItemSize}
             initialScrollAtEnd={citationRequest === null && rememberedPosition?.atEnd !== false}
             // Legend needs a data refresh to mount new pins without a scroll event.
             dataVersion={readyCitationRequest?.key ?? listIdentityKey}

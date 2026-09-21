@@ -24,7 +24,9 @@ import {
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
+  getFixedMessagesTimelineItemSize,
   liveWorkEntryLabel,
+  messagesTimelineListExtraData,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveWorkGroupScrollIndex,
@@ -3888,5 +3890,169 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
+  });
+});
+
+describe("live tool group placement across a steer", () => {
+  const turnId = TurnId.make("turn-steer-overlap");
+  const startedAt = "2026-01-01T00:00:00Z";
+
+  function userEntry(id: string, at: string, text: string) {
+    return {
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: at,
+      message: {
+        id: id as never,
+        role: "user" as const,
+        text,
+        turnId: null,
+        createdAt: at,
+        updatedAt: at,
+        streaming: false,
+      },
+    };
+  }
+
+  function commandEntries(count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+      id: `tool-entry-${index}`,
+      kind: "work" as const,
+      createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}Z`,
+      entry: {
+        id: `tool-${index}`,
+        toolCallId: `call-${index}`,
+        createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}Z`,
+        turnId,
+        label: "Ran command",
+        command: index === count - 1 ? "ssh host" : `cmd-${index}`,
+        tone: "tool" as const,
+        itemType: "command_execution" as const,
+        toolLifecycleStatus: index === count - 1 ? ("inProgress" as const) : ("completed" as const),
+      },
+    }));
+  }
+
+  function liveInput(toolCount: number) {
+    const tools = commandEntries(toolCount);
+    const groupId = `work-group:tool:${turnId}:call-0`;
+    return {
+      timelineEntries: [userEntry("user-1", startedAt, "inspect the repo"), ...tools],
+      latestTurn: {
+        turnId,
+        state: "running" as const,
+        startedAt,
+        completedAt: null,
+      },
+      runningTurnId: turnId,
+      isWorking: true,
+      expandedWorkGroupIds: new Set([groupId]),
+      activeTurnStartedAt: startedAt,
+      turnDiffSummaries: [] as TurnDiffSummary[],
+      supportsConversationRollback: false,
+    };
+  }
+
+  function spawnLiveInput() {
+    return {
+      timelineEntries: [
+        userEntry("user-1", startedAt, "inspect the repo"),
+        {
+          id: "spawn-entry",
+          kind: "work" as const,
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "spawn-entry",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId,
+            label: "Ran 2 subagents",
+            tone: "tool" as const,
+            agentSpawn: { workflowId: null, agentTaskIds: ["agent-a", "agent-b"] },
+            toolLifecycleStatus: "inProgress" as const,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId,
+        state: "running" as const,
+        startedAt,
+        completedAt: null,
+      },
+      runningTurnId: turnId,
+      isWorking: true,
+      activeTurnStartedAt: startedAt,
+      turnDiffSummaries: [] as TurnDiffSummary[],
+      supportsConversationRollback: false,
+      liveAgentTaskIds: new Set(["agent-a", "agent-b"]),
+    };
+  }
+
+  it("keeps the live tool header identity when a mid-turn user message lands", () => {
+    const input = liveInput(10);
+    const before = deriveMessagesTimelineRows(input);
+    expect(before.find((row) => row.kind === "work-live")?.id).toBe("live-activity-row");
+
+    const after = deriveMessagesTimelineRows({
+      ...input,
+      timelineEntries: [
+        ...input.timelineEntries,
+        userEntry("user-steer", "2026-01-01T00:01:00Z", "ca7d62b5 is not snake right?"),
+      ],
+    });
+
+    expect(after.filter((row) => row.id === "live-activity-row")).toHaveLength(1);
+    expect(after.find((row) => row.kind === "work-live")?.id).toBe("live-activity-row");
+    expect(after.find((row) => row.kind === "work" && row.isExpandedToolGroup)?.id).toBe(
+      before.find((row) => row.kind === "work" && row.isExpandedToolGroup)?.id,
+    );
+  });
+
+  it("bumps extraData when an expanded live group grows without adding rows", () => {
+    const small = deriveMessagesTimelineRows(liveInput(2));
+    const large = deriveMessagesTimelineRows(liveInput(10));
+    expect(small).toHaveLength(large.length);
+    expect(messagesTimelineListExtraData("thread-1", small)).not.toBe(
+      messagesTimelineListExtraData("thread-1", large),
+    );
+  });
+
+  it("pins chrome row sizes and leaves expanded details measured", () => {
+    const rows = deriveMessagesTimelineRows(liveInput(10));
+    const working = rows.find((row) => row.kind === "working");
+    const live = rows.find((row) => row.kind === "work-live");
+    const details = rows.find((row) => row.kind === "work" && row.isExpandedToolGroup);
+    const user = rows.find((row) => row.kind === "message");
+    expect(working && getFixedMessagesTimelineItemSize(working)).toEqual(expect.any(Number));
+    expect(live && getFixedMessagesTimelineItemSize(live)).toEqual(expect.any(Number));
+    expect(details && getFixedMessagesTimelineItemSize(details)).toBeUndefined();
+    expect(user && getFixedMessagesTimelineItemSize(user)).toBeUndefined();
+  });
+
+  it("does not pin expandable agent-spawn work-live rows to chrome height", () => {
+    const rows = deriveMessagesTimelineRows(spawnLiveInput());
+    const spawnLive = rows.find((row) => row.kind === "work-live");
+    expect(spawnLive).toMatchObject({
+      kind: "work-live",
+      id: "live-activity-row",
+      entry: { agentSpawn: { agentTaskIds: ["agent-a", "agent-b"] } },
+    });
+    expect(spawnLive && getFixedMessagesTimelineItemSize(spawnLive)).toBeUndefined();
+    expect(
+      spawnLive && getFixedMessagesTimelineItemSize({ ...spawnLive, expanded: true }),
+    ).toBeUndefined();
+
+    const commandLive = deriveMessagesTimelineRows(liveInput(2)).find(
+      (row) => row.kind === "work-live",
+    );
+    expect(commandLive && getFixedMessagesTimelineItemSize(commandLive)).toEqual(
+      expect.any(Number),
+    );
+  });
+
+  it("includes expandedSpawnEntryIds in extraData so spawn expand remasures", () => {
+    const rows = deriveMessagesTimelineRows(spawnLiveInput());
+    expect(messagesTimelineListExtraData("thread-1", rows)).not.toBe(
+      messagesTimelineListExtraData("thread-1", rows, new Set(["spawn-entry"])),
+    );
   });
 });

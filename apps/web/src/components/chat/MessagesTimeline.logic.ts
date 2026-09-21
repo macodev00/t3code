@@ -314,6 +314,13 @@ export type TimelineLatestTurn = Pick<
 
 const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
 
+/** Working header: `pt-1` + `h-6` + `pb-2` + `border-b` + row `pb-1.5`. */
+const TIMELINE_WORKING_ROW_HEIGHT = 43;
+/** Thinking / collapsed work chrome: `min-h-6` + `py-0.5` + row `pb-2`. */
+const TIMELINE_CHROME_ROW_HEIGHT = 36;
+/** Expanded work-live / work-toggle header: chrome without row `pb-2`. */
+const TIMELINE_EXPANDED_WORK_HEADER_HEIGHT = 28;
+
 type ActivityEntry = Extract<TimelineEntry, { kind: "message" | "work" }>;
 
 function isActivityEntry(entry: TimelineEntry): entry is ActivityEntry {
@@ -487,6 +494,100 @@ function expandedWorkGroupRow(
     groupedEntries,
     isExpandedToolGroup: true,
   };
+}
+
+/** True when every remaining timeline entry is a user message (a mid-turn steer). */
+function remainderIsOnlyUserMessages(
+  timelineEntries: ReadonlyArray<TimelineEntry>,
+  fromIndex: number,
+): boolean {
+  for (let index = fromIndex; index < timelineEntries.length; index += 1) {
+    const entry = timelineEntries[index]!;
+    if (entry.kind !== "message" || entry.message.role !== "user") {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A steer moves the Working header past in-progress tools. Keep the live row
+ * key so LegendList does not remount it at `estimatedItemSize`.
+ */
+function assignLiveActivityRowId(rows: MessagesTimelineRow[]): void {
+  if (rows.some((row) => row.id === LIVE_ACTIVITY_ROW_ID)) return;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if ((row.kind === "work-live" || row.kind === "activity-group") && row.active) {
+      rows[index] = { ...row, id: LIVE_ACTIVITY_ROW_ID };
+      return;
+    }
+  }
+}
+
+/**
+ * Pin chrome rows. Messages, expanded tool details, and in-place agent-spawn
+ * rows stay measured — spawn members expand via `expandedSpawnEntryIds`.
+ */
+export function getFixedMessagesTimelineItemSize(row: MessagesTimelineRow): number | undefined {
+  switch (row.kind) {
+    case "working":
+      return TIMELINE_WORKING_ROW_HEIGHT;
+    case "thinking":
+      return TIMELINE_CHROME_ROW_HEIGHT;
+    case "work-toggle":
+      return row.expanded ? TIMELINE_EXPANDED_WORK_HEADER_HEIGHT : TIMELINE_CHROME_ROW_HEIGHT;
+    case "work-live":
+      if (row.entry.agentSpawn !== undefined) return undefined;
+      return row.expanded ? TIMELINE_EXPANDED_WORK_HEADER_HEIGHT : TIMELINE_CHROME_ROW_HEIGHT;
+    case "activity-group":
+      return row.expanded ? undefined : TIMELINE_CHROME_ROW_HEIGHT;
+    default:
+      return undefined;
+  }
+}
+
+/** Changes when an expanded work row grows, even if `rows.length` stays put. */
+function messagesTimelineHeightSignature(rows: ReadonlyArray<MessagesTimelineRow>): string {
+  let signature = `${rows.length}`;
+  for (const row of rows) {
+    switch (row.kind) {
+      case "work":
+        if (row.isExpandedToolGroup) {
+          signature += `|${row.id}:${row.groupedEntries.length}`;
+        }
+        break;
+      case "work-live":
+        if (row.expanded) {
+          signature += `|${row.id}:${row.groupedEntries.length}`;
+        }
+        break;
+      case "activity-group":
+        if (row.expanded) {
+          signature += `|${row.id}:${row.entries.length}`;
+        }
+        break;
+      case "work-toggle":
+        if (row.expanded) {
+          signature += `|${row.id}:${row.hiddenCount}`;
+        }
+        break;
+    }
+  }
+  return signature;
+}
+
+/** LegendList extraData: thread identity, expanded-row growth, and spawn expansion. */
+export function messagesTimelineListExtraData(
+  listIdentityKey: string,
+  rows: ReadonlyArray<MessagesTimelineRow>,
+  expandedSpawnEntryIds?: ReadonlySet<string>,
+): string {
+  const spawnKey =
+    expandedSpawnEntryIds !== undefined && expandedSpawnEntryIds.size > 0
+      ? `|spawn:${[...expandedSpawnEntryIds].toSorted().join(",")}`
+      : "";
+  return `${listIdentityKey}:${messagesTimelineHeightSignature(rows)}${spawnKey}`;
 }
 
 export function resolveAssistantMessageCopyState({
@@ -1156,7 +1257,7 @@ export function deriveMessagesTimelineRows(input: {
         const active =
           input.isWorking &&
           activityTurnId === unsettledTurnId &&
-          cursor === input.timelineEntries.length &&
+          remainderIsOnlyUserMessages(input.timelineEntries, cursor) &&
           !latestToolFailed &&
           (latestVisibleToolEntry === undefined || latestToolKeepsActivityLive);
         const groupId =
@@ -1452,6 +1553,7 @@ export function deriveMessagesTimelineRows(input: {
       createdAt: input.activeTurnStartedAt,
     });
   }
+  assignLiveActivityRowId(nextRows);
   const rows = attachTrailingToolGroupsToAssistant(nextRows);
   input.queuedMessages?.forEach((queuedMessage, index) => {
     rows.push({
