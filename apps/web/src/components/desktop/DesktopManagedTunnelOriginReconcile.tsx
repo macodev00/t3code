@@ -63,60 +63,58 @@ function ConfiguredDesktopManagedTunnelOriginReconcile() {
     let attempt = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    function scheduleRetry() {
+    const scheduleRetry = () => {
       const delayMs = desktopManagedTunnelOriginReconcileRetryDelayMs(attempt);
       if (delayMs === null) {
         reconciledKeyRef.current = null;
         return;
       }
       if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
+        clearTimeout(retryTimer);
       }
-      retryTimer = window.setTimeout(() => {
+      retryTimer = setTimeout(() => {
         retryTimer = null;
-        if (!settled) reconcile();
+        if (!settled) void reconcile();
       }, delayMs);
-    }
+    };
 
-    function reconcile() {
+    const reconcile = async () => {
       attempt += 1;
-      void (async () => {
-        const tokenResult = await settlePromise(() => getToken(resolveRelayClerkTokenOptions()));
-        if (settled) return;
-        if (tokenResult._tag === "Failure") {
-          logReconcileFailure(squashAtomCommandFailure(tokenResult));
-          scheduleRetry();
-          return;
+      const tokenResult = await settlePromise(() => getToken(resolveRelayClerkTokenOptions()));
+      if (settled) return;
+      if (tokenResult._tag === "Failure") {
+        logReconcileFailure(squashAtomCommandFailure(tokenResult));
+        scheduleRetry();
+        return;
+      }
+      const clerkToken = tokenResult.value;
+      if (!clerkToken) {
+        scheduleRetry();
+        return;
+      }
+      const linkResult = await linkPrimaryEnvironment({
+        target,
+        clerkToken,
+        mode: "managed",
+        installRelayClient: false,
+      });
+      if (settled) return;
+      if (linkResult._tag === "Failure") {
+        if (!isAtomCommandInterrupted(linkResult)) {
+          logReconcileFailure(squashAtomCommandFailure(linkResult));
         }
-        const clerkToken = tokenResult.value;
-        if (!clerkToken) {
-          scheduleRetry();
-          return;
-        }
-        const linkResult = await linkPrimaryEnvironment({
-          target,
-          clerkToken,
-          mode: "managed",
-          installRelayClient: false,
-        });
-        if (settled) return;
-        if (linkResult._tag === "Failure") {
-          if (!isAtomCommandInterrupted(linkResult)) {
-            logReconcileFailure(squashAtomCommandFailure(linkResult));
-          }
-          scheduleRetry();
-          return;
-        }
-        succeeded = true;
-      })();
-    }
+        scheduleRetry();
+        return;
+      }
+      succeeded = true;
+    };
 
-    reconcile();
+    void reconcile();
 
     return () => {
       settled = true;
       if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
+        clearTimeout(retryTimer);
         retryTimer = null;
       }
       if (!succeeded) {
