@@ -70,7 +70,7 @@ const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
 const ClaudeCliApiErrorPayload = Schema.Struct({
-  api_error_status: Schema.optionalKey(Schema.Number),
+  api_error_status: Schema.optionalKey(Schema.Finite),
   is_error: Schema.optionalKey(Schema.Boolean),
   result: Schema.optionalKey(Schema.String),
 });
