@@ -824,7 +824,9 @@ export function ProviderInstanceCard({
           title="Display name"
           status={
             <div className="flex min-w-0 flex-col items-start gap-2">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">{editorStatusNode}</div>
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+                {editorStatusNode}
+              </div>
               {signInAction}
             </div>
           }
