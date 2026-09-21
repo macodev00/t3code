@@ -19,7 +19,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { createModelCapabilities } from "@t3tools/shared/model";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 
 import {
   AUTH_PROBE_TIMEOUT_MS,
@@ -304,7 +304,7 @@ const runGrokCliCommand = (
       command,
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         env: environment,
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
       }),
     );
   });

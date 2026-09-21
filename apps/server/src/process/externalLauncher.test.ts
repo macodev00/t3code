@@ -150,12 +150,16 @@ it.effect("launches an installed editor with platform-safe arguments", () =>
     );
 
     assert.ok(spawned);
-    assert.equal(spawned.command, '^"C:\\Program^ Files\\Microsoft^ VS^ Code\\bin\\code.CMD^"');
+    assert.equal(spawned.command, "cmd.exe");
     assert.deepEqual(spawned.args, [
-      '^"--goto^"',
-      '^"C:\\workspace^ with^ spaces\\src\\index.ts:12:4^"',
+      "/d",
+      "/s",
+      "/c",
+      '"^"C:\\Program^ Files\\Microsoft^ VS^ Code\\bin\\code.CMD^" ^"--goto^" ^"C:\\workspace^ with^ spaces\\src\\index.ts:12:4^""',
     ]);
-    assert.equal(spawned.options.shell, true);
+    assert.equal(spawned.options.shell, false);
+    assert.equal(spawned.options.windowsHide, true);
+    assert.equal(spawned.options.windowsVerbatimArguments, true);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
@@ -238,13 +242,16 @@ it.effect("launches Cursor in classic IDE mode through the Windows command shim"
     );
 
     assert.ok(spawned);
-    assert.equal(spawned.command, '^"C:\\Program^ Files\\Cursor\\bin\\cursor.CMD^"');
+    assert.equal(spawned.command, "cmd.exe");
     assert.deepEqual(spawned.args, [
-      '^"--classic^"',
-      '^"--goto^"',
-      '^"C:\\workspace^ with^ spaces\\src\\index.ts:12:4^"',
+      "/d",
+      "/s",
+      "/c",
+      '"^"C:\\Program^ Files\\Cursor\\bin\\cursor.CMD^" ^"--classic^" ^"--goto^" ^"C:\\workspace^ with^ spaces\\src\\index.ts:12:4^""',
     ]);
-    assert.equal(spawned.options.shell, true);
+    assert.equal(spawned.options.shell, false);
+    assert.equal(spawned.options.windowsHide, true);
+    assert.equal(spawned.options.windowsVerbatimArguments, true);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
@@ -1018,12 +1025,21 @@ for (const { platform, installPath, editor, args } of [
           ),
         );
         assert.ok(spawned);
-        assert.equal(
-          spawned.command,
-          executable.endsWith(".cmd") ? `^"${executable.replaceAll(" ", "^ ")}^"` : executable,
-        );
-        assert.deepEqual(spawned.args, args);
-        assert.equal(spawned.options.shell, executable.endsWith(".cmd"));
+        if (executable.endsWith(".cmd")) {
+          assert.equal(spawned.command, "cmd.exe");
+          assert.deepEqual(spawned.args.slice(0, 3), ["/d", "/s", "/c"]);
+          assert.equal(
+            spawned.args[3],
+            `"${[`^"${executable.replaceAll(" ", "^ ")}^"`, ...args].join(" ")}"`,
+          );
+          assert.equal(spawned.options.shell, false);
+          assert.equal(spawned.options.windowsHide, true);
+          assert.equal(spawned.options.windowsVerbatimArguments, true);
+        } else {
+          assert.equal(spawned.command, executable);
+          assert.deepEqual(spawned.args, args);
+          assert.equal(spawned.options.shell, false);
+        }
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 }

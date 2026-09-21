@@ -11,7 +11,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 import {
   ServerCliBuildAssetMissingError,
   ServerCliCommandExitError,
@@ -139,7 +139,7 @@ const buildExeCmd = Command.make(
           },
           stdout: config.verbose ? "inherit" : "ignore",
           stderr: "inherit",
-          shell: spawnCommand.shell,
+          ...spawnOptionsFromResolvedCommand(spawnCommand),
         }),
       );
 
@@ -220,7 +220,7 @@ const publishCmd = Command.make(
             cwd: packagesDir,
             stdout: config.verbose ? "inherit" : "ignore",
             stderr: "inherit",
-            shell: spawnCommand.shell,
+            ...spawnOptionsFromResolvedCommand(spawnCommand),
           }),
         );
       }

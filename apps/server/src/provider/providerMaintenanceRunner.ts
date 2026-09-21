@@ -7,7 +7,7 @@ import {
   type ServerProviderUpdatedPayload,
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -84,13 +84,15 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
         // Resolve the executable for the host platform before spawning. On
         // Windows the update tools are batch shims (e.g. `npm` -> `npm.cmd`),
         // which a bare ChildProcess.spawn cannot launch (spawn npm ENOENT);
-        // resolveSpawnCommand finds the real `.cmd` and routes it through the
-        // shell. On Linux/macOS (incl. the WSL backend) this is a no-op.
+        // resolveSpawnCommand finds the real `.cmd` and launches it via ComSpec
+        // (`cmd.exe /d /s /c`) with `shell: false`, `windowsHide: true`, and
+        // `windowsVerbatimArguments: true`. On Linux/macOS (incl. the WSL
+        // backend) this is a no-op.
         const resolved = yield* resolveSpawnCommand(input.command, input.args);
         const child = yield* input.spawner
           .spawn(
             ChildProcess.make(resolved.command, resolved.args, {
-              shell: resolved.shell,
+              ...spawnOptionsFromResolvedCommand(resolved),
               ...(input.env ? { env: input.env, extendEnv: true } : {}),
             }),
           )

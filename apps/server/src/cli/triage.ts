@@ -15,7 +15,12 @@ import * as NodeOS from "node:os";
 import * as NodeReadlinePromises from "node:readline/promises";
 
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
+import {
+  isCommandAvailable,
+  resolveSpawnCommand,
+  spawnOptionsFromResolvedCommand,
+  type ResolvedSpawnCommand,
+} from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
@@ -123,17 +128,12 @@ const pickAgent = (agents: ReadonlyArray<TriageAgent>) =>
  * the UI, and the harness's own permission prompts gate every action. Resolves
  * with the child's exit code.
  */
-const runInteractiveSession = (input: {
-  readonly command: string;
-  readonly args: ReadonlyArray<string>;
-  readonly shell: boolean;
-  readonly cwd: string;
-}) =>
+const runInteractiveSession = (input: ResolvedSpawnCommand & { readonly cwd: string }) =>
   Effect.callback<number, TriageAgentSpawnError>((resume) => {
     const child = NodeChildProcess.spawn(input.command, [...input.args], {
       cwd: input.cwd,
       stdio: "inherit",
-      shell: input.shell,
+      ...spawnOptionsFromResolvedCommand(input),
     });
     child.once("error", (cause) =>
       resume(Effect.fail(new TriageAgentSpawnError({ command: input.command, cause }))),

@@ -19,6 +19,8 @@ type ChildProcessCommand = {
   readonly args: ReadonlyArray<string>;
   readonly options: {
     readonly shell?: boolean | string;
+    readonly windowsHide?: boolean;
+    readonly windowsVerbatimArguments?: boolean;
   };
 };
 
@@ -127,15 +129,16 @@ describe("runProcess", () => {
   it.effect("resolves and escapes Windows command shims before spawning", () => {
     const spawner = makeSpawner((command) =>
       Effect.sync(() => {
-        expect(command.command).toBe('^"C:\\Users\\tester\\AppData\\Roaming\\npm\\az.cmd^"');
+        expect(command.command).toBe("cmd.exe");
         expect(command.args).toEqual([
-          '^"repos^"',
-          '^"pr^"',
-          '^"list^"',
-          '^"--source-branch^"',
-          '^"feature^ ^&^ release^"',
+          "/d",
+          "/s",
+          "/c",
+          '"^"C:\\Users\\tester\\AppData\\Roaming\\npm\\az.cmd^" ^"repos^" ^"pr^" ^"list^" ^"--source-branch^" ^"feature^ ^&^ release^""',
         ]);
-        expect(command.options.shell).toBe(true);
+        expect(command.options.shell).toBe(false);
+        expect(command.options.windowsHide).toBe(true);
+        expect(command.options.windowsVerbatimArguments).toBe(true);
         return makeHandle({ stdout: "[]" });
       }),
     );

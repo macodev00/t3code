@@ -20,7 +20,7 @@ import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 
 import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./AcpStderr.ts";
 import {
@@ -465,7 +465,7 @@ export const make = (
           ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
           ...(options.spawn.env ? { env: options.spawn.env } : {}),
           extendEnv: options.spawn.extendEnv ?? true,
-          shell: spawnCommand.shell,
+          ...spawnOptionsFromResolvedCommand(spawnCommand),
         }),
       )
       .pipe(

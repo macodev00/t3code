@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
 import { resolveGitWorktreePath, resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 import { HostProcessEnvironment, HostProcessWorkingDirectory } from "@t3tools/shared/hostProcess";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Hash from "effect/Hash";
@@ -808,7 +808,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       stderr: "inherit",
       env,
       extendEnv: false,
-      shell: spawnCommand.shell,
+      ...spawnOptionsFromResolvedCommand(spawnCommand),
       // Keep Vite+ in the same process group so terminal signals (Ctrl+C)
       // reach it directly. Effect defaults to detached: true on non-Windows,
       // which would put the runner in a new group and require manual forwarding.

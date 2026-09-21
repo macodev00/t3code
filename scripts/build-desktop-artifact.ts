@@ -16,7 +16,7 @@ import {
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
@@ -2156,7 +2156,7 @@ export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(func
     yield* runCommand(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         cwd: input.repoRoot,
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
       }),
       {
         label: `cargo build ${input.backend} capture helper (${rustTarget})`,
@@ -2216,7 +2216,7 @@ export const stageResourceMonitor = Effect.fn("stageResourceMonitor")(function* 
       yield* runCommand(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           cwd: input.repoRoot,
-          shell: spawnCommand.shell,
+          ...spawnOptionsFromResolvedCommand(spawnCommand),
         }),
         {
           label: `cargo build resource monitor (${rustTarget})`,
@@ -2941,7 +2941,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   yield* runCommand(
     ChildProcess.make(installCommand.command, installCommand.args, {
       cwd: serverStageDir,
-      shell: installCommand.shell,
+      ...spawnOptionsFromResolvedCommand(installCommand),
     }),
     { label: "vp install --prod (server sidecar)", verbose: input.verbose },
   );
@@ -3418,7 +3418,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     yield* runCommand(
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         cwd: repoRoot,
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
       }),
       { label: "vp run build:desktop", verbose: options.verbose },
     );
@@ -3690,7 +3690,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* runCommand(
     ChildProcess.make(installCommand.command, installCommand.args, {
       cwd: stageAppDir,
-      shell: installCommand.shell,
+      ...spawnOptionsFromResolvedCommand(installCommand),
     }),
     { label: "vp install --prod", verbose: options.verbose },
   );
@@ -3786,7 +3786,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     ChildProcess.make(builderCommand.command, builderCommand.args, {
       cwd: repoRoot,
       env: buildEnv,
-      shell: builderCommand.shell,
+      ...spawnOptionsFromResolvedCommand(builderCommand),
     }),
     {
       label: `vp exec --filter @t3tools/desktop -- electron-builder --projectDir ${stageAppDir} ${platformConfig.cliFlag} --${options.arch} --publish never`,

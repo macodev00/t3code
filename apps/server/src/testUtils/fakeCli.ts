@@ -24,8 +24,8 @@ export interface FakeCliOptions {
 /**
  * Writes a fake CLI whose behaviour lives in a Node stub. On posix the
  * launcher is a `#!/bin/sh` script; on Windows it is a `.cmd` shim, since a
- * shebang file is not executable there and `resolveSpawnCommand` routes
- * `.cmd` through a shell. Returns the launcher path to hand to the code under
+ * shebang file is not executable there and `resolveSpawnCommand` launches
+ * `.cmd` through ComSpec. Returns the launcher path to hand to the code under
  * test, which on Windows carries the `.cmd` extension.
  */
 export function writeFakeCli(options: FakeCliOptions): string {

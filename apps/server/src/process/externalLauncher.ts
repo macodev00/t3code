@@ -20,7 +20,11 @@ import {
 } from "@t3tools/contracts";
 import { resolveEditorCommand } from "@t3tools/shared/editor";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
+import {
+  isCommandAvailable,
+  resolveSpawnCommand,
+  spawnOptionsFromResolvedCommand,
+} from "@t3tools/shared/shell";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -725,7 +729,7 @@ const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(fu
       args: spawnCommand.args,
       options: {
         detached: true,
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",

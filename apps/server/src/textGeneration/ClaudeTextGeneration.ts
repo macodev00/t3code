@@ -16,7 +16,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { type ClaudeSettings, type ModelSelection } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 
 import { TextGenerationError } from "@t3tools/contracts";
 import * as TextGeneration from "./TextGeneration.ts";
@@ -222,7 +222,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         env: claudeEnvironment,
         cwd: workingDirectory,
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
         stdin: {
           stream: Stream.encodeText(Stream.make(prompt)),
         },

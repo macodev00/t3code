@@ -1,0 +1,28 @@
+diff --git a/dist/internal/nodeChildProcessSpawner.js b/dist/internal/nodeChildProcessSpawner.js
+index 5da1d9a..7e810ad 100644
+--- a/dist/internal/nodeChildProcessSpawner.js
++++ b/dist/internal/nodeChildProcessSpawner.js
+@@ -4,7 +4,8 @@ export const buildSpawnOptions = (options, base, platform) => {
+     ...base,
+     detached,
+     shell: options.shell,
+-    windowsHide: options.windowsHide ?? !detached
++    windowsHide: options.windowsHide ?? !detached,
++    windowsVerbatimArguments: options.windowsVerbatimArguments
+   };
+ };
+ //# sourceMappingURL=nodeChildProcessSpawner.js.map
+\ No newline at end of file
+diff --git a/src/internal/nodeChildProcessSpawner.ts b/src/internal/nodeChildProcessSpawner.ts
+index 7cd1e9e..1f3a6a4 100644
+--- a/src/internal/nodeChildProcessSpawner.ts
++++ b/src/internal/nodeChildProcessSpawner.ts
+@@ -11,6 +11,7 @@ export const buildSpawnOptions = (
+     ...base,
+     detached,
+     shell: options.shell,
+-    windowsHide: options.windowsHide ?? !detached
++    windowsHide: options.windowsHide ?? !detached,
++    windowsVerbatimArguments: (options as NodeChildProcess.SpawnOptions).windowsVerbatimArguments
+   }
+ }

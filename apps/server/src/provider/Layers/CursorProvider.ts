@@ -32,7 +32,7 @@ import {
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
 } from "@t3tools/shared/model";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 
 import {
   buildBooleanOptionDescriptor,
@@ -1067,7 +1067,7 @@ const runCursorCommand = (
     );
     const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
       ...(environment ? { env: environment } : { extendEnv: true }),
-      shell: spawnCommand.shell,
+      ...spawnOptionsFromResolvedCommand(spawnCommand),
     });
 
     const child = yield* spawner.spawn(command);
