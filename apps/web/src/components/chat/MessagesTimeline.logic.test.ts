@@ -3907,24 +3907,26 @@ describe("live tool group placement across a steer", () => {
   const startedAt = "2026-01-01T00:00:00Z";
 
   /** Timeline user-message entry for steer-overlap layout tests. */
-  const userEntry = (id: string, at: string, text: string) => ({
-    id: `${id}-entry`,
-    kind: "message" as const,
-    createdAt: at,
-    message: {
-      id: id as never,
-      role: "user" as const,
-      text,
-      turnId: null,
+  function userEntry(id: string, at: string, text: string) {
+    return {
+      id: `${id}-entry`,
+      kind: "message" as const,
       createdAt: at,
-      updatedAt: at,
-      streaming: false,
-    },
-  });
+      message: {
+        id: id as never,
+        role: "user" as const,
+        text,
+        turnId: null,
+        createdAt: at,
+        updatedAt: at,
+        streaming: false,
+      },
+    };
+  }
 
   /** Sequential command work entries; the last one stays in progress. */
-  const commandEntries = (count: number) =>
-    Array.from({ length: count }, (_, index) => ({
+  function commandEntries(count: number) {
+    return Array.from({ length: count }, (_, index) => ({
       id: `tool-entry-${index}`,
       kind: "work" as const,
       createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}Z`,
@@ -3940,9 +3942,10 @@ describe("live tool group placement across a steer", () => {
         toolLifecycleStatus: index === count - 1 ? ("inProgress" as const) : ("completed" as const),
       },
     }));
+  }
 
   /** Running-turn timeline input with `toolCount` expanded live command rows. */
-  const liveInput = (toolCount: number) => {
+  function liveInput(toolCount: number) {
     const tools = commandEntries(toolCount);
     const groupId = `work-group:tool:${turnId}:call-0`;
     return {
@@ -3962,7 +3965,7 @@ describe("live tool group placement across a steer", () => {
         supportsConversationRollback: false,
       },
     };
-  };
+  }
 
   it("keeps the live tool header identity when a mid-turn user message lands", () => {
     const { input } = liveInput(10);

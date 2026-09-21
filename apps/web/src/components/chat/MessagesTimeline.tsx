@@ -479,6 +479,7 @@ interface MessagesTimelineProps {
 // MessagesTimeline — list owner
 // ---------------------------------------------------------------------------
 
+/** Virtualized chat transcript; pins chrome row sizes and extraData height signatures. */
 export const MessagesTimeline = memo(function MessagesTimeline({
   citationRequest = null,
   citationHistoryLoading = false,

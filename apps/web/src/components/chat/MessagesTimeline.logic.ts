@@ -488,6 +488,7 @@ function workGroupId(timelineEntryId: string, entry: WorkLogEntry): string {
   return `work-group:${workGroupIdentity(timelineEntryId, entry)}`;
 }
 
+/** Nested tool-call details row that LegendList must measure, not pin. */
 function expandedWorkGroupRow(
   groupId: string,
   createdAt: string,
@@ -633,16 +634,17 @@ export function layoutMessagesTimelineRows(
   rows: ReadonlyArray<MessagesTimelineRow>,
   measuredHeights: ReadonlyMap<string, number> = new Map(),
 ): MessagesTimelineRowRect[] {
+  const rects: MessagesTimelineRowRect[] = [];
   let top = 0;
-  return rows.map((row) => {
+  for (const row of rows) {
     const height =
       getFixedMessagesTimelineItemSize(row) ??
       measuredHeights.get(row.id) ??
       TIMELINE_ESTIMATED_ITEM_SIZE;
-    const rect = { id: row.id, top, height };
+    rects.push({ id: row.id, top, height });
     top += height;
-    return rect;
-  });
+  }
+  return rects;
 }
 
 /** True when two stacked timeline row rectangles share vertical space. */
@@ -653,6 +655,7 @@ export function messagesTimelineRowRectsOverlap(
   return a.top < b.top + b.height && b.top < a.top + a.height;
 }
 
+/** Copy-button visibility and rendered text for a finished assistant message. */
 export function resolveAssistantMessageCopyState({
   text,
   showCopyButton,
@@ -1102,6 +1105,7 @@ function buildRevertTurnCountByUserMessageId(input: {
   return byUserMessageId;
 }
 
+/** Flatten timeline entries into virtualized rows, keeping live tool identity across a steer. */
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestTurn?: TimelineLatestTurn | null;
