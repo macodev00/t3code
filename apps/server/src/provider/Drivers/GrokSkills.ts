@@ -20,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { ChildProcess } from "effect/unstable/process";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 
 import { spawnAndCollect } from "../providerSnapshot.ts";
 
@@ -111,7 +111,7 @@ export const discoverGrokSkills = Effect.fn("discoverGrokSkills")(function* (
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         ...(cwd ? { cwd } : {}),
         env: environment,
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
       }),
     );
   }).pipe(

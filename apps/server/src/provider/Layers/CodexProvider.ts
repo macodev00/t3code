@@ -30,7 +30,7 @@ import {
   createModelCapabilities,
   readCustomModelEntries,
 } from "@t3tools/shared/model";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 import {
   AUTH_PROBE_TIMEOUT_MS,
@@ -388,7 +388,7 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
         env: environment,
         extendEnv: true,
         forceKillAfter: CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER,
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
       }),
     )
     .pipe(

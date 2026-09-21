@@ -30,7 +30,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
@@ -212,7 +212,7 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
   yield* runCommand(
     ChildProcess.make(install.command, install.args, {
       cwd: input.stageDir,
-      shell: install.shell,
+      ...spawnOptionsFromResolvedCommand(install),
       stdout: "inherit",
       stderr: "inherit",
     }),

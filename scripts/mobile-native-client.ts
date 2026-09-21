@@ -5,7 +5,11 @@ import {
   HostProcessExecutablePath,
   HostProcessPlatform,
 } from "@t3tools/shared/hostProcess";
-import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
+import {
+  isCommandAvailable,
+  resolveSpawnCommand,
+  spawnOptionsFromResolvedCommand,
+} from "@t3tools/shared/shell";
 import * as Console from "effect/Console";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -180,7 +184,7 @@ const command = Effect.fn("nativeClient.command")(function* (
   const spawn = yield* resolveSpawnCommand(program === "adb" ? yield* resolveAdb : program, args);
   const child = yield* spawner.spawn(
     ChildProcess.make(spawn.command, spawn.args, {
-      shell: spawn.shell,
+      ...spawnOptionsFromResolvedCommand(spawn),
       cwd: cwd ?? (yield* roots).mobile,
       env: {
         ...environment,

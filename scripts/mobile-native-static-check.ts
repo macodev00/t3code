@@ -2,7 +2,11 @@
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
+import {
+  isCommandAvailable,
+  resolveSpawnCommand,
+  spawnOptionsFromResolvedCommand,
+} from "@t3tools/shared/shell";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -136,7 +140,7 @@ export const runCommand = Effect.fn("runCommand")(function* (
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         cwd,
         ...commandOutputOptions,
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
       }),
     )
     .pipe(

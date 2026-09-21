@@ -854,6 +854,8 @@ describe("providerMaintenanceRunner", () => {
       readonly command: string;
       readonly args: ReadonlyArray<string>;
       readonly shell: boolean | string | undefined;
+      readonly windowsHide: boolean | undefined;
+      readonly windowsVerbatimArguments: boolean | undefined;
     }> = [];
     return Effect.gen(function* () {
       const { registry } = yield* makeRegistry(baseProvider);
@@ -862,12 +864,15 @@ describe("providerMaintenanceRunner", () => {
       const result = yield* runner.updateProvider(CODEX_DRIVER);
 
       // On win32, resolveSpawnCommand resolves `npm` to the `.cmd` shim and
-      // launches it via ComSpec (`cmd.exe /d /s /c`) with `shell: false`.
+      // launches it via ComSpec (`cmd.exe /d /s /c`) with `shell: false`,
+      // `windowsHide: true`, and `windowsVerbatimArguments: true`.
       assert.strictEqual(captured.length, 1);
       const call = captured[0];
       assert.ok(call, "expected the spawner to be invoked once");
       assert.match(call.command, /cmd\.exe/i);
       assert.strictEqual(call.shell, false);
+      assert.strictEqual(call.windowsHide, true);
+      assert.strictEqual(call.windowsVerbatimArguments, true);
       assert.deepStrictEqual(call.args.slice(0, 3), ["/d", "/s", "/c"]);
       assert.strictEqual(call.args.length, 4);
       // The `/c` payload still carries the resolved shim and install command.
@@ -894,12 +899,18 @@ describe("providerMaintenanceRunner", () => {
               const childProcess = command as unknown as {
                 readonly command: string;
                 readonly args: ReadonlyArray<string>;
-                readonly options: { readonly shell?: boolean | string | undefined };
+                readonly options: {
+                  readonly shell?: boolean | string | undefined;
+                  readonly windowsHide?: boolean | undefined;
+                  readonly windowsVerbatimArguments?: boolean | undefined;
+                };
               };
               captured.push({
                 command: childProcess.command,
                 args: childProcess.args,
                 shell: childProcess.options.shell,
+                windowsHide: childProcess.options.windowsHide,
+                windowsVerbatimArguments: childProcess.options.windowsVerbatimArguments,
               });
               return Effect.succeed(mockHandle({ stdout: "updated" }));
             }),

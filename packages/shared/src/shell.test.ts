@@ -23,10 +23,17 @@ import {
   resolveKnownWindowsCliDirs,
   resolveSpawnCommand,
   resolveWindowsEnvironment,
+  spawnOptionsFromResolvedCommand,
   SpawnExecutableResolution,
   WindowsShellEnvironment,
   type WindowsShellEnvironmentReader,
 } from "./shell.ts";
+
+/** Mirrors libuv's Windows argv quoting for a single argument. */
+function quoteWindowsSpawnArg(arg: string): string {
+  if (!/[ \t"]/.test(arg)) return arg;
+  return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"`;
+}
 
 const withWindowsEnvironmentMocks = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
@@ -487,6 +494,7 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
         args: ["script.js", "hello & goodbye"],
         shell: false,
       });
+      expect(spawnOptionsFromResolvedCommand(command)).toEqual({ shell: false });
     }),
   );
 
@@ -508,6 +516,8 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
       );
 
       expect(command.shell).toBe(false);
+      expect(command.windowsHide).toBe(true);
+      expect(command.windowsVerbatimArguments).toBe(true);
       expect(command.command).toBe("C:\\Windows\\System32\\cmd.exe");
       expect(command.args).toEqual([
         "/d",
@@ -527,6 +537,51 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
           '"',
         ].join(""),
       ]);
+      expect(spawnOptionsFromResolvedCommand(command)).toEqual({
+        shell: false,
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+      });
+    }),
+  );
+
+  it.effect("keeps spaced shim paths and quoted args intact only when argv is verbatim", () =>
+    Effect.gen(function* () {
+      const command = yield* resolveSpawnCommand("tool", ["hello world", 'quote"value'], {
+        env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+      }).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(HostProcessEnvironment, {
+          ComSpec: "C:\\Windows\\System32\\cmd.exe",
+        }),
+        Effect.provideService(
+          SpawnExecutableResolution,
+          () => "C:\\Program Files\\demo tools\\run.cmd",
+        ),
+      );
+
+      const cmdline = command.args[3] ?? "";
+      expect(command.args.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+      expect(cmdline).toBe(
+        [
+          '"',
+          '^"C:\\Program^ Files\\demo^ tools\\run.cmd^"',
+          " ",
+          '^"hello^ world^"',
+          " ",
+          '^"quote\\^"value^"',
+          '"',
+        ].join(""),
+      );
+
+      // cmd.exe /s strips one outer quote pair from the /c operand. Node's
+      // default argv quoting wraps that already-quoted string again, so the
+      // intended command line must be passed verbatim.
+      const verbatimLine = [command.command, ...command.args].join(" ");
+      expect(verbatimLine).toBe(`C:\\Windows\\System32\\cmd.exe /d /s /c ${cmdline}`);
+      expect(quoteWindowsSpawnArg(cmdline)).not.toBe(cmdline);
+      expect(quoteWindowsSpawnArg(cmdline).startsWith('"')).toBe(true);
+      expect(quoteWindowsSpawnArg(cmdline)).toContain('\\"');
     }),
   );
 
@@ -544,6 +599,8 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
         command: "cmd.exe",
         args: ["/d", "/s", "/c", '"^"C:\\tools\\run.bat^" ^"arg^""'],
         shell: false,
+        windowsHide: true,
+        windowsVerbatimArguments: true,
       });
     }),
   );

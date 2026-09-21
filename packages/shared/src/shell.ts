@@ -31,6 +31,7 @@ function canExecuteFile(filePath: string): boolean {
   }
 }
 
+/** Options for command PATH lookup and spawn resolution. */
 export interface CommandAvailabilityOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly extendEnv?: boolean;
@@ -66,6 +67,7 @@ function escapeWindowsShellArg(arg: string): string {
   return escaped.replace(WINDOWS_SHELL_META_CHARS, "^$1");
 }
 
+/** Escape each argument for inclusion in a `cmd.exe /d /s /c` command line. */
 function sanitizeCmdExeArgs(args: ReadonlyArray<string>): Array<string> {
   return args.map(escapeWindowsShellArg);
 }
@@ -79,14 +81,42 @@ function buildCmdExeCommandLine(resolvedCommand: string, args: ReadonlyArray<str
   return `"${[escapeWindowsShellArg(resolvedCommand), ...sanitizeCmdExeArgs(args)].join(" ")}"`;
 }
 
+/** Resolve `cmd.exe` from ComSpec / comspec / COMSPEC, else `cmd.exe`. */
 function resolveWindowsComSpec(env: NodeJS.ProcessEnv): string {
   return env.ComSpec || env.comspec || env.COMSPEC || "cmd.exe";
 }
 
+/** Command line plus spawn flags for `ChildProcess.make` / `spawn`. */
 export interface ResolvedSpawnCommand {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly shell: boolean;
+  /** Hide the cmd.exe console window on Windows ComSpec shim launches. */
+  readonly windowsHide?: boolean;
+  /** Pass the pre-quoted `/c` line through without Node re-quoting argv. */
+  readonly windowsVerbatimArguments?: boolean;
+}
+
+/** Spawn flags that must travel with a resolved command to `ChildProcess.make` / `spawn`. */
+export function spawnOptionsFromResolvedCommand(command: ResolvedSpawnCommand): {
+  readonly shell: boolean;
+  readonly windowsHide?: boolean;
+  readonly windowsVerbatimArguments?: boolean;
+} {
+  return {
+    shell: command.shell,
+    ...(command.windowsHide === undefined ? {} : { windowsHide: command.windowsHide }),
+    ...(command.windowsVerbatimArguments === undefined
+      ? {}
+      : { windowsVerbatimArguments: command.windowsVerbatimArguments }),
+  };
+}
+
+declare module "effect/unstable/process/ChildProcess" {
+  interface CommandOptions {
+    /** Skip Windows argv quoting so a prebuilt cmd.exe `/c` line is passed through. */
+    readonly windowsVerbatimArguments?: boolean | undefined;
+  }
 }
 
 export type SpawnExecutableResolver = (
@@ -629,6 +659,7 @@ export const resolveCommandPath = Effect.fn("shell.resolveCommandPath")(function
   });
 });
 
+/** Resolve a spawn command, routing Windows `.cmd`/`.bat` shims through ComSpec. */
 export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(function* (
   command: string,
   args: ReadonlyArray<string>,
@@ -653,12 +684,17 @@ export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(functi
     return { command: resolvedCommand, args: [...args], shell: false };
   }
 
-  // Spawn ComSpec directly. `shell: true` plus an args array is Node's
-  // DEP0190 path (insecure concatenate, plus a visible cmd.exe console).
+  // Spawn ComSpec directly with args `["/d","/s","/c", cmdline]`. `shell: true`
+  // plus an args array is Node's DEP0190 path (insecure concatenate, plus a
+  // visible cmd.exe console). `buildCmdExeCommandLine` already quotes and
+  // caret-escapes; `windowsVerbatimArguments` stops Node from re-quoting that
+  // `/c` string. `windowsHide` suppresses the cmd.exe console window.
   return {
     command: resolveWindowsComSpec(hostEnvironment),
     args: ["/d", "/s", "/c", buildCmdExeCommandLine(resolvedCommand, args)],
     shell: false,
+    windowsHide: true,
+    windowsVerbatimArguments: true,
   };
 });
 

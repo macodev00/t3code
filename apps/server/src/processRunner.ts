@@ -10,7 +10,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 import {
   collectUint8StreamText,
   decodeUtf8,
@@ -309,7 +309,7 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
               extendEnv,
             }
           : {}),
-        shell: spawnCommand.shell,
+        ...spawnOptionsFromResolvedCommand(spawnCommand),
       }),
     )
     .pipe(

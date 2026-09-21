@@ -12,7 +12,7 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { createModelCapabilities } from "@t3tools/shared/model";
-import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { resolveSpawnCommand, spawnOptionsFromResolvedCommand } from "@t3tools/shared/shell";
 import {
   query as claudeQuery,
   type Options as ClaudeQueryOptions,
@@ -411,7 +411,7 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   });
   const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
     env: claudeEnvironment,
-    shell: spawnCommand.shell,
+    ...spawnOptionsFromResolvedCommand(spawnCommand),
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
