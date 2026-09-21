@@ -34,6 +34,7 @@ const defaultGroupingSettings = {
   sidebarProjectGroupingOverrides: {},
 };
 
+/** Fixture project with optional field overrides. */
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: ProjectId.make("project-1"),

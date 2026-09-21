@@ -53,9 +53,11 @@ interface NewThreadWorkspaceOptions {
   startFromOrigin?: boolean;
 }
 
-// The workspace options the caller passed explicitly, shaped for the draft
-// store: absent keys stay absent so they never overwrite existing draft
-// state. Every reuse path applies exactly this set.
+/**
+ * The workspace options the caller passed explicitly, shaped for the draft
+ * store: absent keys stay absent so they never overwrite existing draft
+ * state. Every reuse path applies exactly this set.
+ */
 function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undefined) {
   return {
     ...(options?.branch !== undefined ? { branch: options.branch } : {}),
@@ -65,6 +67,7 @@ function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undef
   };
 }
 
+/** Opens or reuses a draft, retargeting New Chat to a reachable project copy. */
 export function useNewThreadHandler() {
   const environmentServerConfigs = useAtomValue(environmentServerConfigsAtom);
   const { environments } = useEnvironments();
@@ -91,6 +94,7 @@ export function useNewThreadHandler() {
       // up again and finding whichever draft it happens to hold.
     ): Promise<{ draftId: DraftId; threadId: ThreadId } | null> => {
       const projects = readProjects();
+      /** True when that environment can create a project (connected). */
       const isEnvironmentReachable = (environmentId: EnvironmentId) =>
         canCreateProjectInEnvironment(
           environments.find((environment) => environment.environmentId === environmentId)
@@ -209,9 +213,11 @@ export function useNewThreadHandler() {
             currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,
           destinationDraftId,
         });
-      // The shared resolver owns the priority order. The t3.json read is
-      // skipped entirely when a higher-priority source decides, the target
-      // cannot serve files, or its query atom already cached a result.
+      /**
+       * The shared resolver owns the priority order. The t3.json read is
+       * skipped entirely when a higher-priority source decides, the target
+       * cannot serve files, or its query atom already cached a result.
+       */
       const resolveDefaultEnvMode = async (): Promise<DraftThreadEnvMode> => {
         const consultProjectFile =
           project !== undefined &&
@@ -511,6 +517,7 @@ export function useNewThreadHandler() {
   );
 }
 
+/** Route-aware New Chat handler: active thread context plus `handleNewThread`. */
 export function useHandleNewThread() {
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const routeTarget = useParams({

@@ -57,6 +57,7 @@ const testState = vi.hoisted(() => {
     connection: { phase: "connected" | "reconnecting" };
   };
 
+  /** Both hosts connected; tests mutate `state.environments` to take one down. */
   const connectedEnvironments = (): TestEnvironment[] => [
     {
       environmentId: "environment-primary",

@@ -83,8 +83,10 @@ export function resolveThreadActionProjectRef(
   return context.defaultProjectRef;
 }
 
-// New Chat must not wait on a down host. Prefer the requested copy when it
-// can serve; otherwise the primary sibling, then any other reachable copy.
+/**
+ * New Chat must not wait on a down host. Prefer the requested copy when it
+ * can serve; otherwise the primary sibling, then any other reachable copy.
+ */
 export function resolveAvailableNewThreadProjectRef(input: {
   requested: ScopedProjectRef;
   members: ReadonlyArray<{
@@ -104,6 +106,10 @@ export function resolveAvailableNewThreadProjectRef(input: {
   return next ? scopeProjectRef(next.environmentId, next.projectId) : null;
 }
 
+/**
+ * Drop branch and worktree after a cross-environment retarget; those paths are
+ * not valid on the destination host.
+ */
 export function resolveWorkspaceOptionsAfterEnvironmentRetarget<
   TOptions extends {
     branch?: string | null;

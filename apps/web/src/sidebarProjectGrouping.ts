@@ -133,6 +133,7 @@ export function buildSidebarProjectSnapshots(input: {
   });
 }
 
+/** True when both refs name the same environment and project. */
 function projectRefsMatch(
   left: Pick<ScopedProjectRef, "environmentId" | "projectId">,
   right: Pick<ScopedProjectRef, "environmentId" | "projectId">,
@@ -140,6 +141,7 @@ function projectRefsMatch(
   return left.environmentId === right.environmentId && left.projectId === right.projectId;
 }
 
+/** True when this logical group includes the given project copy. */
 function groupContainsProjectRef(
   group: Pick<SidebarProjectSnapshot, "memberProjectRefs">,
   projectRef: ScopedProjectRef,
@@ -147,6 +149,7 @@ function groupContainsProjectRef(
   return group.memberProjectRefs.some((memberRef) => projectRefsMatch(memberRef, projectRef));
 }
 
+/** The one checkout a collapsed picker row should create on. */
 function selectCollapsedPickerTarget(
   group: SidebarProjectSnapshot,
   preferredProjectRef: ScopedProjectRef | null,
@@ -170,6 +173,10 @@ function selectCollapsedPickerTarget(
   );
 }
 
+/**
+ * Every distinct checkout in the group, reachable first, then the preferred
+ * member. Same-environment worktrees stay separate rows.
+ */
 function selectExpandedPickerTargets(
   group: SidebarProjectSnapshot,
   preferredProjectRef: ScopedProjectRef | null,
@@ -201,6 +208,11 @@ function selectExpandedPickerTargets(
   });
 }
 
+/**
+ * Picker rows for a logical project list. New Chat passes
+ * `expandEnvironmentCopies` so each machine copy is choosable; draft-hero and
+ * project search keep one row per group.
+ */
 export function buildSidebarProjectPickerEntries(input: {
   groups: ReadonlyArray<SidebarProjectSnapshot>;
   preferredProjectRef: ScopedProjectRef | null;
@@ -237,8 +249,10 @@ export function buildSidebarProjectPickerEntries(input: {
   ];
 }
 
-// When the selected chat's copy is down, focus the reachable sibling in the
-// same logical project so the New Chat picker does not land on a dead row.
+/**
+ * Focus the selected checkout when it can serve; otherwise the reachable
+ * sibling in the same logical project so New Chat does not land on a dead row.
+ */
 export function resolveNewThreadPickerFocusEntry(input: {
   entries: ReadonlyArray<SidebarProjectPickerEntry>;
   currentProjectRef: ScopedProjectRef | null;

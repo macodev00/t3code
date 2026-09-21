@@ -29,6 +29,7 @@ const CARRIED_SELECTION: ModelSelection = {
   model: "carried-model",
 };
 
+/** Minimal ChatThreadActionContext for resolver tests. */
 function createContext(overrides: Partial<ChatThreadActionContext> = {}): ChatThreadActionContext {
   return {
     activeDraftThread: null,

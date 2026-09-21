@@ -679,6 +679,7 @@ function CommandPaletteDialog(props: {
   );
 }
 
+/** Search overlay for palette actions, project search, and New Chat targeting. */
 function OpenCommandPaletteDialog(props: {
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
@@ -934,6 +935,7 @@ function OpenCommandPaletteDialog(props: {
       }),
     [contextualProjectRef, projectGroups],
   );
+  /** True when that environment can create a project (connected). */
   const isEnvironmentReachable = useCallback(
     (environmentId: EnvironmentId) =>
       canCreateProjectInEnvironment(
@@ -942,6 +944,7 @@ function OpenCommandPaletteDialog(props: {
       ),
     [environments],
   );
+  /** One New Chat row per machine copy, reachable copies first. */
   const newThreadPickerEntries = useMemo(
     () =>
       buildSidebarProjectPickerEntries({
@@ -952,6 +955,7 @@ function OpenCommandPaletteDialog(props: {
       }),
     [contextualProjectRef, isEnvironmentReachable, projectGroups],
   );
+  /** Logical group for each expanded New Chat target. */
   const newThreadGroupByTargetKey = useMemo(
     () =>
       new Map(
