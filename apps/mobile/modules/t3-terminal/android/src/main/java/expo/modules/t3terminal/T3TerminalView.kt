@@ -3,10 +3,12 @@ package expo.modules.t3terminal
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.Build
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -233,9 +235,16 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       EditorInfo.IME_FLAG_NO_EXTRACT_UI or
       EditorInfo.IME_FLAG_NO_FULLSCREEN or
       EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+    // Visible-password variation disables suggestions but is treated as a
+    // credential field, so autofill services (Bitwarden, etc.) hijack focus.
     inputView.inputType = InputType.TYPE_CLASS_TEXT or
-      InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
       InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+      container.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+      inputView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+      inputView.setAutofillHints()
+    }
     inputView.setPadding(0, 0, 0, 0)
     inputView.setOnEditorActionListener { _, actionId, event ->
       val isKeyUp = event?.action == KeyEvent.ACTION_UP
