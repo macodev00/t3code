@@ -56,12 +56,13 @@ update it with `git pull` and a rebuild.
 ### Oracle Linux (UEK8)
 
 Oracle's UEK8 kernel refuses to run the `t3` CLI (`ENOEXEC` / "Exec format
-error"). The CLI is a Node single-executable whose embedded JavaScript is an
-ELF note larger than 4 MB, and UEK8 rejects notes that size. The desktop app
+error"). The CLI is a Node single-executable whose embedded JavaScript is a
+`PT_NOTE` larger than 4 MB, and UEK8 rejects notes that size. The desktop app
 is unaffected.
 
-Boot Oracle's RHCK (or any mainline-based kernel) instead of UEK8, or build
-from source the same way as Intel Macs above and run
+Boot Oracle's RHCK (or any mainline-based kernel) instead of UEK8, patch the
+installed binary's `PT_NOTE` `p_filesz` down to 4 MB (reapply after every
+update), or build from source the same way as Intel Macs above and run
 `node apps/server/dist/bin.mjs`.
 
 ## Desktop app

@@ -12,15 +12,18 @@
  */
 
 /**
- * UEK8's `load_elf_binary()` returns ENOEXEC when a PT_NOTE exceeds 4 MB.
- * The CLI is a Node SEA, so that blob is large by design. Node spawn uses
- * execvp, which retries ENOEXEC via /bin/sh, so the failure often arrives as
- * status 126 with no error object. ENOEXEC can also mean a corrupt or
- * wrong-architecture file; this is the likely cause on Linux when the file
+ * UEK8's `load_elf_binary()` returns ENOEXEC when a PT_NOTE exceeds 4 MB
+ * (`MAX_FILE_NOTE_SIZE`). The CLI is a Node SEA, so `NODE_SEA_BLOB` is large
+ * by design. The kernel only checks the PT_NOTE program header `p_filesz`,
+ * not the note payload: capping that field at 4 MB on the installed binary
+ * lets `execve` succeed, and must be reapplied after every update. Node spawn
+ * uses execvp, which retries ENOEXEC via /bin/sh, so the failure often
+ * arrives as status 126 with no error object. ENOEXEC can also mean a corrupt
+ * or wrong-architecture file; this is the likely cause on Linux when the file
  * exists.
  */
 export const linuxCliExecFormatErrorHint =
-  "t3: Oracle Linux UEK8 kernels reject Node SEA notes larger than 4 MB (ENOEXEC). Boot Oracle RHCK or a mainline-based kernel, or build from source and run node apps/server/dist/bin.mjs. ENOEXEC can also mean a corrupt or wrong-architecture file.";
+  "t3: Oracle Linux UEK8 kernels reject Node SEA PT_NOTE segments larger than 4 MB (ENOEXEC). Boot Oracle RHCK or a mainline-based kernel; patch the installed binary's PT_NOTE p_filesz down to 4 MB (reapply after every update); or build from source and run node apps/server/dist/bin.mjs. ENOEXEC can also mean a corrupt or wrong-architecture file.";
 
 /** Return `dist/bin.mjs` source that forwards the process to the sibling platform `t3` executable. */
 export function legacyCliLauncherScript(): string {

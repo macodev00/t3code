@@ -173,6 +173,8 @@ describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer termi
       expect(output).toContain("the downloaded executable does not run");
       expect(output).toContain("UEK8");
       expect(output).toContain("RHCK");
+      expect(output).toContain("PT_NOTE");
+      expect(output).toContain("p_filesz");
       expect(output).toContain("node apps/server/dist/bin.mjs");
       expect(await NodeFSP.readdir(NodePath.join(root, "home/runtime/versions"))).toEqual([]);
     } finally {

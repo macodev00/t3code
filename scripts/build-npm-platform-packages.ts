@@ -194,7 +194,8 @@ export function npmLauncherPackageManifest(
  * The launcher every `npx t3` runs. Plain CommonJS with no dependencies so it
  * loads on any Node that npm itself runs on; the real work happens in the
  * single-executable it execs. Linux ENOEXEC / exit 126 prints a UEK8 hint
- * because Node spawnSync retries exec format errors through /bin/sh.
+ * (RHCK, PT_NOTE `p_filesz` cap, or from-source) because Node spawnSync
+ * retries exec format errors through /bin/sh.
  */
 export const NPM_LAUNCHER_SCRIPT = `#!/usr/bin/env node
 "use strict";
