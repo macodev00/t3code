@@ -191,6 +191,7 @@ import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore"
 import {
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
+  resolveNewThreadPickerFocusEntry,
 } from "../sidebarProjectGrouping";
 import type { Project } from "../types";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
@@ -933,6 +934,34 @@ function OpenCommandPaletteDialog(props: {
       }),
     [contextualProjectRef, projectGroups],
   );
+  const isEnvironmentReachable = useCallback(
+    (environmentId: EnvironmentId) =>
+      canCreateProjectInEnvironment(
+        environments.find((environment) => environment.environmentId === environmentId)?.connection
+          .phase,
+      ),
+    [environments],
+  );
+  const newThreadPickerEntries = useMemo(
+    () =>
+      buildSidebarProjectPickerEntries({
+        groups: projectGroups,
+        preferredProjectRef: contextualProjectRef,
+        expandEnvironmentCopies: true,
+        isEnvironmentReachable,
+      }),
+    [contextualProjectRef, isEnvironmentReachable, projectGroups],
+  );
+  const newThreadGroupByTargetKey = useMemo(
+    () =>
+      new Map(
+        newThreadPickerEntries.map(({ group, targetProject }) => [
+          `${targetProject.environmentId}:${targetProject.id}`,
+          group,
+        ]),
+      ),
+    [newThreadPickerEntries],
+  );
   const pickerProjects = useMemo(
     () =>
       projectPickerEntries.map(({ group, targetProject }) => ({
@@ -1260,10 +1289,13 @@ function OpenCommandPaletteDialog(props: {
     () =>
       enumerateCommandPaletteItems(
         buildProjectActionItems({
-          projects: pickerProjects,
+          projects: newThreadPickerEntries.map(({ group, targetProject }) => ({
+            ...targetProject,
+            displayName: group.displayName,
+          })),
           valuePrefix: "new-thread-in",
           searchTerms: (project) => {
-            const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
+            const group = newThreadGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
             const location = projectEnvironmentLocationById.get(project.environmentId);
             return [
               ...(group?.memberProjects.flatMap((member) => [member.title, member.workspaceRoot]) ??
@@ -1296,28 +1328,29 @@ function OpenCommandPaletteDialog(props: {
           },
           icon: projectFavicon,
           runProject: async (project) => {
-            const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
-            const contextualRefBelongsToGroup =
-              contextualProjectRef !== null &&
-              group?.memberProjectRefs.some(
-                (projectRef) =>
-                  projectRef.environmentId === contextualProjectRef.environmentId &&
-                  projectRef.projectId === contextualProjectRef.projectId,
-              );
-            await handleNewThread(
-              contextualRefBelongsToGroup
-                ? contextualProjectRef
-                : scopeProjectRef(project.environmentId, project.id),
+            const environment = environments.find(
+              (candidate) => candidate.environmentId === project.environmentId,
             );
+            if (!canCreateProjectInEnvironment(environment?.connection.phase)) {
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Environment unavailable",
+                  description: `${environment?.label ?? "The selected environment"} is not connected.`,
+                }),
+              );
+              return;
+            }
+            await handleNewThread(scopeProjectRef(project.environmentId, project.id));
           },
         }),
       ),
     [
-      contextualProjectRef,
+      environments,
       handleNewThread,
-      pickerProjects,
+      newThreadGroupByTargetKey,
+      newThreadPickerEntries,
       projectEnvironmentLocationById,
-      projectGroupByTargetKey,
     ],
   );
 
@@ -1705,10 +1738,18 @@ function OpenCommandPaletteDialog(props: {
     setAddProjectCloneFlow(null);
     setViewStack([]);
     setQuery("");
-    const currentPrefix =
+    const currentProjectRef =
       currentProjectEnvironmentId && currentProjectId
-        ? `new-thread-in:${currentProjectEnvironmentId}:${currentProjectId}`
+        ? scopeProjectRef(currentProjectEnvironmentId, currentProjectId)
         : null;
+    const focusEntry = resolveNewThreadPickerFocusEntry({
+      entries: newThreadPickerEntries,
+      currentProjectRef,
+      isEnvironmentReachable,
+    });
+    const currentPrefix = focusEntry
+      ? `new-thread-in:${focusEntry.targetProject.environmentId}:${focusEntry.targetProject.id}`
+      : null;
     const prioritized = currentPrefix
       ? [
           ...projectThreadItems.filter((item) => item.value === currentPrefix),
@@ -1730,6 +1771,8 @@ function OpenCommandPaletteDialog(props: {
     browseNavigation,
     currentProjectEnvironmentId,
     currentProjectId,
+    isEnvironmentReachable,
+    newThreadPickerEntries,
     openIntent,
     projectThreadItems,
     pushPaletteView,

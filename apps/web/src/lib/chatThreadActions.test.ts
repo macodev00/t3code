@@ -9,8 +9,10 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveThreadActionProjectRef,
   hasExplicitComposerModelSelection,
+  resolveAvailableNewThreadProjectRef,
   resolveNewDraftStartFromOrigin,
   resolveNewThreadModelSelectionOverride,
+  resolveWorkspaceOptionsAfterEnvironmentRetarget,
   startNewThreadFromContext,
   type ChatThreadActionContext,
 } from "./chatThreadActions";
@@ -167,5 +169,74 @@ describe("chatThreadActions", () => {
 
     expect(didStart).toBe(false);
     expect(handleNewThread).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reachable requested copy, including a later same-environment worktree", () => {
+    const remoteRef = scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID);
+    const localEnvironmentId = EnvironmentId.make("environment-local");
+    const localProjectId = ProjectId.make("project-local");
+    const localWorktreeId = ProjectId.make("project-local-worktree");
+    const members = [
+      { environmentId: localEnvironmentId, projectId: localProjectId, isPrimary: true },
+      { environmentId: localEnvironmentId, projectId: localWorktreeId, isPrimary: true },
+      { environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID, isPrimary: false },
+    ];
+
+    expect(
+      resolveAvailableNewThreadProjectRef({
+        requested: remoteRef,
+        members,
+        isEnvironmentReachable: (environmentId) => environmentId === ENVIRONMENT_ID,
+      }),
+    ).toEqual(remoteRef);
+
+    const requestedWorktree = scopeProjectRef(localEnvironmentId, localWorktreeId);
+    expect(
+      resolveAvailableNewThreadProjectRef({
+        requested: requestedWorktree,
+        members,
+        isEnvironmentReachable: (environmentId) => environmentId === localEnvironmentId,
+      }),
+    ).toEqual(requestedWorktree);
+
+    expect(
+      resolveAvailableNewThreadProjectRef({
+        requested: remoteRef,
+        members,
+        isEnvironmentReachable: (environmentId) => environmentId === localEnvironmentId,
+      }),
+    ).toEqual(scopeProjectRef(localEnvironmentId, localProjectId));
+
+    expect(
+      resolveAvailableNewThreadProjectRef({
+        requested: remoteRef,
+        members,
+        isEnvironmentReachable: () => false,
+      }),
+    ).toBeNull();
+  });
+
+  it("clears machine-specific workspace options after retargeting environments", () => {
+    const options = {
+      branch: "feat",
+      worktreePath: "/remote/worktree",
+      envMode: "worktree" as const,
+    };
+
+    expect(
+      resolveWorkspaceOptionsAfterEnvironmentRetarget({
+        requestedEnvironmentId: ENVIRONMENT_ID,
+        targetEnvironmentId: ENVIRONMENT_ID,
+        options,
+      }),
+    ).toEqual(options);
+
+    expect(
+      resolveWorkspaceOptionsAfterEnvironmentRetarget({
+        requestedEnvironmentId: ENVIRONMENT_ID,
+        targetEnvironmentId: EnvironmentId.make("environment-local"),
+        options,
+      }),
+    ).toEqual({ branch: null, worktreePath: null, envMode: "worktree" });
   });
 });
