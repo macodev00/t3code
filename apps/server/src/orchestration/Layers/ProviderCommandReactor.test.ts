@@ -166,6 +166,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  /** Isolated ProviderCommandReactor harness with shared in-memory background-liveness state. */
   async function createHarness(input?: {
     readonly baseDir?: string;
     readonly initialTitle?: string;
@@ -3585,6 +3586,109 @@ describe("ProviderCommandReactor", () => {
         "claude-sonnet-4-6",
         [{ id: "effort", value: "max" }],
       ),
+    });
+  });
+
+  it("restarts a claude session for deferred provider options after background work ends", async () => {
+    const harness = await createHarness({
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-sonnet-4-6",
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const fastModeSelection = createModelSelection(
+      ProviderInstanceId.make("claudeAgent"),
+      "claude-sonnet-4-6",
+      [{ id: "fastMode", value: true }],
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-claude-deferred-fast-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-claude-deferred-fast-1"),
+          role: "user",
+          text: "first claude turn",
+          attachments: [],
+        },
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-sonnet-4-6",
+        ),
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    harness.threadBackgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "task-live",
+      taskType: "local_agent",
+      status: "in_progress",
+      kind: "started",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-claude-deferred-fast-2"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-claude-deferred-fast-2"),
+          role: "user",
+          text: "second claude turn",
+          attachments: [],
+        },
+        modelSelection: fastModeSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+
+    harness.threadBackgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "task-live",
+      taskType: "local_agent",
+      status: "completed",
+      kind: "completed",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-claude-deferred-fast-3"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-claude-deferred-fast-3"),
+          role: "user",
+          text: "third claude turn",
+          attachments: [],
+        },
+        modelSelection: fastModeSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 3);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      resumeCursor: { opaque: "resume-1" },
+      modelSelection: fastModeSelection,
     });
   });
 

@@ -2064,6 +2064,15 @@ function sdkNativeItemId(message: SDKMessage): string | undefined {
   return undefined;
 }
 
+/** True when startSession would replace a live Claude query that still has running child tasks. */
+function shouldBlockClaudeSessionReplacementForLiveTasks(existingContext: {
+  readonly stopped: boolean;
+  readonly liveTaskIds: ReadonlySet<string>;
+}): boolean {
+  return !existingContext.stopped && existingContext.liveTaskIds.size > 0;
+}
+
+/** Create the Claude Agent provider adapter for query sessions and runtime events. */
 export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   claudeSettings: ClaudeSettings,
   options?: ClaudeAdapterLiveOptions,
@@ -4409,7 +4418,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // process when child work is still running, but do not report the
         // stale session as a successful start — callers would bind the
         // requested runtime mode / model selection and send the turn.
-        if (!existingContext.stopped && existingContext.liveTaskIds.size > 0) {
+        if (shouldBlockClaudeSessionReplacementForLiveTasks(existingContext)) {
           yield* emitRuntimeWarning(
             existingContext,
             `Claude session replacement blocked: ${existingContext.liveTaskIds.size} live task(s) are still running.`,

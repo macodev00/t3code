@@ -136,6 +136,62 @@ export function providerErrorLabelFromInstanceHint(input: {
   );
 }
 
+type ThreadBackgroundLivenessState = "working" | "monitoring" | null | undefined;
+
+/** Reject a runtime-mode replacement while projected background work is still live. */
+function shouldRejectRuntimeModeReplacementWhileLive(input: {
+  readonly activeRuntimeMode: RuntimeMode | undefined;
+  readonly desiredRuntimeMode: RuntimeMode;
+  readonly backgroundLiveness: ThreadBackgroundLivenessState;
+}): boolean {
+  return (
+    input.activeRuntimeMode !== undefined &&
+    input.activeRuntimeMode !== input.desiredRuntimeMode &&
+    input.backgroundLiveness != null
+  );
+}
+
+/** Reuse the live provider process instead of replacing it while background work is projected. */
+function shouldDeferProviderSessionRestartWhileLive(
+  backgroundLiveness: ThreadBackgroundLivenessState,
+): boolean {
+  return backgroundLiveness != null;
+}
+
+/** Last model selection applied to the live session, or the thread selection on a cache miss. */
+function appliedThreadModelSelection(
+  cache: Map<string, ModelSelection>,
+  threadId: ThreadId,
+  threadModelSelection: ModelSelection,
+): ModelSelection {
+  return cache.get(threadId) ?? threadModelSelection;
+}
+
+/** Cache a model selection only after the live provider session applied it. */
+function rememberAppliedThreadModelSelection(
+  cache: Map<string, ModelSelection>,
+  threadId: ThreadId,
+  selection: ModelSelection | undefined,
+  applied: boolean,
+): void {
+  if (applied && selection !== undefined) {
+    cache.set(threadId, selection);
+  }
+}
+
+/** Restart Claude when the requested ModelSelection, including restart-only options, changed. */
+function shouldRestartClaudeSessionForModelSelectionChange(input: {
+  readonly preferredProvider: ProviderDriverKind;
+  readonly requestedModelSelection: ModelSelection | undefined;
+  readonly appliedModelSelection: ModelSelection;
+}): boolean {
+  return (
+    input.preferredProvider === "claudeAgent" &&
+    input.requestedModelSelection !== undefined &&
+    !Equal.equals(input.appliedModelSelection, input.requestedModelSelection)
+  );
+}
+
 function findProviderAdapterRequestError(
   cause: Cause.Cause<ProviderServiceError>,
 ): ProviderAdapterRequestError | undefined {
@@ -640,16 +696,18 @@ const make = Effect.gen(function* () {
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
     if (
-      activeThreadSession !== null &&
-      thread.runtimeMode !== activeThreadSession.runtimeMode &&
-      thread.backgroundLiveness != null
+      shouldRejectRuntimeModeReplacementWhileLive({
+        activeRuntimeMode: activeThreadSession?.runtimeMode,
+        desiredRuntimeMode,
+        backgroundLiveness: thread.backgroundLiveness,
+      })
     ) {
       yield* Effect.logWarning(
         "provider command reactor rejecting runtime-mode replacement while background work is live",
         {
           threadId,
           backgroundLiveness: thread.backgroundLiveness,
-          currentRuntimeMode: activeThreadSession.runtimeMode,
+          currentRuntimeMode: activeThreadSession?.runtimeMode,
           desiredRuntimeMode,
         },
       );
@@ -783,15 +841,17 @@ const make = Effect.gen(function* () {
         requestedModelSelection !== undefined &&
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
-      const previousModelSelection = threadModelSelections.get(threadId) ?? thread.modelSelection;
-      // Claude compares the full ModelSelection, including options. Cache
-      // misses fall back to the thread's persisted selection so same-model
-      // option changes still restart, without treating undefined vs
-      // requested as a change.
+      const previousModelSelection = appliedThreadModelSelection(
+        threadModelSelections,
+        threadId,
+        thread.modelSelection,
+      );
       const shouldRestartForModelSelectionChange =
-        preferredProvider === "claudeAgent" &&
-        requestedModelSelection !== undefined &&
-        !Equal.equals(previousModelSelection, requestedModelSelection);
+        shouldRestartClaudeSessionForModelSelectionChange({
+          preferredProvider,
+          requestedModelSelection,
+          appliedModelSelection: previousModelSelection,
+        });
 
       if (
         !runtimeModeChanged &&
@@ -801,15 +861,13 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelSelectionChange
       ) {
         yield* refreshWorkspaceSnapshot;
-        return existingSessionThreadId;
+        return { threadId: existingSessionThreadId, appliedRequestedSelection: true };
       }
 
-      // Claude replacement drains liveTaskIds without session.exited. Reuse
-      // the current process while projected background work is still live.
       // Runtime-mode changes are rejected above: sendTurn keeps the
       // startSession permission callback, so a stale bypassPermissions
       // session must not be treated as ready.
-      if (thread.backgroundLiveness != null) {
+      if (shouldDeferProviderSessionRestartWhileLive(thread.backgroundLiveness)) {
         yield* Effect.logWarning(
           "provider command reactor deferring provider session restart while background work is live",
           {
@@ -823,7 +881,7 @@ const make = Effect.gen(function* () {
           },
         );
         yield* refreshWorkspaceSnapshot;
-        return existingSessionThreadId;
+        return { threadId: existingSessionThreadId, appliedRequestedSelection: false };
       }
 
       const resumeCursor = shouldRestartForModelChange
@@ -860,12 +918,12 @@ const make = Effect.gen(function* () {
         cwd: restartedSession.cwd,
       });
       yield* bindSessionToThread(restartedSession);
-      return restartedSession.threadId;
+      return { threadId: restartedSession.threadId, appliedRequestedSelection: true };
     }
 
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
-    return startedSession.threadId;
+    return { threadId: startedSession.threadId, appliedRequestedSelection: true };
   });
 
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
@@ -882,13 +940,16 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
-    yield* ensureSessionForThread(input.threadId, input.createdAt, {
+    const ensuredSession = yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       pendingTurnStart: true,
     });
-    if (input.modelSelection !== undefined) {
-      threadModelSelections.set(input.threadId, input.modelSelection);
-    }
+    rememberAppliedThreadModelSelection(
+      threadModelSelections,
+      input.threadId,
+      input.modelSelection,
+      ensuredSession.appliedRequestedSelection,
+    );
     const normalizedInput = toNonEmptyProviderInput(input.messageText);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
@@ -1476,7 +1537,7 @@ const make = Effect.gen(function* () {
         () => void compactingThreadIds.delete(event.payload.threadId),
       );
       yield* Effect.gen(function* () {
-        yield* ensureSessionForThread(
+        const ensuredSession = yield* ensureSessionForThread(
           event.payload.threadId,
           event.payload.createdAt,
           event.payload.modelSelection !== undefined
@@ -1484,9 +1545,12 @@ const make = Effect.gen(function* () {
             : { pendingTurnStart: true },
         );
         compactionSessionEnsured = true;
-        if (event.payload.modelSelection !== undefined) {
-          threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
-        }
+        rememberAppliedThreadModelSelection(
+          threadModelSelections,
+          event.payload.threadId,
+          event.payload.modelSelection,
+          ensuredSession.appliedRequestedSelection,
+        );
         yield* providerService.compactThread(
           event.payload.threadId,
           event.payload.modelSelection,
