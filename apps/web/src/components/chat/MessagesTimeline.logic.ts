@@ -482,6 +482,7 @@ function workGroupId(timelineEntryId: string, entry: WorkLogEntry): string {
   return `work-group:${workGroupIdentity(timelineEntryId, entry)}`;
 }
 
+/** Nested tool-call details row that LegendList must measure, not pin. */
 function expandedWorkGroupRow(
   groupId: string,
   createdAt: string,
@@ -515,7 +516,9 @@ function remainderIsOnlyUserMessages(
  * key so LegendList does not remount it at `estimatedItemSize`.
  */
 function assignLiveActivityRowId(rows: MessagesTimelineRow[]): void {
-  if (rows.some((row) => row.id === LIVE_ACTIVITY_ROW_ID)) return;
+  for (const row of rows) {
+    if (row.id === LIVE_ACTIVITY_ROW_ID) return;
+  }
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!;
     if ((row.kind === "work-live" || row.kind === "activity-group") && row.active) {

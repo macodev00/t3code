@@ -483,7 +483,7 @@ interface MessagesTimelineProps {
  * expanded live groups and agent-spawn members so streaming work does not
  * overlap the next row.
  */
-export const MessagesTimeline = memo(function MessagesTimeline({
+function MessagesTimelineView({
   citationRequest = null,
   citationHistoryLoading = false,
   onCiteAssistantText,
@@ -820,7 +820,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
   const listExtraData = useMemo(
-    () => messagesTimelineListExtraData(listIdentityKey, rows, paintedExpandedSpawnEntryIds),
+    /** extraData signature so LegendList remasures when expanded groups grow. */
+    function computeMessagesTimelineListExtraData() {
+      return messagesTimelineListExtraData(listIdentityKey, rows, paintedExpandedSpawnEntryIds);
+    },
     [listIdentityKey, rows, paintedExpandedSpawnEntryIds],
   );
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
@@ -1361,12 +1364,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       </TimelineRowActivityCtx>
     </TimelineRowCtx>
   );
-});
+}
 
+export const MessagesTimeline = memo(MessagesTimelineView);
+MessagesTimeline.displayName = "MessagesTimeline";
+
+/** Stable list key for a virtualized timeline row. */
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
 }
 
+/** Recycle-pool type: user/assistant messages vs chrome/work row kinds. */
 function getItemType(item: MessagesTimelineRow) {
   return item.kind === "message" ? `message:${item.message.role}` : item.kind;
 }

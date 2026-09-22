@@ -3996,7 +3996,8 @@ describe("live tool group placement across a steer", () => {
     };
   }
 
-  it("keeps the live tool header identity when a mid-turn user message lands", () => {
+  /** Live tool header keeps `live-activity-row` after a mid-turn steer. */
+  function keepsLiveToolHeaderIdentityAcrossSteer() {
     const input = liveInput(10);
     const before = deriveMessagesTimelineRows(input);
     expect(before.find((row) => row.kind === "work-live")?.id).toBe("live-activity-row");
@@ -4014,18 +4015,24 @@ describe("live tool group placement across a steer", () => {
     expect(after.find((row) => row.kind === "work" && row.isExpandedToolGroup)?.id).toBe(
       before.find((row) => row.kind === "work" && row.isExpandedToolGroup)?.id,
     );
-  });
+  }
 
-  it("bumps extraData when an expanded live group grows without adding rows", () => {
+  it("keeps the live tool header identity when a mid-turn user message lands", keepsLiveToolHeaderIdentityAcrossSteer);
+
+  /** extraData changes when an expanded live group grows without adding rows. */
+  function bumpsExtraDataWhenExpandedLiveGroupGrows() {
     const small = deriveMessagesTimelineRows(liveInput(2));
     const large = deriveMessagesTimelineRows(liveInput(10));
     expect(small).toHaveLength(large.length);
     expect(messagesTimelineListExtraData("thread-1", small)).not.toBe(
       messagesTimelineListExtraData("thread-1", large),
     );
-  });
+  }
 
-  it("pins chrome row sizes and leaves expanded details measured", () => {
+  it("bumps extraData when an expanded live group grows without adding rows", bumpsExtraDataWhenExpandedLiveGroupGrows);
+
+  /** Chrome rows are pinned; expanded details and user messages stay measured. */
+  function pinsChromeRowSizesAndLeavesDetailsMeasured() {
     const rows = deriveMessagesTimelineRows(liveInput(10));
     const working = rows.find((row) => row.kind === "working");
     const live = rows.find((row) => row.kind === "work-live");
@@ -4035,9 +4042,12 @@ describe("live tool group placement across a steer", () => {
     expect(live && getFixedMessagesTimelineItemSize(live)).toEqual(expect.any(Number));
     expect(details && getFixedMessagesTimelineItemSize(details)).toBeUndefined();
     expect(user && getFixedMessagesTimelineItemSize(user)).toBeUndefined();
-  });
+  }
 
-  it("does not pin expandable agent-spawn work-live rows to chrome height", () => {
+  it("pins chrome row sizes and leaves expanded details measured", pinsChromeRowSizesAndLeavesDetailsMeasured);
+
+  /** Agent-spawn work-live rows stay unpinned so spawn member expand can remasure. */
+  function doesNotPinExpandableAgentSpawnWorkLive() {
     const rows = deriveMessagesTimelineRows(spawnLiveInput());
     const spawnLive = rows.find((row) => row.kind === "work-live");
     expect(spawnLive).toMatchObject({
@@ -4056,12 +4066,17 @@ describe("live tool group placement across a steer", () => {
     expect(commandLive && getFixedMessagesTimelineItemSize(commandLive)).toEqual(
       expect.any(Number),
     );
-  });
+  }
 
-  it("includes expandedSpawnEntryIds in extraData so spawn expand remasures", () => {
+  it("does not pin expandable agent-spawn work-live rows to chrome height", doesNotPinExpandableAgentSpawnWorkLive);
+
+  /** Spawn expand is part of extraData so LegendList remasures those rows. */
+  function includesExpandedSpawnEntryIdsInExtraData() {
     const rows = deriveMessagesTimelineRows(spawnLiveInput());
     expect(messagesTimelineListExtraData("thread-1", rows)).not.toBe(
       messagesTimelineListExtraData("thread-1", rows, new Set(["spawn-entry"])),
     );
-  });
+  }
+
+  it("includes expandedSpawnEntryIds in extraData so spawn expand remasures", includesExpandedSpawnEntryIdsInExtraData);
 });
