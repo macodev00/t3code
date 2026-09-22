@@ -20,8 +20,11 @@ import expo.modules.kotlin.views.ExpoView
 import kotlin.math.max
 
 /**
- * Native terminal view. The hidden IME EditText captures keystrokes and must
- * not be classified as a password field, or autofill services hijack focus.
+ * Native terminal view hosted inside Expo.
+ *
+ * A 1×1 hidden [EditText] captures IME keystrokes. That field must stay
+ * ordinary suggestion-off text, not a password variation, or autofill
+ * services steal focus from the canvas.
  */
 class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   private val container = FrameLayout(context)
@@ -228,12 +231,26 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
   }
 
   /**
+   * Opt the terminal view hierarchy out of Android autofill (API 26+).
+   *
+   * The hidden IME [EditText] is not a credential field. Without this,
+   * autofill services still treat it as one and steal focus from the canvas.
+   */
+  private fun disableAutofill() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+    importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+    container.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+    inputView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+    inputView.setAutofillHints()
+  }
+
+  /**
    * Configure the hidden IME EditText that captures terminal keystrokes.
    *
    * Uses suggestion-off class-text input instead of the visible-password
    * variation, which made autofill services treat this as a credential field.
-   * On API 26+, the terminal view, container, and input opt out of autofill
-   * and drop autofill hints so password managers do not hijack focus.
+   * On API 26+, [disableAutofill] opts the view hierarchy out so password
+   * managers do not hijack focus.
    */
   private fun configureInputView() {
     inputView.setSingleLine(true)
@@ -252,12 +269,7 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     // credential field, so autofill services (Bitwarden, etc.) hijack focus.
     inputView.inputType = InputType.TYPE_CLASS_TEXT or
       InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-      container.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-      inputView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
-      inputView.setAutofillHints()
-    }
+    disableAutofill()
     inputView.setPadding(0, 0, 0, 0)
     inputView.setOnEditorActionListener { _, actionId, event ->
       val isKeyUp = event?.action == KeyEvent.ACTION_UP
@@ -292,8 +304,18 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     }
     inputView.addTextChangedListener(
       object : TextWatcher {
-        /** No-op; keystrokes are forwarded from [onTextChanged]. */
-        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+        /**
+         * No-op. Inserted text is forwarded in [onTextChanged], then cleared
+         * in [afterTextChanged] so the hidden field never looks like a form.
+         */
+        override fun beforeTextChanged(
+          s: CharSequence?,
+          start: Int,
+          count: Int,
+          after: Int,
+        ) {
+          // Forwarding happens in onTextChanged; this callback is unused.
+        }
 
         /** Forward inserted characters to the terminal, ignoring the echo we then clear. */
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
