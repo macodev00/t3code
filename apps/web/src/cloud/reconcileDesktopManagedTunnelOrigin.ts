@@ -47,3 +47,60 @@ export function desktopManagedTunnelOriginReconcileRetryDelayMs(
     RECONCILE_RETRY_MAX_DELAY_MS,
   );
 }
+
+export type DesktopManagedTunnelOriginReconcileAttemptResult = "success" | "failure";
+
+/** Runs origin re-registration with bounded backoff and returns a cancel function. */
+export function startDesktopManagedTunnelOriginReconcile(input: {
+  readonly runAttempt: (
+    isCancelled: () => boolean,
+  ) => Promise<DesktopManagedTunnelOriginReconcileAttemptResult>;
+  readonly delayMs?: (failedAttempt: number) => number | null;
+  readonly setTimeoutFn?: (handler: () => void, delayMs: number) => unknown;
+  readonly clearTimeoutFn?: (id: unknown) => void;
+}): () => void {
+  const delayMs = input.delayMs ?? desktopManagedTunnelOriginReconcileRetryDelayMs;
+  const setTimeoutFn =
+    input.setTimeoutFn ?? ((handler, waitMs) => globalThis.setTimeout(handler, waitMs));
+  const clearTimeoutFn =
+    input.clearTimeoutFn ??
+    ((id) => {
+      globalThis.clearTimeout(id as ReturnType<typeof globalThis.setTimeout>);
+    });
+
+  let attempt = 0;
+  let cancelled = false;
+  let retryTimer: unknown = null;
+
+  const isCancelled = () => cancelled;
+
+  const clearTimer = () => {
+    if (retryTimer === null) return;
+    clearTimeoutFn(retryTimer);
+    retryTimer = null;
+  };
+
+  const scheduleRetry = () => {
+    const waitMs = delayMs(attempt);
+    if (waitMs === null) return;
+    retryTimer = setTimeoutFn(() => {
+      retryTimer = null;
+      if (!cancelled) void run();
+    }, waitMs);
+  };
+
+  const run = async () => {
+    if (cancelled) return;
+    attempt += 1;
+    const result = await input.runAttempt(isCancelled);
+    if (cancelled || result === "success") return;
+    scheduleRetry();
+  };
+
+  void run();
+
+  return () => {
+    cancelled = true;
+    clearTimer();
+  };
+}

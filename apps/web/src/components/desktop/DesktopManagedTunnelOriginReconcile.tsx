@@ -12,7 +12,7 @@ import { usePrimaryCloudLinkState } from "../../cloud/primaryCloudLinkState";
 import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../../cloud/publicConfig";
 import {
   desktopManagedTunnelOriginReconcileKey,
-  desktopManagedTunnelOriginReconcileRetryDelayMs,
+  startDesktopManagedTunnelOriginReconcile,
 } from "../../cloud/reconcileDesktopManagedTunnelOrigin";
 import { useAtomCommand } from "../../state/use-atom-command";
 
@@ -35,93 +35,54 @@ function ConfiguredDesktopManagedTunnelOriginReconcile() {
   const linkPrimaryEnvironment = useAtomCommand(linkPrimaryEnvironmentAtom, {
     reportFailure: false,
   });
-  const reconciledKeyRef = useRef<string | null>(null);
+  const latestRef = useRef({ getToken, linkPrimaryEnvironment, target: linkState.target });
+  useEffect(() => {
+    latestRef.current = { getToken, linkPrimaryEnvironment, target: linkState.target };
+  });
+
+  const key =
+    !isLoaded || !isSignedIn || linkState.data === null
+      ? null
+      : desktopManagedTunnelOriginReconcileKey({
+          signedIn: true,
+          target: linkState.target,
+          linked: linkState.data.linked ?? false,
+          managedTunnelActive: linkState.data.managedTunnelActive ?? linkState.data.linked ?? false,
+        });
 
   useEffect(() => {
-    if (!isLoaded || !isSignedIn) {
-      reconciledKeyRef.current = null;
-      return;
-    }
-    if (linkState.data === null) return;
-
-    const linked = linkState.data?.linked ?? false;
-    const managedTunnelActive =
-      linkState.data?.managedTunnelActive ?? linkState.data?.linked ?? false;
-    const key = desktopManagedTunnelOriginReconcileKey({
-      signedIn: true,
-      target: linkState.target,
-      linked,
-      managedTunnelActive,
-    });
-    if (key === null || reconciledKeyRef.current === key) return;
-    const target = linkState.target;
-    if (target === null) return;
-    reconciledKeyRef.current = key;
-
-    let settled = false;
-    let succeeded = false;
-    let attempt = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const scheduleRetry = () => {
-      const delayMs = desktopManagedTunnelOriginReconcileRetryDelayMs(attempt);
-      if (delayMs === null) {
-        reconciledKeyRef.current = null;
-        return;
-      }
-      if (retryTimer !== null) {
-        clearTimeout(retryTimer);
-      }
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (!settled) void reconcile();
-      }, delayMs);
-    };
-
-    const reconcile = async () => {
-      attempt += 1;
-      const tokenResult = await settlePromise(() => getToken(resolveRelayClerkTokenOptions()));
-      if (settled) return;
-      if (tokenResult._tag === "Failure") {
-        logReconcileFailure(squashAtomCommandFailure(tokenResult));
-        scheduleRetry();
-        return;
-      }
-      const clerkToken = tokenResult.value;
-      if (!clerkToken) {
-        scheduleRetry();
-        return;
-      }
-      const linkResult = await linkPrimaryEnvironment({
-        target,
-        clerkToken,
-        mode: "managed",
-        installRelayClient: false,
-      });
-      if (settled) return;
-      if (linkResult._tag === "Failure") {
-        if (!isAtomCommandInterrupted(linkResult)) {
-          logReconcileFailure(squashAtomCommandFailure(linkResult));
+    if (key === null) return;
+    // Key the session on the loopback origin so callback identity and SWR
+    // object churn cannot cancel a pending backoff or reset the attempt bound.
+    return startDesktopManagedTunnelOriginReconcile({
+      runAttempt: async (isCancelled) => {
+        const { getToken, linkPrimaryEnvironment, target } = latestRef.current;
+        if (target === null) return "failure";
+        const tokenResult = await settlePromise(() => getToken(resolveRelayClerkTokenOptions()));
+        if (isCancelled()) return "failure";
+        if (tokenResult._tag === "Failure") {
+          logReconcileFailure(squashAtomCommandFailure(tokenResult));
+          return "failure";
         }
-        scheduleRetry();
-        return;
-      }
-      succeeded = true;
-    };
-
-    void reconcile();
-
-    return () => {
-      settled = true;
-      if (retryTimer !== null) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
-      if (!succeeded) {
-        reconciledKeyRef.current = null;
-      }
-    };
-  }, [getToken, isLoaded, isSignedIn, linkPrimaryEnvironment, linkState.data, linkState.target]);
+        const clerkToken = tokenResult.value;
+        if (!clerkToken) return "failure";
+        const linkResult = await linkPrimaryEnvironment({
+          target,
+          clerkToken,
+          mode: "managed",
+          installRelayClient: false,
+        });
+        if (isCancelled()) return "failure";
+        if (linkResult._tag === "Failure") {
+          if (!isAtomCommandInterrupted(linkResult)) {
+            logReconcileFailure(squashAtomCommandFailure(linkResult));
+          }
+          return "failure";
+        }
+        return "success";
+      },
+    });
+  }, [key]);
 
   return null;
 }

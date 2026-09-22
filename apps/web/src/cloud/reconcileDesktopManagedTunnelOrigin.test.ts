@@ -4,6 +4,7 @@ import {
   DESKTOP_MANAGED_TUNNEL_ORIGIN_RECONCILE_MAX_ATTEMPTS,
   desktopManagedTunnelOriginReconcileKey,
   desktopManagedTunnelOriginReconcileRetryDelayMs,
+  startDesktopManagedTunnelOriginReconcile,
 } from "./reconcileDesktopManagedTunnelOrigin";
 import type { CloudLinkTarget } from "./linkEnvironment";
 
@@ -87,5 +88,110 @@ describe("desktopManagedTunnelOriginReconcileRetryDelayMs", () => {
   it("does not schedule a retry for a non-attempt", () => {
     expect(desktopManagedTunnelOriginReconcileRetryDelayMs(0)).toBeNull();
     expect(desktopManagedTunnelOriginReconcileRetryDelayMs(1.5)).toBeNull();
+  });
+});
+
+describe("startDesktopManagedTunnelOriginReconcile", () => {
+  function createHarness() {
+    type AttemptResult = "success" | "failure";
+    const resolvers: Array<(result: AttemptResult) => void> = [];
+    const timers = new Map<number, { handler: () => void; delayMs: number; cancelled: boolean }>();
+    let nextTimerId = 1;
+
+    const cancel = startDesktopManagedTunnelOriginReconcile({
+      runAttempt: () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        }),
+      setTimeoutFn: (handler, delayMs) => {
+        const id = nextTimerId++;
+        timers.set(id, { handler, delayMs, cancelled: false });
+        return id;
+      },
+      clearTimeoutFn: (id) => {
+        const timer = timers.get(id as number);
+        if (timer) timer.cancelled = true;
+      },
+    });
+
+    const pendingDelays = () =>
+      [...timers.values()].filter((timer) => !timer.cancelled).map((timer) => timer.delayMs);
+
+    const resolveLatest = async (result: AttemptResult) => {
+      const resolve = resolvers.at(-1);
+      expect(resolve).toBeDefined();
+      resolve?.(result);
+      await Promise.resolve();
+    };
+
+    const fireNextTimer = async () => {
+      const timer = [...timers.values()].find((entry) => !entry.cancelled);
+      expect(timer).toBeDefined();
+      if (!timer) return;
+      timer.cancelled = true;
+      timer.handler();
+      await Promise.resolve();
+    };
+
+    return {
+      cancel,
+      pendingDelays,
+      resolveLatest,
+      fireNextTimer,
+      attemptCount: () => resolvers.length,
+    };
+  }
+
+  it("retries failed attempts with backoff until the bound", async () => {
+    const harness = createHarness();
+
+    expect(harness.attemptCount()).toBe(1);
+    await harness.resolveLatest("failure");
+    expect(harness.pendingDelays()).toEqual([desktopManagedTunnelOriginReconcileRetryDelayMs(1)]);
+
+    await harness.fireNextTimer();
+    expect(harness.attemptCount()).toBe(2);
+    await harness.resolveLatest("failure");
+    expect(harness.pendingDelays()).toEqual([desktopManagedTunnelOriginReconcileRetryDelayMs(2)]);
+
+    await harness.fireNextTimer();
+    expect(harness.attemptCount()).toBe(3);
+    await harness.resolveLatest("failure");
+    expect(harness.pendingDelays()).toEqual([desktopManagedTunnelOriginReconcileRetryDelayMs(3)]);
+
+    await harness.fireNextTimer();
+    expect(harness.attemptCount()).toBe(4);
+    await harness.resolveLatest("failure");
+    expect(harness.pendingDelays()).toEqual([]);
+    expect(harness.attemptCount()).toBe(DESKTOP_MANAGED_TUNNEL_ORIGIN_RECONCILE_MAX_ATTEMPTS);
+  });
+
+  it("stops scheduling after a successful attempt", async () => {
+    const harness = createHarness();
+
+    await harness.resolveLatest("failure");
+    await harness.fireNextTimer();
+    await harness.resolveLatest("success");
+
+    expect(harness.pendingDelays()).toEqual([]);
+    expect(harness.attemptCount()).toBe(2);
+  });
+
+  it("cancels a pending retry so unmount does not re-register", async () => {
+    const harness = createHarness();
+
+    await harness.resolveLatest("failure");
+    expect(harness.pendingDelays()).toEqual([1_000]);
+    harness.cancel();
+    expect(harness.pendingDelays()).toEqual([]);
+    expect(harness.attemptCount()).toBe(1);
+  });
+
+  it("ignores a late failure after cancel", async () => {
+    const harness = createHarness();
+    harness.cancel();
+    await harness.resolveLatest("failure");
+    expect(harness.pendingDelays()).toEqual([]);
+    expect(harness.attemptCount()).toBe(1);
   });
 });
