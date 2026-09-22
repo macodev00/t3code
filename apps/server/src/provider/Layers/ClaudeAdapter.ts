@@ -4401,6 +4401,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   };
 
   const startSession: ClaudeAdapterShape["startSession"] = Effect.fn("startSession")(
+    /**
+     * Start or replace the Claude query for a thread.
+     * Refuses replacement while child tasks are still running so in-flight work
+     * keeps the existing session.
+     */
     function* (input) {
       const modelCatalog = yield* modelCatalogEffect;
       if (input.provider !== undefined && input.provider !== PROVIDER) {

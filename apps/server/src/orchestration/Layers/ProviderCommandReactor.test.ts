@@ -3256,7 +3256,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("does not restart a claude session when the model-selection cache has not been primed", async () => {
+  it("does not restart a claude session when the model-selection cache has not been primed" /** Keeps the live Claude session when the model-selection cache has not been primed. */, async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -3311,7 +3311,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
-  it("restarts a claude session when provider options change before the model-selection cache is primed", async () => {
+  it("restarts a claude session when provider options change before the model-selection cache is primed" /** Restarts Claude when restart-only provider options change before the selection cache is primed. */, async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -3375,7 +3375,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
-  it("rejects a runtime-mode replacement while background work is live", async () => {
+  it("rejects a runtime-mode replacement while background work is live" /** Fails the turn and leaves the running provider session in place while background work is live. */, async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
@@ -3432,6 +3432,26 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls.length).toBe(1);
     expect(harness.runtimeSessions[0]?.runtimeMode).toBe("full-access");
 
+    const live = await harness.readModel();
+    const liveSession = live.threads.find((entry) => entry.id === threadId)?.session;
+    if (!liveSession) {
+      throw new Error("expected a live session before the rejected runtime-mode turn");
+    }
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-running-before-runtime-mode-reject"),
+        threadId,
+        session: {
+          ...liveSession,
+          status: "running",
+          activeTurnId: asTurnId("turn-live"),
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
@@ -3472,6 +3492,8 @@ describe("ProviderCommandReactor", () => {
       },
     });
     expect(blockedThread?.session?.runtimeMode).toBe("full-access");
+    expect(blockedThread?.session?.status).toBe("running");
+    expect(blockedThread?.session?.activeTurnId).toBe(asTurnId("turn-live"));
 
     harness.threadBackgroundLiveness.recordTaskLiveness({
       threadId,
@@ -3511,7 +3533,7 @@ describe("ProviderCommandReactor", () => {
     expect(recoveredThread?.session?.runtimeMode).toBe("approval-required");
   });
 
-  it("does not send a turn when a blocked runtime-mode replacement leaves the live session in place", async () => {
+  it("does not send a turn when a blocked runtime-mode replacement leaves the live session in place" /** Does not send a turn when a blocked runtime-mode replacement keeps the live session. */, async () => {
     let blockRuntimeModeReplacement = false;
     const harness = await createHarness({
       startSessionEffect: (session) => {
@@ -3706,7 +3728,7 @@ describe("ProviderCommandReactor", () => {
     expect(recoveredThread?.session?.runtimeMode).toBe("approval-required");
   });
 
-  it("reuses a live claude session when provider options change during background work", async () => {
+  it("reuses a live claude session when provider options change during background work" /** Reuses the live Claude session when provider options change during background work. */, async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -3784,7 +3806,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("restarts a claude session for deferred provider options after background work ends", async () => {
+  it("restarts a claude session for deferred provider options after background work ends" /** Restarts Claude for deferred provider options once background work has finished. */, async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
