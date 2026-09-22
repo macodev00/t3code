@@ -26,10 +26,18 @@ export const PROVIDER_STATUS_STYLES = {
 export type ProviderStatusKey = keyof typeof PROVIDER_STATUS_STYLES;
 
 /**
+ * Personal and Enterprise Antigravity open a Google sign-in page. API key and
+ * Agent Platform take credentials from instance config and never do.
+ */
+function isAntigravityGoogleAuthType(type: string | undefined) {
+  return type === undefined || type === "oauth-personal" || type === "oauth-business";
+}
+
+/**
  * Antigravity's health probe only calls ACP `initialize()`. A passed probe
  * still publishes `warning` while Google auth is `unknown`. Chat already
  * treats that as informational; Settings should too. The probe status itself
- * stays `warning`.
+ * stays `warning`. Credential methods keep the generic warning copy.
  */
 export function isAntigravityUncheckedAuth(provider: ServerProvider | undefined) {
   return (
@@ -37,7 +45,8 @@ export function isAntigravityUncheckedAuth(provider: ServerProvider | undefined)
     provider.driver === "antigravity" &&
     provider.installed &&
     provider.status === "warning" &&
-    provider.auth.status === "unknown"
+    provider.auth.status === "unknown" &&
+    isAntigravityGoogleAuthType(provider.auth.type)
   );
 }
 
