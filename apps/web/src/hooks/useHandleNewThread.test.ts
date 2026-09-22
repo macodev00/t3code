@@ -5,7 +5,7 @@ const testState = vi.hoisted(() => {
   let completeProjectFileRead: (value: null) => void = () => undefined;
   let projectFileRead = Promise.resolve<null>(null);
   let targetSettings = {
-    defaultThreadEnvMode: "local" as "local" | "worktree",
+    defaultThreadEnvMode: "local" as "local" | "worktree" | null,
     newWorktreesStartFromOrigin: false,
     defaultModelSelection: null,
     defaultRuntimeMode: "full-access" as RuntimeMode,
@@ -16,6 +16,57 @@ const testState = vi.hoisted(() => {
     readonly promotedTo: null;
     readonly threadId: string;
   } | null = null;
+  const repositoryIdentity = {
+    canonicalKey: "github.com/example/shared-repo",
+    locator: {
+      source: "git-remote" as const,
+      remoteName: "origin",
+      remoteUrl: "https://github.com/example/shared-repo.git",
+    },
+  };
+  const remoteProject = {
+    id: "project-remote",
+    environmentId: "environment-ssh",
+    title: "shared-repo",
+    workspaceRoot: "/remote/project",
+    repositoryIdentity: null,
+    defaultThreadEnvMode: null,
+    defaultModelSelection: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    scripts: [] as [],
+  };
+  const localProject = {
+    id: "project-local",
+    environmentId: "environment-primary",
+    title: "shared-repo",
+    workspaceRoot: "/local/project",
+    repositoryIdentity,
+    defaultThreadEnvMode: null,
+    defaultModelSelection: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-03T00:00:00.000Z",
+    scripts: [] as [],
+  };
+  type TestEnvironment = {
+    environmentId: string;
+    label: string;
+    connection: { phase: "connected" | "reconnecting" };
+  };
+  const connectedEnvironments = (): TestEnvironment[] => [
+    {
+      environmentId: "environment-primary",
+      label: "Local",
+      connection: { phase: "connected" },
+    },
+    {
+      environmentId: "environment-ssh",
+      label: "Build box",
+      connection: { phase: "connected" },
+    },
+  ];
+  const projectFileReads: Array<{ environmentId: string; workspaceRoot: string }> = [];
+  const toastAdd = vi.fn();
   const router = {
     state: {
       location: { href: "/" },
@@ -36,7 +87,7 @@ const testState = vi.hoisted(() => {
     setModelSelection: vi.fn(),
   };
 
-  return {
+  const state = {
     completeProjectFileRead: (value: null) => completeProjectFileRead(value),
     draftStore,
     get projectFileRead() {
@@ -45,6 +96,13 @@ const testState = vi.hoisted(() => {
     get targetSettings() {
       return targetSettings;
     },
+    environments: connectedEnvironments(),
+    localProject,
+    projectFileReads,
+    projects: [remoteProject] as Array<typeof remoteProject | typeof localProject>,
+    remoteProject,
+    repositoryIdentity,
+    toastAdd,
     reset(
       nextStoredDraft: typeof storedDraft,
       workspaceDefaults = {
@@ -59,6 +117,10 @@ const testState = vi.hoisted(() => {
         defaultModelSelection: null,
         defaultRuntimeMode: "full-access",
       };
+      state.environments = connectedEnvironments();
+      state.projects = [remoteProject];
+      projectFileReads.length = 0;
+      toastAdd.mockClear();
       router.state.location.href = "/";
       router.navigate.mockClear();
       draftStore.setDraftThreadContext.mockClear();
@@ -69,6 +131,8 @@ const testState = vi.hoisted(() => {
     },
     router,
   };
+
+  return state;
 });
 
 vi.mock("@effect/atom-react", () => ({
@@ -93,10 +157,14 @@ vi.mock("@t3tools/client-runtime/environment", () => ({
   scopeProjectRef: (environmentId: string, projectId: string) => ({ environmentId, projectId }),
   scopeThreadRef: (environmentId: string, threadId: string) => ({ environmentId, threadId }),
 }));
-vi.mock("@t3tools/contracts", () => ({
-  DEFAULT_RUNTIME_MODE: "default",
-  DEFAULT_SERVER_SETTINGS: {},
-}));
+vi.mock("@t3tools/contracts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@t3tools/contracts")>();
+  return {
+    ...actual,
+    DEFAULT_RUNTIME_MODE: "default",
+    DEFAULT_SERVER_SETTINGS: {},
+  };
+});
 vi.mock("@t3tools/shared/projectSettings", () => ({
   // Environment settings pass through; the tests set project fields on the
   // project record, which the hook still honors until the server folds them.
@@ -128,6 +196,10 @@ vi.mock("react", () => ({
   useMemo: <T>(factory: () => T) => factory(),
 }));
 vi.mock("../components/Sidebar.logic", () => ({ orderItemsByPreferredIds: () => [] }));
+vi.mock("../components/ui/toast", () => ({
+  stackedThreadToast: (options: unknown) => options,
+  toastManager: { add: (...args: unknown[]) => testState.toastAdd(...args) },
+}));
 vi.mock("../composerDraftStore", () => {
   const useComposerDraftStore = Object.assign(() => null, {
     getState: () => testState.draftStore,
@@ -144,30 +216,33 @@ vi.mock("../lib/chatThreadActions", async (importOriginal) => ({
   resolveNewThreadModelSelectionOverride: () => null,
 }));
 vi.mock("../lib/t3ProjectFileDefaults", () => ({
-  readT3ProjectFile: () => testState.projectFileRead,
+  readT3ProjectFile: (environmentId: string, workspaceRoot: string) => {
+    testState.projectFileReads.push({ environmentId, workspaceRoot });
+    return testState.projectFileRead;
+  },
 }));
 vi.mock("../lib/utils", () => ({
   newDraftId: () => "draft-delayed",
   newThreadId: () => "thread-delayed",
 }));
-vi.mock("../logicalProject", () => ({
-  deriveLogicalProjectKeyFromSettings: () => "remote-project",
-  getProjectOrderKey: () => "remote-project",
-  selectProjectGroupingSettings: () => ({}),
-}));
+vi.mock("../logicalProject", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logicalProject")>();
+  return {
+    ...actual,
+    deriveLogicalProjectKeyFromSettings: () => "remote-project",
+    getProjectOrderKey: () => "remote-project",
+    selectProjectGroupingSettings: () => ({}),
+  };
+});
 vi.mock("../state/entities", () => ({
-  readProjects: () => [
-    {
-      id: "project-remote",
-      environmentId: "environment-ssh",
-      workspaceRoot: "/remote/project",
-      defaultThreadEnvMode: null,
-      defaultModelSelection: null,
-    },
-  ],
+  readProjects: () => testState.projects,
   readThreadShell: () => null,
   useProjects: () => [],
   useThread: () => null,
+}));
+vi.mock("../state/environments", () => ({
+  useEnvironments: () => ({ environments: testState.environments }),
+  usePrimaryEnvironmentId: () => "environment-primary",
 }));
 vi.mock("../state/server", () => ({
   environmentServerConfigsAtom: {},
@@ -286,4 +361,102 @@ describe.each([
       );
     },
   );
+});
+
+describe("useNewThreadHandler with a disconnected remote", () => {
+  const remoteRef = {
+    environmentId: "environment-ssh",
+    projectId: "project-remote",
+  } as never;
+
+  function disconnectRemote() {
+    testState.environments = testState.environments.map((environment) =>
+      environment.environmentId === "environment-ssh"
+        ? { ...environment, connection: { phase: "reconnecting" as const } }
+        : environment,
+    );
+  }
+
+  it("toasts instead of reading t3.json when no reachable copy exists", async () => {
+    testState.reset(null);
+    testState.targetSettings.defaultThreadEnvMode = null;
+    disconnectRemote();
+
+    const opened = await useNewThreadHandler()(remoteRef);
+
+    expect(opened).toBeNull();
+    expect(testState.projectFileReads).toEqual([]);
+    expect(testState.router.navigate).not.toHaveBeenCalled();
+    expect(testState.toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "error",
+        title: "Environment unavailable",
+        description: "Build box is not connected.",
+      }),
+    );
+  });
+
+  it("retargets a stale remote row to the reachable local copy", async () => {
+    testState.reset(null);
+    testState.targetSettings.defaultThreadEnvMode = null;
+    const canonicalRemote = {
+      ...testState.remoteProject,
+      id: "project-canonical-remote",
+      repositoryIdentity: testState.repositoryIdentity,
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    testState.projects = [
+      { ...testState.remoteProject, repositoryIdentity: null },
+      canonicalRemote,
+      testState.localProject,
+    ];
+    disconnectRemote();
+
+    const pendingOpen = useNewThreadHandler()(remoteRef, {
+      branch: "feat",
+      worktreePath: "/remote/worktree",
+    });
+    expect(testState.projectFileReads).toEqual([
+      { environmentId: "environment-primary", workspaceRoot: "/local/project" },
+    ]);
+    testState.completeProjectFileRead(null);
+    const opened = await pendingOpen;
+
+    expect(opened).toEqual({ draftId: "draft-delayed", threadId: "thread-delayed" });
+    expect(testState.toastAdd).not.toHaveBeenCalled();
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      { environmentId: "environment-primary", projectId: "project-local" },
+      "draft-delayed",
+      expect.objectContaining({
+        branch: null,
+        worktreePath: null,
+        envMode: "local",
+      }),
+    );
+  });
+
+  it("keeps the requested worktree when that environment is connected", async () => {
+    testState.reset(null);
+    const featureWorktree = {
+      ...testState.localProject,
+      id: "project-worktree",
+      workspaceRoot: "/local/project-feature",
+    };
+    testState.projects = [testState.localProject, featureWorktree];
+
+    const pendingOpen = useNewThreadHandler()({
+      environmentId: "environment-primary",
+      projectId: "project-worktree",
+    } as never);
+    testState.completeProjectFileRead(null);
+    await pendingOpen;
+
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      "remote-project",
+      { environmentId: "environment-primary", projectId: "project-worktree" },
+      "draft-delayed",
+      expect.objectContaining({ envMode: "local" }),
+    );
+  });
 });

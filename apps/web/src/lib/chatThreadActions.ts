@@ -1,4 +1,5 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type {
   EnvironmentId,
   ModelSelection,
@@ -6,6 +7,11 @@ import type {
   ScopedProjectRef,
 } from "@t3tools/contracts";
 import type { ComposerThreadDraftState, DraftThreadEnvMode } from "../composerDraftStore";
+import {
+  buildProjectGroups,
+  derivePhysicalProjectKey,
+  type ProjectGroupingSettings,
+} from "../logicalProject";
 
 type ComposerModelSelectionState = Pick<
   ComposerThreadDraftState,
@@ -81,6 +87,88 @@ export function resolveThreadActionProjectRef(
     );
   }
   return context.defaultProjectRef;
+}
+
+// New Chat must not wait on a down host. Keep the requested checkout when
+// that environment can serve — including the active worktree, which is its
+// own physical member. Otherwise use a reachable sibling from the same
+// logical group.
+//
+// The logical key comes from the physical-to-logical map. Deriving it from
+// the requested row alone misses a stale or unidentified duplicate whose
+// repository identity lives on a newer row, so the reachable sibling never
+// matches.
+export function resolveAvailableNewThreadProjectRef(input: {
+  requested: ScopedProjectRef;
+  projects: ReadonlyArray<EnvironmentProject>;
+  settings: ProjectGroupingSettings;
+  logicalKeyByPhysicalKey: ReadonlyMap<string, string>;
+  isEnvironmentReachable: (environmentId: EnvironmentId) => boolean;
+  primaryEnvironmentId: EnvironmentId | null;
+}): ScopedProjectRef | null {
+  if (input.isEnvironmentReachable(input.requested.environmentId)) {
+    return input.requested;
+  }
+
+  const requestedProject = input.projects.find(
+    (project) =>
+      project.id === input.requested.projectId &&
+      project.environmentId === input.requested.environmentId,
+  );
+  const logicalKey =
+    requestedProject === undefined
+      ? undefined
+      : input.logicalKeyByPhysicalKey.get(derivePhysicalProjectKey(requestedProject));
+  if (logicalKey === undefined) return null;
+
+  const members =
+    buildProjectGroups({
+      projects: input.projects,
+      settings: input.settings,
+      preferredEnvironmentId: input.primaryEnvironmentId,
+    }).find((group) => group.key === logicalKey)?.members ?? [];
+
+  let selected: (typeof members)[number] | undefined;
+  for (const member of members) {
+    if (input.logicalKeyByPhysicalKey.get(member.physicalProjectKey) !== logicalKey) continue;
+    if (!input.isEnvironmentReachable(member.project.environmentId)) continue;
+    const selectedIsPrimary =
+      input.primaryEnvironmentId !== null &&
+      selected?.project.environmentId === input.primaryEnvironmentId;
+    const memberIsPrimary =
+      input.primaryEnvironmentId !== null &&
+      member.project.environmentId === input.primaryEnvironmentId;
+    if (selected === undefined || (memberIsPrimary && !selectedIsPrimary)) {
+      selected = member;
+    }
+  }
+
+  return selected === undefined
+    ? null
+    : scopeProjectRef(selected.project.environmentId, selected.project.id);
+}
+
+// A branch or worktree path belongs to the requested host. Drop those fields
+// when New Chat moves to a different environment; keep them for another
+// checkout on the same host.
+export function resolveWorkspaceOptionsAfterEnvironmentRetarget<
+  TOptions extends {
+    branch?: string | null;
+    worktreePath?: string | null;
+  },
+>(input: {
+  requestedEnvironmentId: EnvironmentId;
+  targetEnvironmentId: EnvironmentId;
+  options: TOptions | undefined;
+}): TOptions | undefined {
+  if (input.options === undefined || input.requestedEnvironmentId === input.targetEnvironmentId) {
+    return input.options;
+  }
+  return {
+    ...input.options,
+    ...(input.options.branch !== undefined ? { branch: null } : {}),
+    ...(input.options.worktreePath !== undefined ? { worktreePath: null } : {}),
+  };
 }
 
 // New threads inherit only the *project* from the current context. Branch,
