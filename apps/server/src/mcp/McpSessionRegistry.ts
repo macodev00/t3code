@@ -16,6 +16,11 @@ export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
+  /**
+   * Keep credentials already issued for this thread. A refused session
+   * replacement still needs the token the running query baked in.
+   */
+  readonly retainExisting?: boolean;
 }
 
 export interface McpIssuedCredential {
@@ -223,14 +228,31 @@ const make = Effect.acquireRelease(
 
 export const layer = Layer.effect(McpSessionRegistry, make);
 
+/**
+ * Issue the MCP credential a provider session presents to `/mcp`.
+ * Replaces any credential already issued for the thread unless
+ * `retainExisting` is set, which keeps the live query's token valid until
+ * the caller revokes it.
+ */
 export const issueActiveMcpCredential = (
   request: McpCredentialRequest,
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
-    ? activeMcpSessionRegistry
-        .revokeThread(request.threadId)
-        .pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
-    : Effect.sync((): McpIssuedCredential | undefined => undefined);
+    ? (request.retainExisting === true
+        ? Effect.void
+        : activeMcpSessionRegistry.revokeThread(request.threadId)
+      ).pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
+    : Effect.succeed(undefined);
+
+/**
+ * Revoke one issued MCP credential without touching the thread's other tokens.
+ * Drops a rejected replacement credential, or the credential a stopped query
+ * was using, while a live query keeps its own.
+ */
+export const revokeActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<void> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.revokeProviderSession(providerSessionId)
+    : Effect.void;
 
 /**
  * Refreshes the liveness of a thread's MCP credential. Called on every provider

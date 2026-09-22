@@ -940,10 +940,31 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     } satisfies Record<string, string>;
   });
 
-  const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
-    Effect.gen(function* () {
+  /**
+   * Issue the MCP credential for a provider start and publish it for the
+   * adapter to bake into the new process. `retainExisting` leaves the thread's
+   * current token registered so a rejected restart can keep the live query's
+   * credential.
+   */
+  const prepareMcpSession = Effect.fn("ProviderService.prepareMcpSession")(
+    /**
+     * Issue the MCP credential for a provider start and publish it for the
+     * adapter to bake into the new process. `retainExisting` leaves the thread's
+     * current token registered so a rejected restart can keep the live query's
+     * credential.
+     */
+    function* (
+      threadId: ThreadId,
+      providerInstanceId: ProviderInstanceId,
+      options?: { readonly retainExisting?: boolean },
+    ) {
       const capabilities = yield* agentAccessCapabilities(threadId);
-      const credential = yield* issueMcpCredential({ threadId, providerInstanceId, capabilities });
+      const credential = yield* issueMcpCredential({
+        threadId,
+        providerInstanceId,
+        capabilities,
+        ...(options?.retainExisting === true ? { retainExisting: true } : {}),
+      });
       if (credential) {
         const deviceEnvironment = capabilities.has("device")
           ? yield* agentDeviceEnvironment
@@ -956,11 +977,66 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
       }
       return credential;
-    });
+    },
+  );
   const clearMcpSession = (threadId: ThreadId) =>
     McpSessionRegistry.revokeActiveMcpThread(threadId).pipe(
       Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
     );
+
+  /**
+   * Settle MCP credentials after a provider start attempt.
+   * A rejection that leaves the existing session up restores the credential
+   * that query already has. An accepted replacement revokes the credential the
+   * stopped query was using. Any other failure revokes the thread.
+   */
+  const settleMcpCredentialAfterStart = Effect.fn("ProviderService.settleMcpCredentialAfterStart")(
+    /**
+     * Settle MCP credentials after a provider start attempt.
+     * A rejection that leaves the existing session up restores the credential
+     * that query already has. An accepted replacement revokes the credential the
+     * stopped query was using. Any other failure revokes the thread.
+     */
+    function* (input: {
+      readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+      readonly threadId: ThreadId;
+      readonly hadActiveSession: boolean;
+      readonly previous: McpProviderSession.McpProviderSessionConfig | undefined;
+      readonly issuedProviderSessionId: string | undefined;
+      readonly accepted: boolean;
+    }) {
+      if (!input.accepted) {
+        // A probe failure must not revoke the token a live query may still hold.
+        const sessionStillActive = input.hadActiveSession
+          ? yield* input.adapter.hasSession(input.threadId).pipe(Effect.orElseSucceed(() => true))
+          : false;
+        if (sessionStillActive) {
+          if (input.issuedProviderSessionId !== undefined) {
+            yield* McpSessionRegistry.revokeActiveMcpProviderSession(input.issuedProviderSessionId);
+          }
+          yield* Effect.sync(() => {
+            if (input.previous) {
+              McpProviderSession.setMcpProviderSession(input.previous);
+              return;
+            }
+            McpProviderSession.clearMcpProviderSession(input.threadId);
+          });
+          return;
+        }
+        yield* clearMcpSession(input.threadId);
+        return;
+      }
+
+      if (
+        input.hadActiveSession &&
+        input.previous !== undefined &&
+        input.issuedProviderSessionId !== undefined &&
+        input.previous.providerSessionId !== input.issuedProviderSessionId
+      ) {
+        yield* McpSessionRegistry.revokeActiveMcpProviderSession(input.previous.providerSessionId);
+      }
+    },
+  );
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
@@ -1394,7 +1470,19 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  /**
+   * Start a provider session for a thread.
+   * When a session is already running, its MCP credential stays valid until
+   * this start is accepted. A rejection that leaves that session up restores
+   * the credential the live query is using.
+   */
   const startSession: ProviderServiceMethod<"startSession"> = Effect.fn("startSession")(
+    /**
+     * Start a provider session for a thread.
+     * When a session is already running, its MCP credential stays valid until
+     * this start is accepted. A rejection that leaves that session up restores
+     * the credential the live query is using.
+     */
     function* (threadId, rawInput) {
       const parsed = yield* decodeInputOrValidationError({
         operation: "ProviderService.startSession",
@@ -1499,8 +1587,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           }
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
+        // Hold the running query's MCP token until this start is accepted.
+        const hadActiveSession = yield* adapter.hasSession(threadId);
+        const previousMcpSession = hadActiveSession
+          ? McpProviderSession.readMcpProviderSession(threadId)
+          : undefined;
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
-        yield* prepareMcpSession(threadId, resolvedInstanceId);
+        const issuedCredential = yield* prepareMcpSession(threadId, resolvedInstanceId, {
+          retainExisting: hadActiveSession,
+        });
+        const issuedProviderSessionId = issuedCredential?.config.providerSessionId;
         const session = yield* adapter
           .startSession({
             ...input,
@@ -1508,7 +1604,18 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
           })
-          .pipe(Effect.onError(() => clearMcpSession(threadId)));
+          .pipe(
+            Effect.onError(() =>
+              settleMcpCredentialAfterStart({
+                adapter,
+                threadId,
+                hadActiveSession,
+                previous: previousMcpSession,
+                issuedProviderSessionId,
+                accepted: false,
+              }),
+            ),
+          );
 
         if (session.provider !== adapter.provider) {
           yield* clearMcpSession(threadId);
@@ -1517,6 +1624,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
           );
         }
+        yield* settleMcpCredentialAfterStart({
+          adapter,
+          threadId,
+          hadActiveSession,
+          previous: previousMcpSession,
+          issuedProviderSessionId,
+          accepted: true,
+        });
         const sessionWithInstance = {
           ...session,
           providerInstanceId: resolvedInstanceId,

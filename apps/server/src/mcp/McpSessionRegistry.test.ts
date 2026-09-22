@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import { HttpServer } from "effect/unstable/http";
 import * as NetAddress from "effect/unstable/net/NetAddress";
 
@@ -162,4 +163,48 @@ it.effect("does not keep credentials of other threads alive", () =>
 
     expect(yield* registry.resolve(token)).toBeUndefined();
   }),
+);
+
+/**
+ * A replacement credential can be issued without revoking the token a live
+ * provider query is still presenting.
+ */
+function retainsExistingThreadCredentialUntilThatSessionIsRevoked() {
+  const layer = McpSessionRegistry.layer.pipe(
+    Layer.provide(Layer.succeed(HttpServer.HttpServer, fakeHttpServer)),
+    Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
+    Layer.provide(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    const threadId = ThreadId.make("thread-retain");
+    const first = yield* McpSessionRegistry.issueActiveMcpCredential({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      capabilities: new Set(["preview"]),
+    });
+    const second = yield* McpSessionRegistry.issueActiveMcpCredential({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      capabilities: new Set(["preview"]),
+      retainExisting: true,
+    });
+    if (first === undefined || second === undefined) {
+      return yield* Effect.die("expected MCP credentials");
+    }
+    const firstToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const secondToken = second.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    expect((yield* registry.resolve(firstToken))?.threadId).toBe(threadId);
+    expect((yield* registry.resolve(secondToken))?.threadId).toBe(threadId);
+
+    yield* McpSessionRegistry.revokeActiveMcpProviderSession(second.config.providerSessionId);
+    expect((yield* registry.resolve(firstToken))?.threadId).toBe(threadId);
+    expect(yield* registry.resolve(secondToken)).toBeUndefined();
+  }).pipe(Effect.provide(layer));
+}
+
+it.effect(
+  "retains an existing thread credential when the replacement asks to keep it",
+  retainsExistingThreadCredentialUntilThatSessionIsRevoked,
 );

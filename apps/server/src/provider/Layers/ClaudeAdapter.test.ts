@@ -313,6 +313,178 @@ async function readPromptMessages(
 }
 
 const THREAD_ID = ThreadId.make("thread-claude-1");
+
+/**
+ * Claude adapter layer that records every query `startSession` creates.
+ */
+function makeQueryRecordingClaudeLayer() {
+  const queries: Array<FakeClaudeQuery> = [];
+  const layer = Layer.effect(
+    ClaudeAdapter,
+    Effect.gen(function* () {
+      const claudeConfig = decodeClaudeSettings({});
+      return yield* makeClaudeAdapter(claudeConfig, {
+        createQuery: () => {
+          const query = new FakeClaudeQuery();
+          queries.push(query);
+          return query;
+        },
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest("/tmp/claude-adapter-test", "/tmp")),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return { queries, layer };
+}
+
+/**
+ * Refuses Claude session replacement while a child task is still running.
+ */
+function refusesClaudeSessionReplacementWhileLiveTasks() {
+  const harness = makeQueryRecordingClaudeLayer();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const taskStartedFiber = yield* adapter.streamEvents.pipe(
+      Stream.filter((event) => event.type === "task.started"),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    const firstSession = yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: ProviderDriverKind.make("claudeAgent"),
+      runtimeMode: "full-access",
+    });
+    yield* adapter.sendTurn({
+      threadId: firstSession.threadId,
+      input: "spawn agents",
+      attachments: [],
+    });
+    harness.queries[0]?.emit({
+      type: "system",
+      subtype: "task_started",
+      task_id: "task-live",
+      description: "Agent A",
+      task_type: "local_agent",
+      uuid: "task-live-uuid",
+      session_id: "sdk-session",
+    } as unknown as SDKMessage);
+    yield* Fiber.join(taskStartedFiber);
+
+    const warningFiber = yield* adapter.streamEvents.pipe(
+      Stream.filter((event) => event.type === "runtime.warning"),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    const replaceError = yield* adapter
+      .startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+        resumeCursor: firstSession.resumeCursor,
+      })
+      .pipe(Effect.flip);
+    const warnings = Array.from(yield* Fiber.join(warningFiber));
+    const activeSessions = yield* adapter.listSessions();
+
+    assert.equal(replaceError._tag, "ProviderAdapterRequestError");
+    if (replaceError._tag !== "ProviderAdapterRequestError") {
+      return;
+    }
+    assert.equal(replaceError.method, "startSession");
+    assert.match(replaceError.detail, /live task/);
+    assert.equal(harness.queries.length, 1);
+    assert.equal(harness.queries[0]?.closeCalls, 0);
+    assert.equal(yield* adapter.hasSession(THREAD_ID), true);
+    assert.equal(activeSessions.length, 1);
+    assert.equal(activeSessions[0]?.threadId, firstSession.threadId);
+    assert.equal(activeSessions[0]?.runtimeMode, "full-access");
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0]?.type, "runtime.warning");
+    if (warnings[0]?.type === "runtime.warning") {
+      assert.match(warnings[0].payload.message, /live task/);
+    }
+  }).pipe(
+    Effect.provideService(Random.Random, makeDeterministicRandomService()),
+    Effect.provide(harness.layer),
+  );
+}
+
+/**
+ * Replaces a Claude session once its child tasks have finished.
+ */
+function replacesClaudeSessionAfterLiveTasksFinish() {
+  const harness = makeQueryRecordingClaudeLayer();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const taskStartedFiber = yield* adapter.streamEvents.pipe(
+      Stream.filter((event) => event.type === "task.started"),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    const firstSession = yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: ProviderDriverKind.make("claudeAgent"),
+      runtimeMode: "full-access",
+    });
+    yield* adapter.sendTurn({
+      threadId: firstSession.threadId,
+      input: "spawn agents",
+      attachments: [],
+    });
+    harness.queries[0]?.emit({
+      type: "system",
+      subtype: "task_started",
+      task_id: "task-done",
+      description: "Agent A",
+      task_type: "local_agent",
+      uuid: "task-done-uuid",
+      session_id: "sdk-session",
+    } as unknown as SDKMessage);
+    yield* Fiber.join(taskStartedFiber);
+
+    const taskCompletedFiber = yield* adapter.streamEvents.pipe(
+      Stream.filter((event) => event.type === "task.completed"),
+      Stream.take(1),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    harness.queries[0]?.emit({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "task-done",
+      status: "completed",
+      summary: "done",
+      uuid: "task-done-notify",
+      session_id: "sdk-session",
+    } as unknown as SDKMessage);
+    yield* Fiber.join(taskCompletedFiber);
+
+    const secondSession = yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: ProviderDriverKind.make("claudeAgent"),
+      runtimeMode: "approval-required",
+      resumeCursor: firstSession.resumeCursor,
+    });
+    const activeSessions = yield* adapter.listSessions();
+
+    assert.equal(harness.queries.length, 2);
+    assert.equal(harness.queries[0]?.closeCalls, 1);
+    assert.equal(harness.queries[1]?.closeCalls, 0);
+    assert.equal(yield* adapter.hasSession(THREAD_ID), true);
+    assert.equal(activeSessions.length, 1);
+    assert.equal(activeSessions[0]?.runtimeMode, "approval-required");
+    assert.deepEqual(activeSessions[0]?.resumeCursor, secondSession.resumeCursor);
+  }).pipe(
+    Effect.provideService(Random.Random, makeDeterministicRandomService()),
+    Effect.provide(harness.layer),
+  );
+}
+
 const RESUME_THREAD_ID = ThreadId.make("thread-claude-resume");
 const SYNTHETIC_SUBAGENT_MODEL = "claude-synthetic-subagent[expanded]";
 const CLAUDE_ORIGINAL_SESSION_ID = "550e8400-e29b-41d4-a716-446655440010";
@@ -4185,6 +4357,16 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(layer),
     );
   });
+
+  it.effect(
+    "does not replace a session while live tasks are still running",
+    refusesClaudeSessionReplacementWhileLiveTasks,
+  );
+
+  it.effect(
+    "replaces a session after its live tasks have finished",
+    replacesClaudeSessionAfterLiveTasksFinish,
+  );
 
   it.effect("stopSession does not throw into the SDK prompt consumer", () => {
     // The SDK consumes user messages via `for await (... of prompt)`.
