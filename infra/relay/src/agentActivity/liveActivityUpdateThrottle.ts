@@ -6,6 +6,11 @@ import { newlyTerminalRows } from "./agentActivityAlerts.ts";
 
 const MIN_LIVE_ACTIVITY_UPDATE_INTERVAL_MS = 15_000;
 
+/** True for approval and input phases that show lock-screen attention. */
+function isAttentionPhase(phase: RelayAgentActivityAggregateState["activities"][number]["phase"]) {
+  return phase === "waiting_for_approval" || phase === "waiting_for_input";
+}
+
 /**
  * True when any activity is waiting for approval or input.
  *
@@ -14,7 +19,39 @@ const MIN_LIVE_ACTIVITY_UPDATE_INTERVAL_MS = 15_000;
  */
 function aggregateNeedsAttention(aggregate: RelayAgentActivityAggregateState): boolean {
   for (const row of aggregate.activities) {
-    if (row.phase === "waiting_for_approval" || row.phase === "waiting_for_input") {
+    if (isAttentionPhase(row.phase)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when attention appears or disappears, or a new thread starts waiting.
+ * Timestamp and ordering churn on already-waiting rows is not a transition.
+ *
+ * @param previous - Aggregate already delivered to this Live Activity
+ * @param next - Newly observed aggregate
+ * @returns Whether lock-screen attention changed in a way that must publish
+ */
+function aggregateHasAttentionTransition(
+  previous: RelayAgentActivityAggregateState,
+  next: RelayAgentActivityAggregateState,
+): boolean {
+  if (aggregateNeedsAttention(previous) !== aggregateNeedsAttention(next)) {
+    return true;
+  }
+  const previouslyAttention = new Set<string>();
+  for (const row of previous.activities) {
+    if (isAttentionPhase(row.phase)) {
+      previouslyAttention.add(`${row.environmentId}\0${row.threadId}`);
+    }
+  }
+  for (const row of next.activities) {
+    if (
+      isAttentionPhase(row.phase) &&
+      !previouslyAttention.has(`${row.environmentId}\0${row.threadId}`)
+    ) {
       return true;
     }
   }
@@ -65,7 +102,7 @@ function lastLiveActivityDeliveryAtMs(lastDeliveryAt: string | null): number | n
 
 /**
  * Queue a Live Activity update on first delivery, exempt changes
- * (activeCount, attention transition, newly-terminal, or phase), or after the 15s throttle.
+ * (activeCount, attention row transition, newly-terminal, or phase), or after the 15s throttle.
  *
  * @param input - Previous/next aggregates, last delivery time, and now
  * @returns Whether an update should be queued
@@ -85,10 +122,10 @@ export function shouldUpdateLiveActivity(input: {
   if (input.previousAggregate.activeCount !== input.nextAggregate.activeCount) {
     return true;
   }
-  if (
-    aggregateNeedsAttention(input.previousAggregate) !==
-    aggregateNeedsAttention(input.nextAggregate)
-  ) {
+  // Waiting already on the lock screen must stay throttled for timestamp and
+  // ordering churn. Exempt when attention appears or disappears, or a new
+  // thread starts waiting while another already was.
+  if (aggregateHasAttentionTransition(input.previousAggregate, input.nextAggregate)) {
     return true;
   }
   // A thread finishing must never be throttled away: when a completion and a
