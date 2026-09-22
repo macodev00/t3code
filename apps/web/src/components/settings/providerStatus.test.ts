@@ -1,7 +1,7 @@
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { getProviderSummary } from "./providerStatus";
+import { getProviderSummary, isAntigravityUncheckedAuth } from "./providerStatus";
 
 const provider: ServerProvider = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -35,6 +35,58 @@ describe("getProviderSummary", () => {
     ).toEqual({
       headline: "Unavailable",
       detail: "The provider process failed to start.",
+    });
+  });
+
+  it("treats healthy Antigravity with unchecked Google auth as sign-in required", () => {
+    const message = "Antigravity is installed. Google account access is not checked yet.";
+    const antigravity = {
+      ...provider,
+      instanceId: ProviderInstanceId.make("antigravity"),
+      driver: ProviderDriverKind.make("antigravity"),
+      status: "warning" as const,
+      auth: { status: "unknown" as const },
+      message,
+    };
+
+    expect(isAntigravityUncheckedAuth(antigravity)).toBe(true);
+    expect(getProviderSummary(antigravity)).toEqual({
+      headline: "Installed · Sign-in required",
+      detail: message,
+    });
+    expect(
+      isAntigravityUncheckedAuth({
+        ...antigravity,
+        status: "error",
+        message: "Antigravity could not complete its local health check.",
+      }),
+    ).toBe(false);
+    expect(
+      getProviderSummary({
+        ...provider,
+        status: "warning",
+        auth: { status: "unknown" },
+        message: "The provider version is unsupported.",
+      }),
+    ).toEqual({
+      headline: "Needs attention",
+      detail: "The provider version is unsupported.",
+    });
+  });
+
+  it("keeps a confirmed Antigravity sign-out as not authenticated", () => {
+    expect(
+      getProviderSummary({
+        ...provider,
+        instanceId: ProviderInstanceId.make("antigravity"),
+        driver: ProviderDriverKind.make("antigravity"),
+        status: "warning",
+        auth: { status: "unauthenticated" },
+        message: "Sign in with Google to use Antigravity.",
+      }),
+    ).toEqual({
+      headline: "Not authenticated",
+      detail: "Sign in with Google to use Antigravity.",
     });
   });
 

@@ -3,10 +3,13 @@ import {
   EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSetupError,
   type ProviderAuthState,
   type ProviderInstallState,
   type ServerProvider,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { visitElements } from "../../test/reactElementTree";
@@ -25,6 +28,8 @@ const setup = vi.hoisted(() => ({
   cancelInstall: vi.fn(),
   removeInstall: vi.fn(),
   confirm: vi.fn(),
+  authError: null as string | null,
+  atomCommands: [] as Array<{ command: unknown; options: unknown }>,
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -57,13 +62,16 @@ vi.mock("../../state/server", () => ({
 }));
 
 vi.mock("../../state/use-atom-command", () => ({
-  useAtomCommand: (command: unknown) => command,
+  useAtomCommand: (command: unknown, options?: unknown) => {
+    setup.atomCommands.push({ command, options });
+    return command;
+  },
 }));
 
 vi.mock("../../state/query", () => ({
   useEnvironmentQuery: (atom: string) => ({
     data: atom === "auth" ? setup.auth : setup.installation,
-    error: null,
+    error: atom === "auth" ? setup.authError : null,
     isPending: false,
     refresh: vi.fn(),
   }),
@@ -73,7 +81,12 @@ vi.mock("../../localApi", () => ({
   ensureLocalApi: () => ({ dialogs: { confirm: setup.confirm } }),
 }));
 
-import { ProviderSetupSection } from "./ProviderSetupSection";
+import {
+  AntigravityGoogleSignInButton,
+  offersAntigravityGoogleSignIn,
+  ProviderSetupSection,
+  readProviderSetupFailure,
+} from "./ProviderSetupSection";
 
 const environmentId = EnvironmentId.make("remote-google");
 const instanceId = ProviderInstanceId.make("antigravity_work");
@@ -219,6 +232,8 @@ describe("Antigravity setup", () => {
       command.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
     }
     setup.confirm.mockReset().mockResolvedValue(false);
+    setup.authError = null;
+    setup.atomCommands.length = 0;
   });
 
   it("waits for verified auth after submitting a callback to the selected environment", async () => {
@@ -386,4 +401,145 @@ describe("Antigravity setup", () => {
       expect(setup.startAuth).not.toHaveBeenCalled();
     },
   );
+
+  describe("Google sign-in on the provider card", () => {
+    beforeEach(() => {
+      setup.auth = authState({ phase: "idle", flowId: null, authorizationUrl: null });
+    });
+
+    it("starts sign-in with failure reporters left on", async () => {
+      const onStarted = vi.fn();
+      const view = renderSignIn({ onStarted });
+      const startCall = setup.atomCommands.find((call) => call.command === setup.startAuth);
+      expect(startCall?.options).toBeUndefined();
+
+      click(view, "Sign in with Google");
+      await flushPromises();
+
+      expect(setup.startAuth).toHaveBeenCalledWith({ environmentId, input: { instanceId } });
+      expect(onStarted).toHaveBeenCalledOnce();
+      expect(alertText(renderSignIn({ onStarted }))).toBeUndefined();
+    });
+
+    it("shows a setup failure and does not open the provider after startAuth fails", async () => {
+      const onStarted = vi.fn();
+      setup.startAuth.mockResolvedValueOnce(
+        AsyncResult.failure(
+          Cause.fail(
+            new ProviderSetupError({
+              instanceId,
+              operation: "start",
+              detail: "Provider instance not found.",
+            }),
+          ),
+        ),
+      );
+      click(renderSignIn({ onStarted }), "Sign in with Google");
+      await flushPromises();
+
+      expect(onStarted).not.toHaveBeenCalled();
+      expect(alertText(renderSignIn({ onStarted }))).toBe("Provider instance not found.");
+    });
+
+    it("coalesces repeated sign-in clicks from the provider card", async () => {
+      let completeStart: (value: { _tag: "Success"; value: undefined }) => void = () => {
+        throw new Error("Missing start resolver.");
+      };
+      setup.startAuth.mockReturnValueOnce(
+        new Promise<{ _tag: "Success"; value: undefined }>((resolve) => {
+          completeStart = resolve;
+        }),
+      );
+      const view = renderSignIn();
+      click(view, "Sign in with Google");
+      click(view, "Sign in with Google");
+
+      expect(setup.startAuth).toHaveBeenCalledTimes(1);
+      completeStart({ _tag: "Success", value: undefined });
+      await flushPromises();
+    });
+
+    it("hides the card button while sign-in is already in progress", () => {
+      setup.auth = authState({ phase: "waiting" });
+      expect(button(renderSignIn(), "Sign in with Google")).toBeNull();
+    });
+
+    it("does not offer Google sign-in for an API key method", () => {
+      expect(
+        button(renderSignIn({ authMethod: "gemini-api-key" }), "Sign in with Google"),
+      ).toBeNull();
+    });
+  });
+});
+
+function renderSignIn(
+  options: {
+    provider?: ServerProvider;
+    authMethod?: "oauth-personal" | "gemini-api-key";
+    onStarted?: () => void;
+  } = {},
+) {
+  hooks.beginRender();
+  return AntigravityGoogleSignInButton({
+    environmentId,
+    instanceId,
+    provider: options.provider ?? provider,
+    authMethod: options.authMethod ?? "oauth-personal",
+    onStarted: options.onStarted,
+  });
+}
+
+function alertText(view: unknown) {
+  return visitElements(view, (element) => element.props.role === "alert")?.props.children;
+}
+
+describe("readProviderSetupFailure", () => {
+  it("surfaces setup error detail and plain failures, and ignores interrupts", () => {
+    expect(
+      readProviderSetupFailure(
+        AsyncResult.failure(
+          Cause.fail(
+            new ProviderSetupError({
+              instanceId,
+              operation: "start",
+              detail: "Provider instance not found.",
+            }),
+          ),
+        ),
+      ),
+    ).toBe("Provider instance not found.");
+    expect(readProviderSetupFailure(AsyncResult.failure(Cause.fail("removed instance")))).toBe(
+      "removed instance",
+    );
+    expect(
+      readProviderSetupFailure(AsyncResult.failure(Cause.fail({ detail: "stale provider" }))),
+    ).toBe("stale provider");
+    expect(readProviderSetupFailure(AsyncResult.failure(Cause.interrupt(1)))).toBeNull();
+    expect(readProviderSetupFailure(AsyncResult.success(undefined))).toBeNull();
+  });
+});
+
+describe("offersAntigravityGoogleSignIn", () => {
+  it("requires an installed Antigravity instance that can run Google OAuth", () => {
+    expect(offersAntigravityGoogleSignIn(provider, "oauth-personal")).toBe(true);
+    expect(
+      offersAntigravityGoogleSignIn(
+        { ...provider, status: "warning", auth: { status: "unknown" } },
+        "oauth-business",
+      ),
+    ).toBe(true);
+    expect(offersAntigravityGoogleSignIn({ ...provider, installed: false }, "oauth-personal")).toBe(
+      false,
+    );
+    expect(
+      offersAntigravityGoogleSignIn(
+        { ...provider, auth: { status: "authenticated" } },
+        "oauth-personal",
+      ),
+    ).toBe(false);
+    expect(offersAntigravityGoogleSignIn(provider, "gemini-api-key")).toBe(false);
+    const { setup: _providerSetup, ...withoutSetup } = provider;
+    expect(offersAntigravityGoogleSignIn(withoutSetup, "oauth-personal")).toBe(false);
+    expect(offersAntigravityGoogleSignIn(undefined, "oauth-personal")).toBe(false);
+  });
 });

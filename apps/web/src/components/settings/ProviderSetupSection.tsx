@@ -46,6 +46,47 @@ const AUTH_PHASE_LABELS: Record<ProviderAuthState["phase"], string> = {
   cancelled: "Google sign-in cancelled.",
 };
 
+/** Personal and Enterprise open Google in the browser; API key methods do not. */
+function usesAntigravityBrowserAuth(authMethod: AntigravityAuthMethod) {
+  return authMethod === "oauth-personal" || authMethod === "oauth-business";
+}
+
+/** Offer Google sign-in when this instance can authenticate and is not already signed in. */
+export function offersAntigravityGoogleSignIn(
+  provider: ServerProvider | undefined,
+  authMethod: AntigravityAuthMethod,
+) {
+  return (
+    provider?.driver === "antigravity" &&
+    provider.installed &&
+    provider.auth.status !== "authenticated" &&
+    provider.setup?.canAuthenticate === true &&
+    usesAntigravityBrowserAuth(authMethod)
+  );
+}
+
+/**
+ * User-facing text for a failed setup command. Interrupted commands are not
+ * failures. `ProviderSetupError.detail` is the safe message, including when
+ * the value arrives as a plain object rather than an Error instance.
+ */
+export function readProviderSetupFailure(result: AtomCommandResult<unknown, unknown>) {
+  if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return null;
+  const failure = squashAtomCommandFailure(result);
+  if (failure instanceof Error && failure.message.trim().length > 0) return failure.message;
+  if (typeof failure === "string" && failure.trim().length > 0) return failure;
+  if (
+    typeof failure === "object" &&
+    failure !== null &&
+    "detail" in failure &&
+    typeof failure.detail === "string" &&
+    failure.detail.trim().length > 0
+  ) {
+    return failure.detail;
+  }
+  return "Provider setup failed.";
+}
+
 /** API key methods skip the browser, so the phases read as a credential check. */
 const CREDENTIAL_PHASE_LABELS: Record<ProviderAuthState["phase"], string> = {
   idle: "Connect with the credentials in the provider settings.",
@@ -56,6 +97,85 @@ const CREDENTIAL_PHASE_LABELS: Record<ProviderAuthState["phase"], string> = {
   failed: "Could not connect with the configured credentials.",
   cancelled: "Connection cancelled.",
 };
+
+/**
+ * Starts the existing Google sign-in command from the provider card. Default
+ * failure reporters stay on, and a setup failure is also shown beside the
+ * button so a removed instance does not fail silently.
+ */
+export function AntigravityGoogleSignInButton({
+  environmentId,
+  instanceId,
+  provider,
+  authMethod,
+  size = "xs",
+  onStarted,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ProviderInstanceId;
+  readonly provider: ServerProvider | undefined;
+  readonly authMethod: AntigravityAuthMethod;
+  readonly size?: "xs" | "sm" | undefined;
+  readonly onStarted?: (() => void) | undefined;
+}) {
+  const target = { environmentId, input: { instanceId } };
+  const authQuery = useEnvironmentQuery(serverEnvironment.providerAuthState(target));
+  const startAuth = useAtomCommand(serverEnvironment.startProviderAuth);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pendingRef = useRef(false);
+  const auth = authQuery.data;
+  const authActive =
+    auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
+  const visible = offersAntigravityGoogleSignIn(provider, authMethod) && !authActive;
+
+  async function start() {
+    if (pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await startAuth(target);
+      const message = readProviderSetupFailure(result);
+      if (message) {
+        setError(message);
+        return;
+      }
+      onStarted?.();
+    } catch {
+      setError("Provider setup failed. Try again.");
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  }
+
+  if (!visible) return null;
+
+  const alert = error ?? authQuery.error;
+  return (
+    <span className="inline-flex max-w-full flex-col items-start gap-1">
+      <Button
+        size={size}
+        variant="outline"
+        disabled={pending || auth === null || authQuery.error !== null}
+        onClick={() => void start()}
+      >
+        {auth?.phase === "failed" || auth?.phase === "cancelled"
+          ? "Retry Google sign-in"
+          : "Sign in with Google"}
+      </Button>
+      {alert ? (
+        <p
+          role="alert"
+          className="max-w-56 text-left text-[11px] leading-snug text-destructive [overflow-wrap:anywhere]"
+        >
+          {alert}
+        </p>
+      ) : null}
+    </span>
+  );
+}
 
 /** Read the configured method from the instance config. Unknown values fall back to personal. */
 export function readAntigravityAuthMethod(config: unknown): AntigravityAuthMethod {
@@ -131,7 +251,7 @@ function ProviderSetupActions({
   readonly authMethod: AntigravityAuthMethod;
 }) {
   const target = { environmentId, input: { instanceId } };
-  const usesBrowser = authMethod === "oauth-personal" || authMethod === "oauth-business";
+  const usesBrowser = usesAntigravityBrowserAuth(authMethod);
   const phaseLabels = usesBrowser ? AUTH_PHASE_LABELS : CREDENTIAL_PHASE_LABELS;
   const methodLabel =
     ANTIGRAVITY_AUTH_METHODS.find((method) => method.value === authMethod)?.label ??

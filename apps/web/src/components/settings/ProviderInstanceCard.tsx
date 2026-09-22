@@ -53,6 +53,7 @@ import {
   PROVIDER_STATUS_STYLES,
   getProviderSummary,
   getProviderVersionLabel,
+  isAntigravityUncheckedAuth,
   type ProviderStatusKey,
 } from "./providerStatus";
 
@@ -372,6 +373,11 @@ interface ProviderInstanceCardProps {
    * omit it.
    */
   readonly headerAction?: ReactNode | undefined;
+  /**
+   * Google sign-in control for an eligible Antigravity instance. Shown on the
+   * list row and under the editor status. Omitted for other providers.
+   */
+  readonly signInAction?: ReactNode | undefined;
   readonly setup?: ReactNode;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
@@ -414,6 +420,7 @@ export function ProviderInstanceCard({
   onUpdate,
   onDelete,
   headerAction,
+  signInAction,
   setup,
   hiddenModels,
   favoriteModels,
@@ -434,6 +441,9 @@ export function ProviderInstanceCard({
   const summary = enabled
     ? getProviderSummary(liveProvider)
     : { headline: "Disabled", detail: null };
+  // Server status stays warning. Settings just does not paint unchecked Google
+  // auth as amber attention.
+  const informationalSignInRequired = enabled && isAntigravityUncheckedAuth(liveProvider);
   const authEmail = liveProvider?.auth.email?.trim();
   const isAuthenticated = enabled && liveProvider?.auth.status === "authenticated";
   const authLabel =
@@ -567,14 +577,14 @@ export function ProviderInstanceCard({
   ) : null;
 
   // Healthy and disabled rows read fine from their text; only trouble gets a dot.
-  const statusDotNode =
-    statusKey === "warning" || statusKey === "error" ? (
-      <span className={cn("size-1.5 shrink-0 rounded-full", statusStyle.dot)} aria-hidden />
-    ) : null;
-  // Trouble states carry the server's explanation (a failed probe, a shadow
-  // home entry that is not a symlink, a missing binary). Show it wherever the
-  // headline shows so the user can act without opening the editor.
-  const needsAttention = statusKey === "warning" || statusKey === "error";
+  // Unchecked Antigravity Google auth is informational, so it skips the dot.
+  // Trouble states still carry the server's explanation (a failed probe, a
+  // shadow home entry that is not a symlink, a missing binary).
+  const needsAttention =
+    !informationalSignInRequired && (statusKey === "warning" || statusKey === "error");
+  const statusDotNode = needsAttention ? (
+    <span className={cn("size-1.5 shrink-0 rounded-full", statusStyle.dot)} aria-hidden />
+  ) : null;
   const editorStatusNode =
     isAuthenticated && authEmail ? (
       <>
@@ -670,13 +680,16 @@ export function ProviderInstanceCard({
             </span>
           </span>
         </div>
-        <span className="flex h-5 shrink-0 items-center">
-          <Switch
-            checked={enabled}
-            disabled={readOnly}
-            onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
-            aria-label={`Enable ${displayName}`}
-          />
+        <span className="flex shrink-0 items-center gap-2">
+          {signInAction}
+          <span className="flex h-5 items-center">
+            <Switch
+              checked={enabled}
+              disabled={readOnly}
+              onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
+              aria-label={`Enable ${displayName}`}
+            />
+          </span>
         </span>
       </div>
     );
@@ -810,7 +823,18 @@ export function ProviderInstanceCard({
         <SettingsRow
           title="Display name"
           status={
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">{editorStatusNode}</div>
+            signInAction ? (
+              <div className="flex min-w-0 flex-col items-start gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+                  {editorStatusNode}
+                </div>
+                {signInAction}
+              </div>
+            ) : (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+                {editorStatusNode}
+              </div>
+            )
           }
           control={
             <div
