@@ -59,6 +59,11 @@ import {
 } from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
+/**
+ * Model used for commit/PR/branch writing when a dedicated writer is set.
+ * Falls back to the (already resolved) text-generation selection when that
+ * writer is missing or its instance is disabled.
+ */
 export { resolveSourceControlWriterModelSelection } from "@t3tools/shared/serverSettings";
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
@@ -165,6 +170,11 @@ function redactProviderEnvironmentVariable(
   };
 }
 
+/**
+ * Settings copy safe to send to a client: sensitive provider env values
+ * are blanked, and usage-limit hub keys are replaced by the redaction
+ * marker so a round-trip means "keep what you have".
+ */
 export function redactServerSettingsForClient(settings: ServerSettings): ServerSettings {
   const providerInstances = Object.fromEntries(
     Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
@@ -190,6 +200,12 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
   return { ...settings, providerInstances, usageLimitSources };
 }
 
+/**
+ * Authoritative settings for this environment. Persist, watch, and publish
+ * changes. Reads resolve a usable text-generation model when the stored
+ * selection's instance is disabled, preferring that instance's configured
+ * default or custom model over a product slug.
+ */
 export class ServerSettingsService extends Context.Service<
   ServerSettingsService,
   {
@@ -254,6 +270,7 @@ const makeTest = (overrides: DeepPartial<ServerSettings> = {}) =>
     } satisfies ServerSettingsService["Service"];
   });
 
+/** In-memory settings service for tests; skips disk, secrets, and file watching. */
 export const layerTest = (overrides: DeepPartial<ServerSettings> = {}) =>
   Layer.effect(ServerSettingsService, makeTest(overrides));
 
@@ -320,12 +337,21 @@ function restoreUsedProviders(
   };
 }
 
+/**
+ * Keep the stored text-generation selection when its instance is enabled;
+ * otherwise pick a fallback instance and model.
+ */
 function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
   return isModelSelectionProviderEnabled(settings, settings.textGenerationModelSelection)
     ? settings
     : fallbackTextGenerationProvider(settings);
 }
 
+/**
+ * First usable custom-model slug for a fallback instance: the instance
+ * `config` blob wins over the legacy `providers[driver].customModels` list.
+ * Empty or unparseable rows are skipped the same way settings decode them.
+ */
 function firstConfiguredCustomModelSlug(
   instanceConfig: unknown,
   legacyCustomModels: unknown,
@@ -339,6 +365,11 @@ function firstConfiguredCustomModelSlug(
   return readCustomModelEntries(legacyCustomModels)[0]?.slug;
 }
 
+/**
+ * When the stored text-generation selection is unusable, pick the first
+ * enabled instance and a model already configured for it: the thread
+ * default, then a custom model, then product slugs such as claude-haiku-4-5.
+ */
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
   // Same precedence as isModelSelectionProviderEnabled: an explicit provider
   // instance wins over the legacy providers map, which decodes to defaults
@@ -1090,4 +1121,5 @@ const make = Effect.gen(function* () {
   } satisfies ServerSettingsService["Service"];
 });
 
+/** Live settings service: JSON file, secret store, cache, and file watching. */
 export const layer = Layer.effect(ServerSettingsService, make);
