@@ -121,6 +121,46 @@ describe("deriveProviderModelsForDisplay", () => {
     expect(markup).toContain("blur-[2px]");
     expect(markup).not.toContain("developer@example.com");
   });
+
+  it("shows sign-in required copy instead of amber attention for unchecked Google auth", () => {
+    const instanceId = ProviderInstanceId.make("antigravity");
+    const driver = ProviderDriverKind.make("antigravity");
+    const liveProvider: ServerProvider = {
+      instanceId,
+      driver,
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "warning",
+      auth: { status: "unknown" },
+      checkedAt: "2026-08-27T12:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+      message: "Antigravity is installed. Google account access is not checked yet.",
+    };
+    const props = {
+      instanceId,
+      instance: { driver, enabled: true },
+      driverOption: undefined,
+      liveProvider,
+      onUpdate: () => undefined,
+      hiddenModels: [],
+      favoriteModels: [],
+      modelOrder: [],
+      onHiddenModelsChange: () => undefined,
+      onFavoriteModelsChange: () => undefined,
+      onModelOrderChange: () => undefined,
+    } as const;
+
+    for (const mode of ["list", "editor"] as const) {
+      const markup = renderToStaticMarkup(createElement(ProviderInstanceCard, { ...props, mode }));
+      expect(markup).toContain("Installed · Sign-in required");
+      expect(markup).not.toContain("Needs attention");
+      expect(markup).not.toContain("bg-warning");
+    }
+  });
+
   it("surfaces a failed probe message in both the list row and the editor", () => {
     const instanceId = ProviderInstanceId.make("codex_work");
     const driver = ProviderDriverKind.make("codex");
