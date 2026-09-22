@@ -2064,6 +2064,17 @@ function sdkNativeItemId(message: SDKMessage): string | undefined {
   return undefined;
 }
 
+/**
+ * True when `startSession` would close a Claude query that still owns child
+ * tasks. Those tasks are recorded as stopped without `session.exited`.
+ */
+function shouldBlockClaudeSessionReplacementForLiveTasks(existingContext: {
+  readonly stopped: boolean;
+  readonly liveTaskIds: ReadonlySet<string>;
+}): boolean {
+  return !existingContext.stopped && existingContext.liveTaskIds.size > 0;
+}
+
 export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   claudeSettings: ClaudeSettings,
   options?: ClaudeAdapterLiveOptions,
@@ -4392,6 +4403,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   };
 
   const startSession: ClaudeAdapterShape["startSession"] = Effect.fn("startSession")(
+    /**
+     * Start or replace the Claude query for a thread.
+     * Refuses replacement while child tasks are still running so the live
+     * query is left in place.
+     */
     function* (input) {
       const modelCatalog = yield* modelCatalogEffect;
       if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -4404,6 +4420,26 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const existingContext = sessions.get(input.threadId);
       if (existingContext) {
+        // Replacement closes the query and records liveTaskIds as
+        // task.completed(stopped) without session.exited. Fail instead of
+        // returning the stale session: callers would bind the requested
+        // runtime mode and send the turn on a process that never restarted.
+        if (shouldBlockClaudeSessionReplacementForLiveTasks(existingContext)) {
+          const liveTaskCount = existingContext.liveTaskIds.size;
+          yield* emitRuntimeWarning(
+            existingContext,
+            `Claude session replacement blocked: ${liveTaskCount} live task(s) are still running.`,
+            {
+              existingSessionStatus: existingContext.session.status,
+              liveTaskCount,
+            },
+          );
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "startSession",
+            detail: `Claude session replacement is blocked: ${liveTaskCount} live task(s) are still running. Retry after background work finishes.`,
+          });
+        }
         yield* Effect.logWarning("claude.session.replacing", {
           threadId: input.threadId,
           existingSessionStatus: existingContext.session.status,
