@@ -1948,6 +1948,7 @@ function subscribeThreadFeedIsAtEnd(
   return listState.listen("isAtEnd", onIsAtEndChange);
 }
 
+/** Empty-state placeholder shown while the transcript has nothing to virtualize. */
 function ThreadFeedPlaceholder(props: {
   readonly bottomInset: number;
   readonly detail: string;
