@@ -106,8 +106,8 @@ export function ConfirmDialogHost() {
     presented === null ? null : (
       <View
         accessibilityViewIsModal
-        className="flex-1 items-center justify-center bg-backdrop px-8"
         onAccessibilityEscape={handleCancel}
+        className="flex-1 items-center justify-center bg-backdrop px-8"
       >
         <View className="w-full rounded-[24px] bg-card px-6 pb-4 pt-5">
           <AppText className="text-lg font-t3-medium">{presented.request.title}</AppText>
@@ -165,8 +165,12 @@ export function ConfirmDialogHost() {
       </View>
     );
 
+  // FullWindowOverlay's container is a sibling of the React root. Inner
+  // accessibilityViewIsModal cannot hide that sibling; the container flag can.
   if (Platform.OS === "ios") {
-    return dialog === null ? null : <FullWindowOverlay>{dialog}</FullWindowOverlay>;
+    return dialog === null ? null : (
+      <FullWindowOverlay unstable_accessibilityContainerViewIsModal>{dialog}</FullWindowOverlay>
+    );
   }
 
   return (
