@@ -478,6 +478,11 @@ interface MessagesTimelineProps {
 // MessagesTimeline — list owner
 // ---------------------------------------------------------------------------
 
+/**
+ * Virtualized chat transcript. Pins chrome row heights and remasures
+ * expanded live groups and agent-spawn members so streaming work does not
+ * overlap the next row.
+ */
 export const MessagesTimeline = memo(function MessagesTimeline({
   citationRequest = null,
   citationHistoryLoading = false,

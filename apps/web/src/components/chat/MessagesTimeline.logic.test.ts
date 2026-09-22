@@ -3897,6 +3897,7 @@ describe("live tool group placement across a steer", () => {
   const turnId = TurnId.make("turn-steer-overlap");
   const startedAt = "2026-01-01T00:00:00Z";
 
+  /** User message entry, including a mid-turn steer. */
   function userEntry(id: string, at: string, text: string) {
     return {
       id: `${id}-entry`,
@@ -3914,25 +3915,32 @@ describe("live tool group placement across a steer", () => {
     };
   }
 
+  /** Command work entries; the last call is still in progress. */
   function commandEntries(count: number) {
-    return Array.from({ length: count }, (_, index) => ({
-      id: `tool-entry-${index}`,
-      kind: "work" as const,
-      createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}Z`,
-      entry: {
-        id: `tool-${index}`,
-        toolCallId: `call-${index}`,
+    /** One command work row; the last stays inProgress so the group stays live. */
+    function commandWorkEntry(_: unknown, index: number) {
+      return {
+        id: `tool-entry-${index}`,
+        kind: "work" as const,
         createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}Z`,
-        turnId,
-        label: "Ran command",
-        command: index === count - 1 ? "ssh host" : `cmd-${index}`,
-        tone: "tool" as const,
-        itemType: "command_execution" as const,
-        toolLifecycleStatus: index === count - 1 ? ("inProgress" as const) : ("completed" as const),
-      },
-    }));
+        entry: {
+          id: `tool-${index}`,
+          toolCallId: `call-${index}`,
+          createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}Z`,
+          turnId,
+          label: "Ran command",
+          command: index === count - 1 ? "ssh host" : `cmd-${index}`,
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          toolLifecycleStatus:
+            index === count - 1 ? ("inProgress" as const) : ("completed" as const),
+        },
+      };
+    }
+    return Array.from({ length: count }, commandWorkEntry);
   }
 
+  /** Running turn with an expanded live command group of `toolCount` tools. */
   function liveInput(toolCount: number) {
     const tools = commandEntries(toolCount);
     const groupId = `work-group:tool:${turnId}:call-0`;
@@ -3953,6 +3961,7 @@ describe("live tool group placement across a steer", () => {
     };
   }
 
+  /** Running turn whose live row is an expandable in-progress agent spawn. */
   function spawnLiveInput() {
     return {
       timelineEntries: [

@@ -1039,6 +1039,11 @@ function buildRevertTurnCountByUserMessageId(input: {
   return byUserMessageId;
 }
 
+/**
+ * Project timeline entries into virtualized rows. Live tool groups keep a
+ * stable row id across a mid-turn steer so LegendList does not remount them
+ * at the estimated size and overlap the Working header.
+ */
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   latestTurn?: TimelineLatestTurn | null;
