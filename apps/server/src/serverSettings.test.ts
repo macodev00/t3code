@@ -659,6 +659,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  /** Falls back to Claude Haiku when Codex is disabled and nothing else is configured. */
   it.effect("skips a disabled provider instance when picking the text generation fallback", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
@@ -678,6 +679,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  /** Reuses defaultModelSelection when it belongs to the fallback instance. */
   it.effect("uses the instance default model when falling back for text generation", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
@@ -699,6 +701,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  /** Uses the fallback instance's customModels list when no matching default is set. */
   it.effect("uses a configured custom model when falling back for text generation", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
@@ -716,6 +719,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  /** Uses the legacy providers.customModels list when instance config has none. */
   it.effect("uses a legacy custom model when falling back for text generation", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
