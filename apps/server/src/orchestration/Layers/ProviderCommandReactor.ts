@@ -627,6 +627,12 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Start or reuse the provider session for a thread.
+   * Rejects or defers replacement when live background work would lose the
+   * current permission callback or Claude child tasks; reports whether the
+   * requested model selection was applied to the live process.
+   */
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -711,6 +717,7 @@ const make = Effect.gen(function* () {
       providerRuntimeMode: activeSession?.runtimeMode,
       sessionRuntimeMode: activeThreadSession?.runtimeMode,
     });
+    /** Fail the turn instead of swapping runtime mode onto a still-live session. */
     const rejectRuntimeModeReplacementWhileLive = Effect.fnUntraced(function* () {
       yield* Effect.logWarning(
         "provider command reactor rejecting runtime-mode replacement while background work is live",
@@ -950,6 +957,10 @@ const make = Effect.gen(function* () {
     return { threadId: startedSession.threadId, appliedRequestedSelection: true };
   });
 
+  /**
+   * Ensure a live session, then build the provider sendTurn request.
+   * Caches the turn's model selection only when ensureSession applied it.
+   */
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageText: string;
