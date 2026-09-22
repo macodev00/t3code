@@ -862,21 +862,20 @@ describe("providerMaintenanceRunner", () => {
       const result = yield* runner.updateProvider(CODEX_DRIVER);
 
       // On win32, resolveSpawnCommand resolves `npm` to the `.cmd` shim and
-      // routes the spawn through cmd.exe (shell: true), escaping every arg.
+      // routes the spawn through cmd.exe (`shell: true`). Escaped args are
+      // joined into the command string so Node is not given `shell: true`
+      // plus an args array (DEP0190).
       assert.strictEqual(captured.length, 1);
       const call = captured[0];
       assert.ok(call, "expected the spawner to be invoked once");
-      // The resolved command is the escaped `.cmd` path. Asserting the precise
-      // escaped string is brittle, so verify it carries the resolved shim and
-      // that shell mode was used.
-      assert.match(call.command, /npm\.cmd/i);
       assert.strictEqual(call.shell, true);
-      // Args are escaped for cmd.exe shell mode (each quoted) but still carry
-      // the original install command (`install -g @openai/codex@latest`) in order.
-      assert.strictEqual(call.args.length, 3);
-      assert.match(call.args[0] ?? "", /install/);
-      assert.match(call.args[1] ?? "", /-g/);
-      assert.match(call.args[2] ?? "", /@openai\/codex@latest/);
+      assert.deepStrictEqual(call.args, []);
+      assert.strictEqual(
+        call.command,
+        ['^"C:\\fake\\npm\\npm.cmd^"', '^"install^"', '^"-g^"', '^"@openai/codex@latest^"'].join(
+          " ",
+        ),
+      );
       assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
     }).pipe(
       Effect.provide(

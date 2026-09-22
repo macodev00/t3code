@@ -490,7 +490,7 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
     }),
   );
 
-  it.effect("escapes the executable and arguments for Windows command shims", () =>
+  it.effect("escapes Windows command shims into one shell command with no args array", () =>
     Effect.gen(function* () {
       const command = yield* resolveSpawnCommand(
         "vp",
@@ -504,15 +504,34 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
         ),
       );
 
-      expect(command.shell).toBe(true);
-      expect(command.command).not.toContain(" & ");
-      expect(command.command).toContain("^&");
-      expect(command.args).toEqual([
-        '^"run^"',
-        '^"value^ ^&^ calc^"',
-        '^"^%PATH^%^"',
-        '^"quote\\^"value^"',
-      ]);
+      expect(command).toEqual({
+        command: [
+          '^"C:\\Program^ Files\\npm^ ^&^ tools\\vp.cmd^"',
+          '^"run^"',
+          '^"value^ ^&^ calc^"',
+          '^"^%PATH^%^"',
+          '^"quote\\^"value^"',
+        ].join(" "),
+        args: [],
+        shell: true,
+      });
+    }),
+  );
+
+  it.effect("keeps a Windows batch shim with no arguments as one shell command", () =>
+    Effect.gen(function* () {
+      const command = yield* resolveSpawnCommand("tool", [], {
+        env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+      }).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(SpawnExecutableResolution, () => "C:\\Tools\\tool.bat"),
+      );
+
+      expect(command).toEqual({
+        command: '^"C:\\Tools\\tool.bat^"',
+        args: [],
+        shell: true,
+      });
     }),
   );
 

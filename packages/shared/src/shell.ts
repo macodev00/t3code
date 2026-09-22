@@ -49,11 +49,16 @@ export class CommandResolutionError extends Data.TaggedError("CommandResolutionE
 const WINDOWS_SHELL_META_CHARS = /([()\][%!^"`<>&|;, *?])/g;
 
 /**
- * Escapes a single argument for `cmd.exe` shell mode (`spawn(..., { shell: true })`
- * on Windows). Node joins the command and arguments with spaces and hands the
- * resulting string to `cmd.exe` without any quoting, so every dynamic argument
- * must be escaped to survive both cmd.exe parsing and the target program's
- * `CommandLineToArgvW` parsing. Mirrors cross-spawn's argument escaping.
+ * Escapes one token of a Windows `cmd.exe` command line.
+ *
+ * `spawn(command, { shell: true })` runs `cmd.exe /d /s /c "<command>"` and
+ * does not quote the pieces inside that string. Each token has to survive
+ * cmd.exe metacharacters and the target program's `CommandLineToArgvW`
+ * parsing. Mirrors cross-spawn's argument escaping.
+ *
+ * Callers must pass the joined command with an empty args array. Node emits
+ * DEP0190 when `shell: true` is combined with a non-empty args array, because
+ * it concatenates those args without escaping them.
  */
 function escapeWindowsShellArg(arg: string): string {
   // Double up backslashes that precede a double quote, then escape the quote
@@ -649,9 +654,13 @@ export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(functi
     return { command: resolvedCommand, args: [...args], shell: false };
   }
 
+  // Join escaped tokens here. `spawn(file, args, { shell: true })` with a
+  // non-empty args array is DEP0190: Node concatenates them unquoted. An empty
+  // args array keeps Node's own `cmd.exe /d /s /c "<command>"` line.
+  const escapedArgs = sanitizeShellModeArgsForPlatform(args, platform);
   return {
-    command: escapeWindowsShellArg(resolvedCommand),
-    args: sanitizeShellModeArgsForPlatform(args, platform),
+    command: [escapeWindowsShellArg(resolvedCommand), ...escapedArgs].join(" "),
+    args: [],
     shell: true,
   };
 });
