@@ -6,56 +6,47 @@ import { newlyTerminalRows } from "./agentActivityAlerts.ts";
 
 const MIN_LIVE_ACTIVITY_UPDATE_INTERVAL_MS = 15_000;
 
-/** True for approval and input phases that show lock-screen attention. */
-function isAttentionPhase(phase: RelayAgentActivityAggregateState["activities"][number]["phase"]) {
+/**
+ * True for approval and input phases that show lock-screen attention.
+ *
+ * @param phase - Activity phase
+ * @returns Whether the row needs user attention
+ */
+function isAttentionPhase(
+  phase: RelayAgentActivityAggregateState["activities"][number]["phase"],
+): boolean {
   return phase === "waiting_for_approval" || phase === "waiting_for_input";
 }
 
 /**
- * True when any activity is waiting for approval or input.
- *
- * @param aggregate - Current Live Activity aggregate
- * @returns Whether the lock screen should show an attention state
- */
-function aggregateNeedsAttention(aggregate: RelayAgentActivityAggregateState): boolean {
-  for (const row of aggregate.activities) {
-    if (isAttentionPhase(row.phase)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * True when attention appears or disappears, or a new thread starts waiting.
- * Timestamp and ordering churn on already-waiting rows is not a transition.
+ * True when the set of waiting threads changed.
+ * Timestamp and ordering churn on the same waiting rows is not a transition.
  *
  * @param previous - Aggregate already delivered to this Live Activity
  * @param next - Newly observed aggregate
- * @returns Whether lock-screen attention changed in a way that must publish
+ * @returns Whether attention appeared, disappeared, or moved to another thread
  */
 function aggregateHasAttentionTransition(
   previous: RelayAgentActivityAggregateState,
   next: RelayAgentActivityAggregateState,
 ): boolean {
-  if (aggregateNeedsAttention(previous) !== aggregateNeedsAttention(next)) {
-    return true;
-  }
   const previouslyAttention = new Set<string>();
   for (const row of previous.activities) {
     if (isAttentionPhase(row.phase)) {
       previouslyAttention.add(`${row.environmentId}\0${row.threadId}`);
     }
   }
+  let nextCount = 0;
   for (const row of next.activities) {
-    if (
-      isAttentionPhase(row.phase) &&
-      !previouslyAttention.has(`${row.environmentId}\0${row.threadId}`)
-    ) {
+    if (!isAttentionPhase(row.phase)) {
+      continue;
+    }
+    nextCount += 1;
+    if (!previouslyAttention.has(`${row.environmentId}\0${row.threadId}`)) {
       return true;
     }
   }
-  return false;
+  return nextCount !== previouslyAttention.size;
 }
 
 /**
@@ -123,8 +114,7 @@ export function shouldUpdateLiveActivity(input: {
     return true;
   }
   // Waiting already on the lock screen must stay throttled for timestamp and
-  // ordering churn. Exempt when attention appears or disappears, or a new
-  // thread starts waiting while another already was.
+  // ordering churn. Exempt when the waiting-thread set changes.
   if (aggregateHasAttentionTransition(input.previousAggregate, input.nextAggregate)) {
     return true;
   }
