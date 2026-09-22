@@ -198,6 +198,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     val previousSelectionEnd = editor.selectionEnd.coerceAtLeast(0)
     val valueChanged = editor.text.toString() != value
 
+    var selectionChanged = false
     applyingNativeValue = true
     try {
       if (valueChanged) {
@@ -206,13 +207,15 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
       tokensJson = nextTokensJson
       tokens = nextTokens
       applyTokenSpans()
-      if (requestedSelection != null) {
+      selectionChanged = if (requestedSelection != null) {
         applySelection(
           requestedSelection.optInt("start", previousSelectionStart),
           requestedSelection.optInt("end", previousSelectionEnd),
         )
       } else if (valueChanged) {
         applySelection(previousSelectionStart, previousSelectionEnd)
+      } else {
+        false
       }
     } finally {
       applyingNativeValue = false
@@ -220,7 +223,7 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     emitContentSizeIfNeeded()
     // Echo re-renders re-apply chip spans without changing text or caret.
     // Scrolling on those would yank a manual review scroll back to the caret.
-    if (valueChanged || requestedSelection != null) {
+    if (valueChanged || selectionChanged) {
       scrollCaretIntoView()
     }
   }
@@ -392,16 +395,17 @@ class T3ComposerEditorView(context: Context, appContext: AppContext) : ExpoView(
     applySelection(start, end)
   }
 
-  /** Set the editor selection and scroll the caret into view. */
-  private fun applySelection(start: Int, end: Int) {
+  /** Set the editor selection and scroll the caret if the normalized range moved. */
+  private fun applySelection(start: Int, end: Int): Boolean {
     val textLength = editor.text?.length ?: 0
     val safeStart = start.coerceIn(0, textLength)
     val safeEnd = end.coerceIn(0, textLength)
     // Re-applying an unchanged selection resets the keyboard's suggestion
     // state, so a no-op assignment must be skipped.
-    if (editor.selectionStart == safeStart && editor.selectionEnd == safeEnd) return
+    if (editor.selectionStart == safeStart && editor.selectionEnd == safeEnd) return false
     editor.setSelection(safeStart, safeEnd)
     scrollCaretIntoView()
+    return true
   }
 
   /** Apply autocorrect and spell-check flags to the editor input type. */
