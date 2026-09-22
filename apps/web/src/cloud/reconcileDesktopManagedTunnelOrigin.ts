@@ -72,14 +72,17 @@ export function startDesktopManagedTunnelOriginReconcile(input: {
   let cancelled = false;
   let retryTimer: unknown = null;
 
+  /** True after the returned cancel function has run. */
   const isCancelled = () => cancelled;
 
+  /** Clears any pending retry timer. */
   const clearTimer = () => {
     if (retryTimer === null) return;
     clearTimeoutFn(retryTimer);
     retryTimer = null;
   };
 
+  /** Schedules the next attempt after backoff, or stops when the bound is exhausted. */
   const scheduleRetry = () => {
     const waitMs = delayMs(attempt);
     if (waitMs === null) return;
@@ -89,6 +92,7 @@ export function startDesktopManagedTunnelOriginReconcile(input: {
     }, waitMs);
   };
 
+  /** Runs one re-registration attempt and schedules a retry on failure. */
   const run = async () => {
     if (cancelled) return;
     attempt += 1;
@@ -99,6 +103,7 @@ export function startDesktopManagedTunnelOriginReconcile(input: {
 
   void run();
 
+  /** Cancels in-flight retries so unmount or key change does not re-register. */
   return () => {
     cancelled = true;
     clearTimer();

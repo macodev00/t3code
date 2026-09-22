@@ -92,6 +92,7 @@ describe("desktopManagedTunnelOriginReconcileRetryDelayMs", () => {
 });
 
 describe("startDesktopManagedTunnelOriginReconcile", () => {
+  /** Controllable timers and attempt resolvers for reconcile retry tests. */
   function createHarness() {
     type AttemptResult = "success" | "failure";
     const resolvers: Array<(result: AttemptResult) => void> = [];
@@ -114,9 +115,11 @@ describe("startDesktopManagedTunnelOriginReconcile", () => {
       },
     });
 
+    /** Delay values for timers that have not been cleared. */
     const pendingDelays = () =>
       [...timers.values()].filter((timer) => !timer.cancelled).map((timer) => timer.delayMs);
 
+    /** Resolves the latest pending attempt and flushes microtasks. */
     const resolveLatest = async (result: AttemptResult) => {
       const resolve = resolvers.at(-1);
       expect(resolve).toBeDefined();
@@ -124,6 +127,7 @@ describe("startDesktopManagedTunnelOriginReconcile", () => {
       await Promise.resolve();
     };
 
+    /** Fires the next uncleared timer callback and flushes microtasks. */
     const fireNextTimer = async () => {
       const timer = [...timers.values()].find((entry) => !entry.cancelled);
       expect(timer).toBeDefined();
@@ -138,6 +142,7 @@ describe("startDesktopManagedTunnelOriginReconcile", () => {
       pendingDelays,
       resolveLatest,
       fireNextTimer,
+      /** Number of attempt promises created so far. */
       attemptCount: () => resolvers.length,
     };
   }
