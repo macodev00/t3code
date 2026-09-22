@@ -224,18 +224,21 @@ try {
 
 const executable = join(packageDir, process.platform === "win32" ? "t3.exe" : "t3");
 const result = spawnSync(executable, process.argv.slice(2), { stdio: "inherit" });
+const linuxHint = ${JSON.stringify(linuxCliExecFormatErrorHint + "\n")};
+const exitAfterWrite = (code, extra) => {
+  if (extra) process.stderr.write(extra, () => process.exit(code));
+  else process.exit(code);
+};
 if (result.error) {
   process.stderr.write("t3: failed to start " + executable + ": " + result.error.message + "\\n");
-  if (process.platform === "linux" && result.error.code === "ENOEXEC") {
-    process.stderr.write(${JSON.stringify(linuxCliExecFormatErrorHint + "\n")});
-  }
-  process.exit(1);
+  exitAfterWrite(1, process.platform === "linux" && result.error.code === "ENOEXEC" ? linuxHint : undefined);
+} else {
+  // A child killed by a signal has no status; report it the way a shell would.
+  exitAfterWrite(
+    result.status ?? 128 + (constants.signals[result.signal] || 1),
+    process.platform === "linux" && result.status === 126 ? linuxHint : undefined,
+  );
 }
-if (process.platform === "linux" && result.status === 126) {
-  process.stderr.write(${JSON.stringify(linuxCliExecFormatErrorHint + "\n")});
-}
-// A child killed by a signal has no status; report it the way a shell would.
-process.exit(result.status ?? 128 + (constants.signals[result.signal] || 1));
 `;
 
 const runCommand = Effect.fn("runCommand")(function* (

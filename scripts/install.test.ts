@@ -116,7 +116,8 @@ describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer termi
   it("hints at UEK8 when the extracted executable cannot exec", async () => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-enoexec-"));
     const version = "1.2.3";
-    const stem = `t3-${version}-linux-${HostProcessArchitecture.defaultValue()}`;
+    const installerPlatform = HostProcessPlatform.defaultValue() === "darwin" ? "darwin" : "linux";
+    const stem = `t3-${version}-${installerPlatform}-${HostProcessArchitecture.defaultValue()}`;
     const archiveName = `${stem}.tar.gz`;
     await NodeFSP.mkdir(NodePath.join(root, stem));
     const elf = Buffer.alloc(64);
