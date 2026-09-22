@@ -1948,6 +1948,119 @@ function subscribeThreadFeedIsAtEnd(
   return listState.listen("isAtEnd", onIsAtEndChange);
 }
 
+/** Re-arm live-follow from LegendList exact-end and near-end flags while scrolling. */
+function handleThreadFeedScroll(input: {
+  readonly event: NativeSyntheticEvent<NativeScrollEvent>;
+  readonly listRef: RefObject<LegendListRef | null>;
+  readonly userScrollSessionRef: { current: boolean };
+  readonly anchorTopInset: number;
+  readonly reportHeaderMaterialVisibility: (visible: boolean) => void;
+  readonly transitionEndFollow: (event: ThreadFeedLiveFollowEvent) => void;
+}) {
+  // anchorTopInset, not topContentInset: under automatic insets the list
+  // rests at contentOffset.y = -headerHeight (the inset lives only in
+  // UIKit's adjustedContentInset, so topContentInset is 0 here). Add the
+  // header height back or the material toggles a full header too late.
+  input.reportHeaderMaterialVisibility(
+    input.event.nativeEvent.contentOffset.y + input.anchorTopInset > 6,
+  );
+  // LegendList recomputes its inset-aware end distance before invoking
+  // this handler, so getState() is current. Follow re-arms at the actual
+  // end or anywhere inside LegendList's maintain-at-end tolerance: a swipe
+  // back to the live edge usually rests a few pixels short of the exact
+  // end, in space the end inset covers, and the strict test would leave
+  // the scroll-to-end control stuck visible. A live user-scroll session
+  // still wins even if the first scroll event remains inside LegendList's
+  // at-end tolerance, so a streaming chunk cannot pull a drag back.
+  const listState = input.listRef.current?.getState();
+  if (listState) {
+    input.transitionEndFollow({
+      type: "scroll",
+      ...readThreadFeedEndState(listState),
+      userScrollSessionActive: input.userScrollSessionRef.current,
+    });
+  }
+}
+
+/** End a user-scroll session using the finger-release end position, not later stream growth. */
+function finishThreadFeedUserScroll(input: {
+  readonly release?: { readonly isAtEnd: boolean; readonly nearEnd: boolean };
+  readonly listRef: RefObject<LegendListRef | null>;
+  readonly userScrollSessionRef: { current: boolean };
+  readonly clearUserScrollSettle: () => void;
+  readonly transitionEndFollow: (event: ThreadFeedLiveFollowEvent) => void;
+}) {
+  input.clearUserScrollSettle();
+  const userScrollSessionActive = input.userScrollSessionRef.current;
+  input.userScrollSessionRef.current = false;
+  const fallback = readThreadFeedEndState(input.listRef.current?.getState());
+  input.transitionEndFollow({
+    type: "user-scroll-end",
+    // With no momentum, preserve the finger-release position (at or within
+    // the re-arm tolerance of the live edge). Streaming growth during the
+    // native momentum-detection window must not turn a release at the live
+    // edge into an opt-out from follow, or a release away from it into an
+    // opt-in.
+    isAtEnd: input.release?.isAtEnd ?? fallback.isAtEnd,
+    nearEnd: input.release?.nearEnd ?? fallback.nearEnd,
+    userScrollSessionActive,
+  });
+}
+
+/** Snapshot the finger-release end position in case native momentum never starts. */
+function scheduleThreadFeedUserScrollFinish(input: {
+  readonly listRef: RefObject<LegendListRef | null>;
+  readonly userScrollSettleTimerRef: { current: ReturnType<typeof setTimeout> | null };
+  readonly finishUserScroll: (release: {
+    readonly isAtEnd: boolean;
+    readonly nearEnd: boolean;
+  }) => void;
+  readonly clearUserScrollSettle: () => void;
+}) {
+  input.clearUserScrollSettle();
+  const release = readThreadFeedEndState(input.listRef.current?.getState());
+  input.userScrollSettleTimerRef.current = setTimeout(() => input.finishUserScroll(release), 160);
+}
+
+/** After disclosure row resize, report exact-end and reconcile live-follow. */
+function settleThreadFeedDisclosureAfterLayout(input: {
+  readonly listRef: RefObject<LegendListRef | null>;
+  readonly userScrollSessionRef: { current: boolean };
+  readonly disclosureSettleFrameRef: { current: number | null };
+  readonly disclosureSettleSecondFrameRef: { current: number | null };
+  readonly disclosureAnchorKeyRef: { current: string | null };
+  readonly onIsAtEndChange?: (isAtEnd: boolean) => void;
+  readonly transitionEndFollow: (event: ThreadFeedLiveFollowEvent) => void;
+  readonly setDisclosureToggleSettling: (value: boolean) => void;
+}) {
+  if (input.disclosureSettleFrameRef.current !== null) {
+    cancelAnimationFrame(input.disclosureSettleFrameRef.current);
+  }
+  if (input.disclosureSettleSecondFrameRef.current !== null) {
+    cancelAnimationFrame(input.disclosureSettleSecondFrameRef.current);
+  }
+  input.disclosureSettleFrameRef.current = requestAnimationFrame(() => {
+    input.disclosureSettleSecondFrameRef.current = requestAnimationFrame(() => {
+      // A disclosure can leave the reader above the end without a drag.
+      // Reconcile follow before a later layout or resume can re-pin it.
+      const listState = input.listRef.current?.getState();
+      if (listState) {
+        // Row resizing can change the end without notifying the edge subscription.
+        input.onIsAtEndChange?.(listState.isAtEnd);
+        input.transitionEndFollow({
+          type: "disclosure-settled",
+          isAtEnd: listState.isAtEnd,
+          userScrollSessionActive: input.userScrollSessionRef.current,
+        });
+      }
+      input.disclosureAnchorKeyRef.current = null;
+      input.setDisclosureToggleSettling(false);
+      input.disclosureSettleFrameRef.current = null;
+      input.disclosureSettleSecondFrameRef.current = null;
+    });
+  });
+}
+
 /** Empty-state placeholder shown while the transcript has nothing to virtualize. */
 function ThreadFeedPlaceholder(props: {
   readonly bottomInset: number;
@@ -2359,30 +2472,17 @@ function ThreadFeedView(props: ThreadFeedProps) {
     },
     [props.onHeaderMaterialVisibilityChange],
   );
+  /** Re-arm live-follow from LegendList exact-end and near-end flags while scrolling. */
   const handleScroll = useCallback(
-    /** Re-arm live-follow from LegendList exact-end and near-end flags while scrolling. */
-    function handleScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
-      // anchorTopInset, not topContentInset: under automatic insets the list
-      // rests at contentOffset.y = -headerHeight (the inset lives only in
-      // UIKit's adjustedContentInset, so topContentInset is 0 here). Add the
-      // header height back or the material toggles a full header too late.
-      reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
-      // LegendList recomputes its inset-aware end distance before invoking
-      // this handler, so getState() is current. Follow re-arms at the actual
-      // end or anywhere inside LegendList's maintain-at-end tolerance: a swipe
-      // back to the live edge usually rests a few pixels short of the exact
-      // end, in space the end inset covers, and the strict test would leave
-      // the scroll-to-end control stuck visible. A live user-scroll session
-      // still wins even if the first scroll event remains inside LegendList's
-      // at-end tolerance, so a streaming chunk cannot pull a drag back.
-      const listState = props.listRef.current?.getState();
-      if (listState) {
-        transitionEndFollow({
-          type: "scroll",
-          ...readThreadFeedEndState(listState),
-          userScrollSessionActive: userScrollSessionRef.current,
-        });
-      }
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      handleThreadFeedScroll({
+        event,
+        listRef: props.listRef,
+        userScrollSessionRef,
+        anchorTopInset,
+        reportHeaderMaterialVisibility,
+        transitionEndFollow,
+      });
     },
     [reportHeaderMaterialVisibility, anchorTopInset, props.listRef, transitionEndFollow],
   );
@@ -2399,23 +2499,15 @@ function ThreadFeedView(props: ThreadFeedProps) {
     // maintainScrollAtEnd between touch-down and the drag leaving its threshold.
     transitionEndFollow({ type: "user-scroll-begin" });
   }, [clearUserScrollSettle, transitionEndFollow]);
+  /** End a user-scroll session using the finger-release end position, not later stream growth. */
   const finishUserScroll = useCallback(
-    /** End a user-scroll session using the finger-release end position, not later stream growth. */
-    function finishUserScroll(release?: { readonly isAtEnd: boolean; readonly nearEnd: boolean }) {
-      clearUserScrollSettle();
-      const userScrollSessionActive = userScrollSessionRef.current;
-      userScrollSessionRef.current = false;
-      const fallback = readThreadFeedEndState(props.listRef.current?.getState());
-      transitionEndFollow({
-        type: "user-scroll-end",
-        // With no momentum, preserve the finger-release position (at or within
-        // the re-arm tolerance of the live edge). Streaming growth during the
-        // native momentum-detection window must not turn a release at the live
-        // edge into an opt-out from follow, or a release away from it into an
-        // opt-in.
-        isAtEnd: release?.isAtEnd ?? fallback.isAtEnd,
-        nearEnd: release?.nearEnd ?? fallback.nearEnd,
-        userScrollSessionActive,
+    (release?: { readonly isAtEnd: boolean; readonly nearEnd: boolean }) => {
+      finishThreadFeedUserScroll({
+        release,
+        listRef: props.listRef,
+        userScrollSessionRef,
+        clearUserScrollSettle,
+        transitionEndFollow,
       });
     },
     [clearUserScrollSettle, props.listRef, transitionEndFollow],
@@ -2425,15 +2517,15 @@ function ThreadFeedView(props: ThreadFeedProps) {
   // to announce itself; if it does, onMomentumScrollBegin cancels this fallback
   // and the session survives until the settled momentum-end position. This
   // mirrors the native-event handoff used by the home thread list's scroll gate.
-  const handleScrollEndDrag = useCallback(
-    /** Snapshot the finger-release end position in case native momentum never starts. */
-    function handleScrollEndDrag() {
-      clearUserScrollSettle();
-      const release = readThreadFeedEndState(props.listRef.current?.getState());
-      userScrollSettleTimerRef.current = setTimeout(() => finishUserScroll(release), 160);
-    },
-    [clearUserScrollSettle, finishUserScroll, props.listRef],
-  );
+  /** Snapshot the finger-release end position in case native momentum never starts. */
+  const handleScrollEndDrag = useCallback(() => {
+    scheduleThreadFeedUserScrollFinish({
+      listRef: props.listRef,
+      userScrollSettleTimerRef,
+      finishUserScroll,
+      clearUserScrollSettle,
+    });
+  }, [clearUserScrollSettle, finishUserScroll, props.listRef]);
   const handleMomentumScrollBegin = useCallback(() => {
     if (userScrollSessionRef.current) {
       clearUserScrollSettle();
@@ -2594,38 +2686,19 @@ function ThreadFeedView(props: ThreadFeedProps) {
     };
   }, []);
 
-  const settleDisclosureAfterLayout = useCallback(
-    /** After disclosure row resize, report exact-end and reconcile live-follow. */
-    function settleDisclosureAfterLayout() {
-      if (disclosureSettleFrameRef.current !== null) {
-        cancelAnimationFrame(disclosureSettleFrameRef.current);
-      }
-      if (disclosureSettleSecondFrameRef.current !== null) {
-        cancelAnimationFrame(disclosureSettleSecondFrameRef.current);
-      }
-      disclosureSettleFrameRef.current = requestAnimationFrame(() => {
-        disclosureSettleSecondFrameRef.current = requestAnimationFrame(() => {
-          // A disclosure can leave the reader above the end without a drag.
-          // Reconcile follow before a later layout or resume can re-pin it.
-          const listState = props.listRef.current?.getState();
-          if (listState) {
-            // Row resizing can change the end without notifying the edge subscription.
-            props.onIsAtEndChange?.(listState.isAtEnd);
-            transitionEndFollow({
-              type: "disclosure-settled",
-              isAtEnd: listState.isAtEnd,
-              userScrollSessionActive: userScrollSessionRef.current,
-            });
-          }
-          disclosureAnchorKeyRef.current = null;
-          setDisclosureToggleSettling(false);
-          disclosureSettleFrameRef.current = null;
-          disclosureSettleSecondFrameRef.current = null;
-        });
-      });
-    },
-    [props.listRef, props.onIsAtEndChange, transitionEndFollow],
-  );
+  /** After disclosure row resize, report exact-end and reconcile live-follow. */
+  const settleDisclosureAfterLayout = useCallback(() => {
+    settleThreadFeedDisclosureAfterLayout({
+      listRef: props.listRef,
+      userScrollSessionRef,
+      disclosureSettleFrameRef,
+      disclosureSettleSecondFrameRef,
+      disclosureAnchorKeyRef,
+      onIsAtEndChange: props.onIsAtEndChange,
+      transitionEndFollow,
+      setDisclosureToggleSettling,
+    });
+  }, [props.listRef, props.onIsAtEndChange, transitionEndFollow]);
 
   const suspendEndScrollMaintenanceForDisclosure = useCallback((anchorKey: string | null) => {
     disclosureAnchorKeyRef.current = anchorKey;
