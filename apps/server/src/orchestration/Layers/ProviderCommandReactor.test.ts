@@ -3511,6 +3511,201 @@ describe("ProviderCommandReactor", () => {
     expect(recoveredThread?.session?.runtimeMode).toBe("approval-required");
   });
 
+  it("does not send a turn when a blocked runtime-mode replacement leaves the live session in place", async () => {
+    let blockRuntimeModeReplacement = false;
+    const harness = await createHarness({
+      startSessionEffect: (session) => {
+        if (blockRuntimeModeReplacement && session.runtimeMode === "approval-required") {
+          return Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: session.provider,
+              method: "startSession",
+              detail:
+                "Claude session replacement is blocked: 1 live task(s) are still running. Retry after background work finishes.",
+            }),
+          );
+        }
+        return Effect.succeed(session);
+      },
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-blocked-full-access"),
+        threadId,
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-runtime-mode-blocked-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-runtime-mode-blocked-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.runtimeSessions[0]?.runtimeMode).toBe("full-access");
+
+    blockRuntimeModeReplacement = true;
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-blocked-approval-required"),
+        threadId,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    await harness.drain();
+
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    expect(harness.runtimeSessions).toHaveLength(1);
+    expect(harness.runtimeSessions[0]?.runtimeMode).toBe("full-access");
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-runtime-mode-blocked-2"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-runtime-mode-blocked-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+        false
+      );
+    });
+
+    expect(harness.startSession.mock.calls.length).toBe(3);
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    expect(harness.runtimeSessions[0]?.runtimeMode).toBe("full-access");
+
+    const poisoned = await harness.readModel();
+    const poisonedThread = poisoned.threads.find((entry) => entry.id === threadId);
+    expect(poisonedThread?.runtimeMode).toBe("approval-required");
+    expect(poisonedThread?.session?.runtimeMode).toBe("full-access");
+
+    harness.threadBackgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "task-live",
+      taskType: "local_agent",
+      status: "in_progress",
+      kind: "started",
+    });
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-runtime-mode-blocked-3"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-runtime-mode-blocked-3"),
+          role: "user",
+          text: "third",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.filter((activity) => activity.kind === "provider.turn.start.failed")
+          .length === 2
+      );
+    });
+
+    expect(harness.startSession.mock.calls.length).toBe(3);
+    expect(harness.sendTurn.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+
+    const blocked = await harness.readModel();
+    const blockedThread = blocked.threads.find((entry) => entry.id === threadId);
+    expect(blockedThread?.activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "provider.turn.start.failed",
+          payload: expect.objectContaining({
+            detail: expect.stringContaining("cannot apply runtime mode 'approval-required'"),
+          }),
+        }),
+      ]),
+    );
+    expect(blockedThread?.session?.runtimeMode).toBe("full-access");
+    expect(harness.runtimeSessions[0]?.runtimeMode).toBe("full-access");
+
+    blockRuntimeModeReplacement = false;
+    harness.threadBackgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "task-live",
+      taskType: "local_agent",
+      status: "completed",
+      kind: "completed",
+    });
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-runtime-mode-blocked-4"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-runtime-mode-blocked-4"),
+          role: "user",
+          text: "fourth",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 4);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[3]?.[1]).toMatchObject({
+      threadId,
+      runtimeMode: "approval-required",
+    });
+
+    const recovered = await harness.readModel();
+    const recoveredThread = recovered.threads.find((entry) => entry.id === threadId);
+    expect(recoveredThread?.session?.runtimeMode).toBe("approval-required");
+  });
+
   it("reuses a live claude session when provider options change during background work", async () => {
     const harness = await createHarness({
       threadModelSelection: {

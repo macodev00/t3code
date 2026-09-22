@@ -138,6 +138,18 @@ export function providerErrorLabelFromInstanceHint(input: {
 
 type ThreadBackgroundLivenessState = "working" | "monitoring" | null | undefined;
 
+/**
+ * Mode the live provider process was started with.
+ * Pending turn startup rewrites the orchestration session to the requested mode
+ * before startSession applies it, so that record cannot gate permissions.
+ */
+function appliedLiveRuntimeMode(input: {
+  readonly providerRuntimeMode: RuntimeMode | undefined;
+  readonly sessionRuntimeMode: RuntimeMode | undefined;
+}): RuntimeMode | undefined {
+  return input.providerRuntimeMode ?? input.sessionRuntimeMode;
+}
+
 /** Reject a runtime-mode replacement while projected background work is still live. */
 function shouldRejectRuntimeModeReplacementWhileLive(input: {
   readonly activeRuntimeMode: RuntimeMode | undefined;
@@ -695,19 +707,17 @@ const make = Effect.gen(function* () {
       });
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
-    if (
-      shouldRejectRuntimeModeReplacementWhileLive({
-        activeRuntimeMode: activeThreadSession?.runtimeMode,
-        desiredRuntimeMode,
-        backgroundLiveness: thread.backgroundLiveness,
-      })
-    ) {
+    const appliedRuntimeMode = appliedLiveRuntimeMode({
+      providerRuntimeMode: activeSession?.runtimeMode,
+      sessionRuntimeMode: activeThreadSession?.runtimeMode,
+    });
+    const rejectRuntimeModeReplacementWhileLive = Effect.fnUntraced(function* () {
       yield* Effect.logWarning(
         "provider command reactor rejecting runtime-mode replacement while background work is live",
         {
           threadId,
           backgroundLiveness: thread.backgroundLiveness,
-          currentRuntimeMode: activeThreadSession?.runtimeMode,
+          currentRuntimeMode: appliedRuntimeMode,
           desiredRuntimeMode,
         },
       );
@@ -716,6 +726,15 @@ const make = Effect.gen(function* () {
         method: "thread.turn.start",
         detail: `Thread '${threadId}' cannot apply runtime mode '${desiredRuntimeMode}' while background work is live. Wait for background tasks to finish, then retry.`,
       });
+    });
+    if (
+      shouldRejectRuntimeModeReplacementWhileLive({
+        activeRuntimeMode: appliedRuntimeMode,
+        desiredRuntimeMode,
+        backgroundLiveness: thread.backgroundLiveness,
+      })
+    ) {
+      return yield* rejectRuntimeModeReplacementWhileLive();
     }
     if (options?.pendingTurnStart === true && thread.session?.status !== "running") {
       yield* setThreadSession({
@@ -725,7 +744,9 @@ const make = Effect.gen(function* () {
           status: "starting",
           providerName: activeSession?.provider ?? preferredProvider,
           providerInstanceId: activeSession?.providerInstanceId ?? desiredInstanceId,
-          runtimeMode: desiredRuntimeMode,
+          // Keep the mode the live process actually has. Writing desiredRuntimeMode
+          // here makes the next turn look unchanged after a blocked replacement.
+          runtimeMode: activeSession?.runtimeMode ?? desiredRuntimeMode,
           activeTurnId: null,
           lastError: null,
           updatedAt: createdAt,
@@ -830,7 +851,7 @@ const make = Effect.gen(function* () {
     const existingSessionThreadId =
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
     if (existingSessionThreadId) {
-      const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
+      const runtimeModeChanged = appliedRuntimeMode !== desiredRuntimeMode;
       const cwdChanged = effectiveCwd !== activeSession?.cwd;
       const sessionModelSwitch = (yield* providerService.getCapabilities(desiredInstanceId))
         .sessionModelSwitch;
@@ -864,10 +885,13 @@ const make = Effect.gen(function* () {
         return { threadId: existingSessionThreadId, appliedRequestedSelection: true };
       }
 
-      // Runtime-mode changes are rejected above: sendTurn keeps the
-      // startSession permission callback, so a stale bypassPermissions
-      // session must not be treated as ready.
+      // sendTurn keeps the startSession permission callback. Never hand back
+      // the live process when the requested runtime mode is not the one it
+      // was started with, even if the orchestration session record matches.
       if (shouldDeferProviderSessionRestartWhileLive(thread.backgroundLiveness)) {
+        if (runtimeModeChanged) {
+          return yield* rejectRuntimeModeReplacementWhileLive();
+        }
         yield* Effect.logWarning(
           "provider command reactor deferring provider session restart while background work is live",
           {
@@ -894,7 +918,7 @@ const make = Effect.gen(function* () {
         currentInstanceId,
         desiredInstanceId,
         desiredProvider: desiredModelSelection.instanceId,
-        currentRuntimeMode: thread.session?.runtimeMode,
+        currentRuntimeMode: appliedRuntimeMode,
         desiredRuntimeMode: thread.runtimeMode,
         runtimeModeChanged,
         previousCwd: activeSession?.cwd,
