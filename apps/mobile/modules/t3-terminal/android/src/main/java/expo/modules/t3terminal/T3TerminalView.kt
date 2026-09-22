@@ -19,6 +19,10 @@ import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import kotlin.math.max
 
+/**
+ * Native terminal view. The hidden IME EditText captures keystrokes and must
+ * not be classified as a password field, or autofill services hijack focus.
+ */
 class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   private val container = FrameLayout(context)
   private val terminalCanvas = TerminalCanvasView(context)
@@ -211,6 +215,7 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     if (changed) emitResize()
   }
 
+  /** Release native terminal state and detach input and canvas listeners. */
   fun cleanup() {
     if (isCleanedUp) return
     isCleanedUp = true
@@ -287,8 +292,10 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     }
     inputView.addTextChangedListener(
       object : TextWatcher {
+        /** No-op; keystrokes are forwarded from [onTextChanged]. */
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
 
+        /** Forward inserted characters to the terminal, ignoring the echo we then clear. */
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
           if (clearingInput || s == null || count <= 0) return
           val end = (start + count).coerceAtMost(s.length)
@@ -299,6 +306,7 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
           }
         }
 
+        /** Clear the hidden field after each insert so it never looks like a password form. */
         override fun afterTextChanged(editable: Editable?) {
           if (clearingInput || editable.isNullOrEmpty()) return
           clearingInput = true
