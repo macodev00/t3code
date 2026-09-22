@@ -1978,7 +1978,7 @@ function ThreadFeedPlaceholder(props: {
 }
 
 /** Virtualized transcript that reports live-edge position for the scroll-to-end control. */
-export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
+function ThreadFeedView(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2359,7 +2359,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [props.onHeaderMaterialVisibilityChange],
   );
   const handleScroll = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    /** Re-arm live-follow from LegendList exact-end and near-end flags while scrolling. */
+    function handleScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
       // anchorTopInset, not topContentInset: under automatic insets the list
       // rests at contentOffset.y = -headerHeight (the inset lives only in
       // UIKit's adjustedContentInset, so topContentInset is 0 here). Add the
@@ -2397,8 +2398,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     // maintainScrollAtEnd between touch-down and the drag leaving its threshold.
     transitionEndFollow({ type: "user-scroll-begin" });
   }, [clearUserScrollSettle, transitionEndFollow]);
-  /** End a user-scroll session using the finger-release end position, not later stream growth. */
   const finishUserScroll = useCallback(
+    /** End a user-scroll session using the finger-release end position, not later stream growth. */
     function finishUserScroll(release?: { readonly isAtEnd: boolean; readonly nearEnd: boolean }) {
       clearUserScrollSettle();
       const userScrollSessionActive = userScrollSessionRef.current;
@@ -2423,11 +2424,15 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // to announce itself; if it does, onMomentumScrollBegin cancels this fallback
   // and the session survives until the settled momentum-end position. This
   // mirrors the native-event handoff used by the home thread list's scroll gate.
-  const handleScrollEndDrag = useCallback(() => {
-    clearUserScrollSettle();
-    const release = readThreadFeedEndState(props.listRef.current?.getState());
-    userScrollSettleTimerRef.current = setTimeout(() => finishUserScroll(release), 160);
-  }, [clearUserScrollSettle, finishUserScroll, props.listRef]);
+  const handleScrollEndDrag = useCallback(
+    /** Snapshot the finger-release end position in case native momentum never starts. */
+    function handleScrollEndDrag() {
+      clearUserScrollSettle();
+      const release = readThreadFeedEndState(props.listRef.current?.getState());
+      userScrollSettleTimerRef.current = setTimeout(() => finishUserScroll(release), 160);
+    },
+    [clearUserScrollSettle, finishUserScroll, props.listRef],
+  );
   const handleMomentumScrollBegin = useCallback(() => {
     if (userScrollSessionRef.current) {
       clearUserScrollSettle();
@@ -2588,34 +2593,38 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     };
   }, []);
 
-  const settleDisclosureAfterLayout = useCallback(() => {
-    if (disclosureSettleFrameRef.current !== null) {
-      cancelAnimationFrame(disclosureSettleFrameRef.current);
-    }
-    if (disclosureSettleSecondFrameRef.current !== null) {
-      cancelAnimationFrame(disclosureSettleSecondFrameRef.current);
-    }
-    disclosureSettleFrameRef.current = requestAnimationFrame(() => {
-      disclosureSettleSecondFrameRef.current = requestAnimationFrame(() => {
-        // A disclosure can leave the reader above the end without a drag.
-        // Reconcile follow before a later layout or resume can re-pin it.
-        const listState = props.listRef.current?.getState();
-        if (listState) {
-          // Row resizing can change the end without notifying the edge subscription.
-          props.onIsAtEndChange?.(listState.isAtEnd);
-          transitionEndFollow({
-            type: "disclosure-settled",
-            isAtEnd: listState.isAtEnd,
-            userScrollSessionActive: userScrollSessionRef.current,
-          });
-        }
-        disclosureAnchorKeyRef.current = null;
-        setDisclosureToggleSettling(false);
-        disclosureSettleFrameRef.current = null;
-        disclosureSettleSecondFrameRef.current = null;
+  const settleDisclosureAfterLayout = useCallback(
+    /** After disclosure row resize, report exact-end and reconcile live-follow. */
+    function settleDisclosureAfterLayout() {
+      if (disclosureSettleFrameRef.current !== null) {
+        cancelAnimationFrame(disclosureSettleFrameRef.current);
+      }
+      if (disclosureSettleSecondFrameRef.current !== null) {
+        cancelAnimationFrame(disclosureSettleSecondFrameRef.current);
+      }
+      disclosureSettleFrameRef.current = requestAnimationFrame(() => {
+        disclosureSettleSecondFrameRef.current = requestAnimationFrame(() => {
+          // A disclosure can leave the reader above the end without a drag.
+          // Reconcile follow before a later layout or resume can re-pin it.
+          const listState = props.listRef.current?.getState();
+          if (listState) {
+            // Row resizing can change the end without notifying the edge subscription.
+            props.onIsAtEndChange?.(listState.isAtEnd);
+            transitionEndFollow({
+              type: "disclosure-settled",
+              isAtEnd: listState.isAtEnd,
+              userScrollSessionActive: userScrollSessionRef.current,
+            });
+          }
+          disclosureAnchorKeyRef.current = null;
+          setDisclosureToggleSettling(false);
+          disclosureSettleFrameRef.current = null;
+          disclosureSettleSecondFrameRef.current = null;
+        });
       });
-    });
-  }, [props.listRef, props.onIsAtEndChange, transitionEndFollow]);
+    },
+    [props.listRef, props.onIsAtEndChange, transitionEndFollow],
+  );
 
   const suspendEndScrollMaintenanceForDisclosure = useCallback((anchorKey: string | null) => {
     disclosureAnchorKeyRef.current = anchorKey;
@@ -3059,4 +3068,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       </View>
     </PresentationSource>
   );
-});
+}
+
+export const ThreadFeed = memo(ThreadFeedView);
+ThreadFeed.displayName = "ThreadFeed";
