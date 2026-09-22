@@ -89,15 +89,12 @@ export function resolveThreadActionProjectRef(
   return context.defaultProjectRef;
 }
 
-// New Chat must not wait on a down host. Keep the requested checkout when
-// that environment can serve — including the active worktree, which is its
-// own physical member. Otherwise use a reachable sibling from the same
-// logical group.
-//
-// The logical key comes from the physical-to-logical map. Deriving it from
-// the requested row alone misses a stale or unidentified duplicate whose
-// repository identity lives on a newer row, so the reachable sibling never
-// matches.
+/**
+ * Picks a reachable New Chat target: keep the requested checkout when that host
+ * can serve, otherwise a sibling from the same logical group. The logical key
+ * comes from the physical-to-logical map so a stale or unidentified row still
+ * finds its identified duplicate.
+ */
 export function resolveAvailableNewThreadProjectRef(input: {
   requested: ScopedProjectRef;
   projects: ReadonlyArray<EnvironmentProject>;
@@ -148,9 +145,7 @@ export function resolveAvailableNewThreadProjectRef(input: {
     : scopeProjectRef(selected.project.environmentId, selected.project.id);
 }
 
-// A branch or worktree path belongs to the requested host. Drop those fields
-// when New Chat moves to a different environment; keep them for another
-// checkout on the same host.
+/** Drops branch and worktree path when New Chat retargets to a different environment. */
 export function resolveWorkspaceOptionsAfterEnvironmentRetarget<
   TOptions extends {
     branch?: string | null;

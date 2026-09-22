@@ -26,6 +26,7 @@ import { newDraftId, newThreadId } from "../lib/utils";
 import { orderItemsByPreferredIds } from "../components/Sidebar.logic";
 import {
   deriveLogicalProjectKeyFromSettings,
+  derivePhysicalProjectKey,
   getProjectOrderKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
@@ -53,9 +54,7 @@ interface NewThreadWorkspaceOptions {
   startFromOrigin?: boolean;
 }
 
-// The workspace options the caller passed explicitly, shaped for the draft
-// store: absent keys stay absent so they never overwrite existing draft
-// state. Every reuse path applies exactly this set.
+/** Copies only workspace fields the caller passed so reuse cannot clobber stored draft state. */
 function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undefined) {
   return {
     ...(options?.branch !== undefined ? { branch: options.branch } : {}),
@@ -65,6 +64,7 @@ function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undef
   };
 }
 
+/** Opens New Chat on a reachable copy of the requested project, reusing an empty mapped draft. */
 export function useNewThreadHandler() {
   const environmentServerConfigs = useAtomValue(environmentServerConfigsAtom);
   const { environments } = useEnvironments();
@@ -96,15 +96,16 @@ export function useNewThreadHandler() {
           environments.find((environment) => environment.environmentId === environmentId)
             ?.connection.phase,
         );
+      const logicalKeyByPhysicalKey = buildPhysicalToLogicalProjectKeyMap({
+        projects,
+        settings: projectGroupingSettings,
+        primaryEnvironmentId,
+      });
       const projectRef = resolveAvailableNewThreadProjectRef({
         requested: requestedProjectRef,
         projects,
         settings: projectGroupingSettings,
-        logicalKeyByPhysicalKey: buildPhysicalToLogicalProjectKeyMap({
-          projects,
-          settings: projectGroupingSettings,
-          primaryEnvironmentId,
-        }),
+        logicalKeyByPhysicalKey,
         isEnvironmentReachable,
         primaryEnvironmentId,
       });
@@ -211,8 +212,10 @@ export function useNewThreadHandler() {
           projectFile,
         ).settings.defaultThreadEnvMode;
       };
+      // Group key from buildProjectGroups (identitySource), not a re-derivation from the winner row.
       const logicalProjectKey = project
-        ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
+        ? (logicalKeyByPhysicalKey.get(derivePhysicalProjectKey(project)) ??
+          deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings))
         : scopedProjectKey(projectRef);
       const hasBranchOption = workspaceOptions?.branch !== undefined;
       const hasWorktreePathOption = workspaceOptions?.worktreePath !== undefined;
@@ -494,6 +497,7 @@ export function useNewThreadHandler() {
   );
 }
 
+/** Chat-view bindings for New Chat: the active thread or draft and the default project to open. */
 export function useHandleNewThread() {
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const routeTarget = useParams({

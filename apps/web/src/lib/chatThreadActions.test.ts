@@ -190,6 +190,7 @@ const groupingSettings = {
   sidebarProjectGroupingOverrides: {},
 };
 
+/** Project fixture for New Chat sibling-resolution cases. */
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: ProjectId.make("project-1"),

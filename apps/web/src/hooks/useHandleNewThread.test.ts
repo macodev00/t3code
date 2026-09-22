@@ -255,7 +255,23 @@ vi.mock("../uiStateStore", () => ({
 }));
 vi.mock("./useSettings", () => ({ useClientSettings: () => ({}) }));
 
+import { derivePhysicalProjectKey } from "../logicalProject";
+import { buildPhysicalToLogicalProjectKeyMap } from "../sidebarProjectGrouping";
 import { useNewThreadHandler } from "./useHandleNewThread";
+
+/** Logical key New Chat should register: the group key from `buildProjectGroups`, not a re-derivation. */
+function expectedLogicalProjectKey(project: {
+  environmentId: string;
+  workspaceRoot: string;
+}): string {
+  return (
+    buildPhysicalToLogicalProjectKeyMap({
+      projects: testState.projects,
+      settings: {},
+      primaryEnvironmentId: "environment-primary",
+    }).get(derivePhysicalProjectKey(project)) ?? "remote-project"
+  );
+}
 
 describe.each([
   ["new", null],
@@ -283,7 +299,7 @@ describe.each([
       const opened = await pendingOpen;
 
       expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
-        "remote-project",
+        expectedLogicalProjectKey(testState.remoteProject),
         projectRef,
         opened!.draftId,
         expect.objectContaining({ runtimeMode }),
@@ -327,7 +343,7 @@ describe.each([
         threadId: draft?.threadId ?? "thread-delayed",
       });
       expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
-        "remote-project",
+        expectedLogicalProjectKey(testState.remoteProject),
         projectRef,
         opened!.draftId,
         expect.objectContaining({ envMode: "worktree", startFromOrigin }),
@@ -354,7 +370,7 @@ describe.each([
       const opened = await openThread(projectRef, { envMode: "worktree", startFromOrigin });
 
       expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
-        "remote-project",
+        expectedLogicalProjectKey(testState.remoteProject),
         projectRef,
         opened!.draftId,
         expect.objectContaining({ envMode: "worktree", startFromOrigin }),
@@ -369,6 +385,7 @@ describe("useNewThreadHandler with a disconnected remote", () => {
     projectId: "project-remote",
   } as never;
 
+  /** Marks the SSH environment reconnecting so New Chat cannot target it. */
   function disconnectRemote() {
     testState.environments = testState.environments.map((environment) =>
       environment.environmentId === "environment-ssh"
@@ -425,7 +442,7 @@ describe("useNewThreadHandler with a disconnected remote", () => {
     expect(opened).toEqual({ draftId: "draft-delayed", threadId: "thread-delayed" });
     expect(testState.toastAdd).not.toHaveBeenCalled();
     expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
-      "remote-project",
+      expectedLogicalProjectKey(testState.localProject),
       { environmentId: "environment-primary", projectId: "project-local" },
       "draft-delayed",
       expect.objectContaining({
@@ -433,6 +450,36 @@ describe("useNewThreadHandler with a disconnected remote", () => {
         worktreePath: null,
         envMode: "local",
       }),
+    );
+  });
+
+  it("reuses the group key when the reachable winner has no repository identity", async () => {
+    testState.reset(null);
+    const unidentifiedLocal = {
+      ...testState.localProject,
+      repositoryIdentity: null,
+      updatedAt: "2026-01-04T00:00:00.000Z",
+    };
+    testState.projects = [
+      { ...testState.remoteProject, repositoryIdentity: testState.repositoryIdentity },
+      unidentifiedLocal,
+      {
+        ...testState.localProject,
+        id: "project-local-identified",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+      },
+    ];
+    disconnectRemote();
+
+    const pendingOpen = useNewThreadHandler()(remoteRef);
+    testState.completeProjectFileRead(null);
+    await pendingOpen;
+
+    expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+      testState.repositoryIdentity.canonicalKey,
+      { environmentId: "environment-primary", projectId: "project-local" },
+      "draft-delayed",
+      expect.objectContaining({ envMode: "local" }),
     );
   });
 
@@ -453,7 +500,7 @@ describe("useNewThreadHandler with a disconnected remote", () => {
     await pendingOpen;
 
     expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
-      "remote-project",
+      expectedLogicalProjectKey(featureWorktree),
       { environmentId: "environment-primary", projectId: "project-worktree" },
       "draft-delayed",
       expect.objectContaining({ envMode: "local" }),
