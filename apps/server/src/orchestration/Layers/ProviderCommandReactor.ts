@@ -1414,7 +1414,7 @@ const make = Effect.gen(function* () {
        * background work is live only appends the activity, so the provider
        * session keeps its current status.
        */
-      const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
+      function handleTurnStartFailure(cause: Cause.Cause<unknown>) {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.void;
         }
@@ -1436,10 +1436,13 @@ const make = Effect.gen(function* () {
           Effect.flatMap(() => failureActivity),
           Effect.asVoid,
         );
-      };
+      }
 
-      const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
-        handleTurnStartFailure(cause).pipe(
+      /**
+       * Surface a turn-start recovery failure without changing the recorded activity.
+       */
+      function recoverTurnStartFailure(cause: Cause.Cause<unknown>) {
+        return handleTurnStartFailure(cause).pipe(
           Effect.catchCause((recoveryCause) =>
             Effect.logWarning("provider command reactor failed to recover turn start failure", {
               eventType: event.type,
@@ -1449,6 +1452,7 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+      }
 
       const authCommandHandled = yield* Effect.gen(function* () {
         // Native account commands belong to the thread's existing provider session.
@@ -1539,12 +1543,26 @@ const make = Effect.gen(function* () {
       }
 
       let compactionSessionEnsured = false;
-      const handleCompactionFailure = (cause: Cause.Cause<unknown>) => {
+
+      /**
+       * Record a compaction failure. Rejecting a runtime-mode change while
+       * background work is live only appends the activity, so the provider
+       * session keeps its current status and active turn.
+       */
+      function handleCompactionFailure(cause: Cause.Cause<unknown>) {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.void;
         }
         const detail = formatFailureDetail(cause);
         if (!compactionSessionEnsured) {
+          // ensureSession rejected before the live process was replaced. A
+          // runtime-mode rejection is expected while background work is live.
+          if (
+            detail.includes("cannot apply runtime mode '") &&
+            detail.includes("while background work is live")
+          ) {
+            return appendTurnStartFailure("Context compaction failed", detail).pipe(Effect.asVoid);
+          }
           return setThreadSessionErrorOnTurnStartFailure({
             threadId: event.payload.threadId,
             detail,
@@ -1567,9 +1585,13 @@ const make = Effect.gen(function* () {
           ),
           Effect.asVoid,
         );
-      };
-      const recoverCompactionFailure = (cause: Cause.Cause<unknown>) =>
-        handleCompactionFailure(cause).pipe(
+      }
+
+      /**
+       * Surface a compaction recovery failure without dropping the compaction activity.
+       */
+      function recoverCompactionFailure(cause: Cause.Cause<unknown>) {
+        return handleCompactionFailure(cause).pipe(
           Effect.catchCause((recoveryCause) =>
             Effect.logWarning("provider command reactor failed to recover compaction failure", {
               eventType: event.type,
@@ -1579,6 +1601,7 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+      }
       if (isCompactCommand) {
         if (!hasOtherUserMessages) {
           return yield* appendTurnStartFailure(

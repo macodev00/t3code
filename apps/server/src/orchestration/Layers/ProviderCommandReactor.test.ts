@@ -3256,7 +3256,8 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("does not restart a claude session when the model-selection cache has not been primed" /** Keeps the live Claude session when the model-selection cache has not been primed. */, async () => {
+  it("does not restart a claude session when the model-selection cache has not been primed", /** Keeps the live Claude session when the model-selection cache has not been primed. */
+  async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -3311,7 +3312,8 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
-  it("restarts a claude session when provider options change before the model-selection cache is primed" /** Restarts Claude when restart-only provider options change before the selection cache is primed. */, async () => {
+  it("restarts a claude session when provider options change before the model-selection cache is primed", /** Restarts Claude when restart-only provider options change before the selection cache is primed. */
+  async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -3375,7 +3377,8 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
-  it("rejects a runtime-mode replacement while background work is live" /** Fails the turn and leaves the running provider session in place while background work is live. */, async () => {
+  it("rejects a runtime-mode replacement while background work is live", /** Fails the turn and leaves the running provider session in place while background work is live. */
+  async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = ThreadId.make("thread-1");
@@ -3533,7 +3536,141 @@ describe("ProviderCommandReactor", () => {
     expect(recoveredThread?.session?.runtimeMode).toBe("approval-required");
   });
 
-  it("does not send a turn when a blocked runtime-mode replacement leaves the live session in place" /** Does not send a turn when a blocked runtime-mode replacement keeps the live session. */, async () => {
+  /**
+   * Compaction that cannot apply a new runtime mode while background work is
+   * live records the failure and leaves the provider session unchanged.
+   */
+  async function keepsLiveSessionWhenCompactionRejectsRuntimeMode() {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-compact-full-access"),
+        threadId,
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-compact-runtime-mode-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-compact-runtime-mode-1"),
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const live = await harness.readModel();
+    const liveSession = live.threads.find((entry) => entry.id === threadId)?.session;
+    if (!liveSession) {
+      throw new Error("expected a live session before compaction");
+    }
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-ready-before-compact-runtime-mode"),
+        threadId,
+        session: {
+          ...liveSession,
+          status: "ready",
+          runtimeMode: "full-access",
+          activeTurnId: asTurnId("turn-live"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    harness.threadBackgroundLiveness.recordTaskLiveness({
+      threadId,
+      taskId: "task-live",
+      taskType: "local_agent",
+      status: "in_progress",
+      kind: "started",
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("cmd-runtime-mode-set-compact-approval-required"),
+        threadId,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-compact-runtime-mode-live"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-compact-runtime-mode"),
+          role: "user",
+          text: "/compact",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.some((activity) => activity.summary === "Context compaction failed") ??
+        false
+      );
+    });
+
+    expect(harness.compactThread).not.toHaveBeenCalled();
+    expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+
+    const blocked = await harness.readModel();
+    const blockedThread = blocked.threads.find((entry) => entry.id === threadId);
+    expect(
+      blockedThread?.activities.find(
+        (activity) => activity.summary === "Context compaction failed",
+      ),
+    ).toMatchObject({
+      kind: "provider.turn.start.failed",
+      payload: {
+        detail: expect.stringContaining("cannot apply runtime mode 'approval-required'"),
+      },
+    });
+    expect(blockedThread?.session?.status).toBe("ready");
+    expect(blockedThread?.session?.runtimeMode).toBe("full-access");
+    expect(blockedThread?.session?.activeTurnId).toBe(asTurnId("turn-live"));
+    expect(blockedThread?.session?.lastError).toBeNull();
+  }
+
+  it(
+    "keeps the live session when compaction rejects a runtime-mode replacement",
+    keepsLiveSessionWhenCompactionRejectsRuntimeMode,
+  );
+
+  it("does not send a turn when a blocked runtime-mode replacement leaves the live session in place", /** Does not send a turn when a blocked runtime-mode replacement keeps the live session. */
+  async () => {
     let blockRuntimeModeReplacement = false;
     const harness = await createHarness({
       startSessionEffect: (session) => {
@@ -3728,7 +3865,8 @@ describe("ProviderCommandReactor", () => {
     expect(recoveredThread?.session?.runtimeMode).toBe("approval-required");
   });
 
-  it("reuses a live claude session when provider options change during background work" /** Reuses the live Claude session when provider options change during background work. */, async () => {
+  it("reuses a live claude session when provider options change during background work", /** Reuses the live Claude session when provider options change during background work. */
+  async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -3806,7 +3944,8 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("restarts a claude session for deferred provider options after background work ends" /** Restarts Claude for deferred provider options once background work has finished. */, async () => {
+  it("restarts a claude session for deferred provider options after background work ends", /** Restarts Claude for deferred provider options once background work has finished. */
+  async () => {
     const harness = await createHarness({
       threadModelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
