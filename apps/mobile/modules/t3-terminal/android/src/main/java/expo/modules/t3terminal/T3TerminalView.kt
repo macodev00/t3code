@@ -48,7 +48,9 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       onCapture(mapOf("text" to text))
     }
   private var terminalHandle = 0L
-  private var fedBuffer = ""
+
+  /** Local-echo cursor. [TerminalLocalEcho] keeps this aligned with Ghostty. */
+  private var echoState = TerminalEchoState()
   private var cols = 0
   private var rows = 0
   private var clearingInput = false
@@ -220,6 +222,10 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     destroyTerminal()
   }
 
+  /**
+   * Hidden field that captures IME and hardware keys. Printable typing is
+   * painted before the pty replies; see [emitTypedInput].
+   */
   private fun configureInputView() {
     inputView.setSingleLine(true)
     inputView.setTextColor(Color.TRANSPARENT)
@@ -245,7 +251,7 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       val isEnter = isImeSend || isHardwareEnter
       if (isEnter) {
         // Enter must send CR: raw-mode TUIs treat LF as Ctrl+J (insert newline).
-        onInput(mapOf("data" to "\r"))
+        emitTypedInput("\r")
         true
       } else {
         false
@@ -255,14 +261,12 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
       when {
         keyCode == KeyEvent.KEYCODE_DEL -> {
-          onInput(mapOf("data" to "\u007F"))
+          emitTypedInput("\u007F")
           true
         }
         // Hardware keyboard Ctrl+A..Z -> control bytes 0x01..0x1A (Ctrl+C, Ctrl+Z, ...).
         event.isCtrlPressed && keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> {
-          onInput(
-            mapOf("data" to (keyCode - KeyEvent.KEYCODE_A + 1).toChar().toString()),
-          )
+          emitTypedInput((keyCode - KeyEvent.KEYCODE_A + 1).toChar().toString())
           true
         }
         else -> false
@@ -278,7 +282,7 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
           if (start >= end) return
           val insertedText = s.subSequence(start, end).toString()
           if (insertedText.isNotEmpty()) {
-            onInput(mapOf("data" to insertedText))
+            emitTypedInput(insertedText)
           }
         }
 
@@ -330,6 +334,10 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     renderSnapshot()
   }
 
+  /**
+   * Allocates the Ghostty session for the current grid. Pty bytes that
+   * arrived before the surface had a size are applied by [feedPendingBuffer].
+   */
   @Suppress("ComplexCondition")
   private fun createTerminal() {
     if (terminalHandle != 0L || cols <= 0 || rows <= 0 || isCleanedUp) return
@@ -343,43 +351,126 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       cursorColorValue,
       paletteColors,
     )
-    fedBuffer = ""
   }
 
+  /**
+   * Starts a fresh Ghostty session for a new [terminalKey], dropping any
+   * in-flight local echo. Echo trust is kept so the next shell key still
+   * paints immediately.
+   */
   private fun recreateTerminal() {
     if (terminalHandle == 0L) return
+    val trusted = echoState.echoTrusted
     destroyTerminal()
+    echoState = TerminalEchoState(echoTrusted = trusted)
     createTerminal()
     feedPendingBuffer()
     renderSnapshot()
   }
 
+  /**
+   * Releases the Ghostty session. The echo cursor is left untouched so the
+   * caller can decide whether to replay or drop the prediction.
+   */
   private fun destroyTerminal() {
     if (terminalHandle == 0L) return
     GhosttyBridge.nativeDestroy(terminalHandle)
     terminalHandle = 0L
-    fedBuffer = ""
     terminalCanvas.resetSelectionState()
   }
 
+  /**
+   * Reconciles [initialBuffer] with keystrokes already painted locally.
+   * A confirmed echo is not fed again. If the pty byte stream diverges, the
+   * grid is rebuilt from the authoritative buffer.
+   */
   private fun feedPendingBuffer() {
-    if (terminalHandle == 0L || initialBuffer == fedBuffer) return
-    if (!initialBuffer.startsWith(fedBuffer)) {
-      recreateTerminal()
-      if (terminalHandle == 0L) return
+    if (terminalHandle == 0L) return
+    when (val sync = TerminalLocalEcho.applyRemoteBuffer(echoState, initialBuffer)) {
+      is TerminalBufferSync.InSync -> echoState = sync.state
+      is TerminalBufferSync.Feed -> applyRemoteSuffix(sync)
+      is TerminalBufferSync.Reset -> rebuildFromRemote(sync)
     }
-    val suffix = initialBuffer.substring(fedBuffer.length)
-    if (suffix.isNotEmpty()) {
-      emitResponse(GhosttyBridge.nativeFeed(terminalHandle, suffix.toByteArray(Charsets.UTF_8)))
-      // New output invalidates an active selection (matches the web drawer);
-      // otherwise the copy toolbar drifts out of sync with the grid.
-      if (terminalCanvas.hasActiveSelection()) {
-        GhosttyBridge.nativeClearSelection(terminalHandle)
-        terminalCanvas.resetSelectionState()
-      }
+  }
+
+  /**
+   * Sends [data] to the remote pty and, for printable typing, paints it in
+   * Ghostty immediately. [feedPendingBuffer] later drops a matching echo so
+   * a cooked shell does not draw the character twice.
+   */
+  private fun emitTypedInput(data: String) {
+    if (data.isEmpty() || isCleanedUp) return
+    val decision = TerminalLocalEcho.noteLocalInput(
+      echoState,
+      data,
+      terminalHandle != 0L,
+    )
+    val paint = decision.paint
+    if (paint != null) {
+      echoState = decision.state
+      feedBytes(paint)
+      clearSelectionAfterOutput()
+      renderSnapshot()
+    } else {
+      echoState = decision.state
     }
-    fedBuffer = initialBuffer
+    onInput(mapOf("data" to data))
+  }
+
+  /** Appends remote bytes that were not already painted as local echo. */
+  private fun applyRemoteSuffix(sync: TerminalBufferSync.Feed) {
+    echoState = sync.state
+    feedBytes(sync.suffix)
+    clearSelectionAfterOutput()
     renderSnapshot()
+  }
+
+  /**
+   * Discards the Ghostty session and replays [TerminalBufferSync.Reset.buffer].
+   * Bytes before [TerminalBufferSync.Reset.replyFrom] were already answered, so
+   * their device replies are dropped. The live suffix still reports cursor
+   * position and primary DA.
+   */
+  private fun rebuildFromRemote(sync: TerminalBufferSync.Reset) {
+    destroyTerminal()
+    createTerminal()
+    if (terminalHandle == 0L) {
+      echoState = TerminalEchoState(echoTrusted = sync.state.echoTrusted)
+      return
+    }
+    val replyFrom = sync.replyFrom.coerceIn(0, sync.buffer.length)
+    val history = sync.buffer.substring(0, replyFrom)
+    val live = sync.buffer.substring(replyFrom)
+    if (history.isNotEmpty()) {
+      GhosttyBridge.nativeFeed(terminalHandle, history.toByteArray(Charsets.UTF_8))
+    }
+    if (live.isNotEmpty()) {
+      feedBytes(live)
+    }
+    if (sync.buffer.isNotEmpty()) {
+      clearSelectionAfterOutput()
+    }
+    echoState = sync.state
+    renderSnapshot()
+  }
+
+  /**
+   * Writes [data] into Ghostty and forwards device replies (cursor reports,
+   * primary DA) as input, which is what the remote pty is waiting on.
+   */
+  private fun feedBytes(data: String) {
+    if (terminalHandle == 0L || data.isEmpty()) return
+    emitResponse(GhosttyBridge.nativeFeed(terminalHandle, data.toByteArray(Charsets.UTF_8)))
+  }
+
+  /**
+   * Drops an active selection after new output so the copy toolbar stays on
+   * the grid, matching the web terminal drawer.
+   */
+  private fun clearSelectionAfterOutput() {
+    if (terminalHandle == 0L || !terminalCanvas.hasActiveSelection()) return
+    GhosttyBridge.nativeClearSelection(terminalHandle)
+    terminalCanvas.resetSelectionState()
   }
 
   private fun renderSnapshot() {
