@@ -361,46 +361,54 @@ const probeClaudeCapabilities = (
     });
   }).pipe(
     Effect.timeout(CAPABILITIES_PROBE_TIMEOUT_MS),
-    Effect.flatMap(({ q, init }) =>
-      Effect.gen(function* () {
-        // Usage has its own deadline so a slow optional request cannot discard initialization.
-        const usageResult = yield* Effect.tryPromise(() =>
-          q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
-        ).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result);
-        const usage = Result.isSuccess(usageResult)
-          ? {
-              rate_limits_available: usageResult.success.rate_limits_available,
-              rate_limits: usageResult.success.rate_limits,
-            }
-          : undefined;
-        // The raw body is not useful later; the flag and whether windows
-        // were present are enough to tell a locked instance from a failed read.
-        yield* Effect.logInfo(
-          "Claude get_usage probe finished.",
-          usage
-            ? {
-                rateLimitsAvailable: usage.rate_limits_available,
-                rateLimitsPresent: usage.rate_limits != null,
-              }
-            : { failed: true },
-        );
-        const account = init.account as
-          | {
-              readonly email?: string;
-              readonly subscriptionType?: string;
-              readonly tokenSource?: string;
-              readonly apiProvider?: string;
-            }
-          | undefined;
-        return {
-          email: account?.email,
-          subscriptionType: account?.subscriptionType,
-          tokenSource: account?.tokenSource,
-          apiProvider: account?.apiProvider,
-          slashCommands: parseClaudeInitializationCommands(init.commands),
-          ...(usage ? { usage } : {}),
-        } satisfies ClaudeCapabilitiesProbe;
-      }),
+    Effect.flatMap(
+      /**
+       * Read `get_usage` after initialization. Its deadline is separate so a
+       * slow optional request cannot discard account info that already arrived.
+       */
+      ({ q, init }) =>
+        Effect.gen(
+          /**
+           * Keep the availability flag and whether windows were present. The
+           * raw usage body is not useful after the probe is classified.
+           */
+          function* () {
+            const usageResult = yield* Effect.tryPromise(() =>
+              q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
+            ).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result);
+            const usage = Result.isSuccess(usageResult)
+              ? {
+                  rate_limits_available: usageResult.success.rate_limits_available,
+                  rate_limits: usageResult.success.rate_limits,
+                }
+              : undefined;
+            yield* Effect.logInfo(
+              "Claude get_usage probe finished.",
+              usage
+                ? {
+                    rateLimitsAvailable: usage.rate_limits_available,
+                    rateLimitsPresent: usage.rate_limits != null,
+                  }
+                : { failed: true },
+            );
+            const account = init.account as
+              | {
+                  readonly email?: string;
+                  readonly subscriptionType?: string;
+                  readonly tokenSource?: string;
+                  readonly apiProvider?: string;
+                }
+              | undefined;
+            return {
+              email: account?.email,
+              subscriptionType: account?.subscriptionType,
+              tokenSource: account?.tokenSource,
+              apiProvider: account?.apiProvider,
+              slashCommands: parseClaudeInitializationCommands(init.commands),
+              ...(usage ? { usage } : {}),
+            } satisfies ClaudeCapabilitiesProbe;
+          },
+        ),
     ),
     Effect.ensuring(
       Effect.sync(() => {

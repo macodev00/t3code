@@ -271,13 +271,19 @@ export function claudeProbeUsageLimits(input: {
 
 /**
  * Probe-side helper: map the response and remember the scoped names for events.
- * A failed request leaves the names from the last successful body in place.
+ *
+ * A `probeFailed` read leaves the names from the last successful body in place.
+ * `get_usage` can fail with a present body (`rate_limits_available: false`, or
+ * `rate_limits: null`), and clearing the learned overage name would drop later
+ * `seven_day_overage_included` events instead of updating that window.
  */
-export const recordClaudeUsageResponse = (
+export function recordClaudeUsageResponse(
   namesRef: Ref.Ref<ClaudeScopedLimitNames>,
   input: Parameters<typeof claudeProbeUsageLimits>[0],
-): Effect.Effect<ServerProviderUsageLimits> => {
+): Effect.Effect<ServerProviderUsageLimits> {
   const probed = claudeProbeUsageLimits(input);
-  if (!input.usage) return Effect.succeed(probed.limits);
+  if (probed.limits.unavailable?.reason === "probeFailed") {
+    return Effect.succeed(probed.limits);
+  }
   return Ref.set(namesRef, probed.names).pipe(Effect.as(probed.limits));
-};
+}

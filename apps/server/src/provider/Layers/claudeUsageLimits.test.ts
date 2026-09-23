@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Ref from "effect/Ref";
 import { describe, expect, it } from "vite-plus/test";
 
 import { applyUsageLimitsUpdate, resolveUsageLimitsAfterProbe } from "../providerUsageLimits.ts";
@@ -6,6 +8,8 @@ import {
   claudeProbeUsageLimits,
   claudeRateLimitEventToUpdate,
   claudeUsageResponseToLimits,
+  makeClaudeScopedLimitNames,
+  recordClaudeUsageResponse,
 } from "./claudeUsageLimits.ts";
 
 const checkedAt = "2026-07-18T10:00:00.000Z";
@@ -221,6 +225,93 @@ describe("claudeProbeUsageLimits", () => {
     expect(resolveUsageLimitsAfterProbe({ published: recovered, probed: again.limits })).toBe(
       recovered,
     );
+  });
+});
+
+const subscriptionAccount = {
+  subscriptionType: "max",
+  tokenSource: "oauth",
+  apiProvider: undefined,
+} as const;
+
+/** A `get_usage` body that names one overage-included weekly bucket. */
+function usageWithScopedBucket(displayName: string) {
+  return {
+    rate_limits_available: true as const,
+    rate_limits: {
+      five_hour: { utilization: 10, resets_at: null },
+      ...({
+        model_scoped: [{ display_name: displayName, utilization: 20, resets_at: null }],
+      } as object),
+    },
+  };
+}
+
+describe("recordClaudeUsageResponse", () => {
+  it("keeps the learned overage name when a later probe fails with a body", () => {
+    const namesRef = Effect.runSync(makeClaudeScopedLimitNames);
+    Effect.runSync(
+      recordClaudeUsageResponse(namesRef, {
+        checkedAt,
+        account: subscriptionAccount,
+        usage: usageWithScopedBucket("Fable"),
+      }),
+    );
+    expect(Effect.runSync(Ref.get(namesRef))).toEqual({ overageIncluded: "Fable" });
+
+    for (const usage of [
+      { rate_limits_available: false, rate_limits: null },
+      { rate_limits_available: true, rate_limits: null },
+      undefined,
+    ] as const) {
+      const failed = Effect.runSync(
+        recordClaudeUsageResponse(namesRef, {
+          checkedAt,
+          account: subscriptionAccount,
+          usage,
+        }),
+      );
+      expect(failed.unavailable?.reason).toBe("probeFailed");
+      expect(Effect.runSync(Ref.get(namesRef))).toEqual({ overageIncluded: "Fable" });
+    }
+
+    expect(
+      claudeRateLimitEventToUpdate(
+        {
+          status: "allowed",
+          rateLimitType: "seven_day_overage_included" as never,
+          utilization: 0.4,
+        },
+        Effect.runSync(Ref.get(namesRef)),
+      )?.windows[0]?.id,
+    ).toBe("seven_day_fable");
+  });
+
+  it("replaces the overage name when a later probe succeeds", () => {
+    const namesRef = Effect.runSync(makeClaudeScopedLimitNames);
+    Effect.runSync(Ref.set(namesRef, { overageIncluded: "Fable" }));
+    Effect.runSync(
+      recordClaudeUsageResponse(namesRef, {
+        checkedAt,
+        account: subscriptionAccount,
+        usage: usageWithScopedBucket("Opus"),
+      }),
+    );
+    expect(Effect.runSync(Ref.get(namesRef))).toEqual({ overageIncluded: "Opus" });
+  });
+
+  it("clears the overage name for an account that cannot report subscription windows", () => {
+    const namesRef = Effect.runSync(makeClaudeScopedLimitNames);
+    Effect.runSync(Ref.set(namesRef, { overageIncluded: "Fable" }));
+    const limits = Effect.runSync(
+      recordClaudeUsageResponse(namesRef, {
+        checkedAt,
+        account: { ...noAccount, tokenSource: "ANTHROPIC_AUTH_TOKEN" },
+        usage: { rate_limits_available: false, rate_limits: null },
+      }),
+    );
+    expect(limits.unavailable?.reason).toBe("unsupported");
+    expect(Effect.runSync(Ref.get(namesRef))).toEqual({ overageIncluded: undefined });
   });
 });
 
