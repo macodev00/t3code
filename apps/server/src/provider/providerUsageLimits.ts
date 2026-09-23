@@ -11,10 +11,12 @@ const WINDOW_KIND_ORDER: Record<ServerProviderUsageWindow["kind"], number> = {
   other: 3,
 };
 
+/** Clamp a reported utilization into the 0–100 range bars can draw. */
 export function clampPercent(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
 }
 
+/** Session, then weekly, then monthly, with id as the tie-break. */
 function sortWindows(
   windows: Iterable<ServerProviderUsageWindow>,
 ): ReadonlyArray<ServerProviderUsageWindow> {
@@ -25,6 +27,7 @@ function sortWindows(
   );
 }
 
+/** A complete probe snapshot: windows in kind order, no unavailable marker. */
 export function makeUsageLimits(input: {
   readonly checkedAt: string;
   readonly windows: Iterable<ServerProviderUsageWindow>;
@@ -32,6 +35,7 @@ export function makeUsageLimits(input: {
   return { checkedAt: input.checkedAt, windows: sortWindows(input.windows) };
 }
 
+/** Empty windows plus why this account has nothing to draw. */
 export function makeUnavailableUsageLimits(input: {
   readonly checkedAt: string;
   readonly reason: "unsupported" | "probeFailed";
@@ -116,6 +120,7 @@ export function applyUsageLimitsUpdate(input: {
   };
 }
 
+/** True when a sparse update did not move any field the snapshot already has. */
 function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageWindow): boolean {
   return (
     a.id === b.id &&

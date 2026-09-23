@@ -317,6 +317,74 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
 }
 
 /**
+ * After initialization, read `get_usage` with its own deadline so a slow
+ * optional request cannot discard account info that already arrived.
+ *
+ * Keep the availability flag and whether windows were present. The raw
+ * usage body is not useful after the probe is classified.
+ */
+function collectClaudeCapabilitiesProbe(input: {
+  readonly q: {
+    readonly usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () => Promise<
+      Pick<SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">
+    >;
+  };
+  readonly init: {
+    readonly account?: {
+      readonly email?: string;
+      readonly subscriptionType?: string;
+      readonly tokenSource?: string;
+      readonly apiProvider?: string;
+    };
+    readonly commands?: ReadonlyArray<ClaudeSlashCommand>;
+  };
+}): Effect.Effect<ClaudeCapabilitiesProbe> {
+  const { q, init } = input;
+  return Effect.gen(
+    /**
+     * Keep the availability flag and whether windows were present. The raw
+     * usage body is not useful after the probe is classified.
+     */
+    function* collectClaudeCapabilitiesUsage() {
+      const usageResult = yield* Effect.tryPromise(() =>
+        q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
+      ).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result);
+      const usage = Result.isSuccess(usageResult)
+        ? {
+            rate_limits_available: usageResult.success.rate_limits_available,
+            rate_limits: usageResult.success.rate_limits,
+          }
+        : undefined;
+      yield* Effect.logInfo(
+        "Claude get_usage probe finished.",
+        usage
+          ? {
+              rateLimitsAvailable: usage.rate_limits_available,
+              rateLimitsPresent: usage.rate_limits != null,
+            }
+          : { failed: true },
+      );
+      const account = init.account as
+        | {
+            readonly email?: string;
+            readonly subscriptionType?: string;
+            readonly tokenSource?: string;
+            readonly apiProvider?: string;
+          }
+        | undefined;
+      return {
+        email: account?.email,
+        subscriptionType: account?.subscriptionType,
+        tokenSource: account?.tokenSource,
+        apiProvider: account?.apiProvider,
+        slashCommands: parseClaudeInitializationCommands(init.commands),
+        ...(usage ? { usage } : {}),
+      } satisfies ClaudeCapabilitiesProbe;
+    },
+  );
+}
+
+/**
  * Probe account information by spawning a lightweight Claude Agent SDK
  * session and reading the initialization result.
  *
@@ -361,55 +429,7 @@ const probeClaudeCapabilities = (
     });
   }).pipe(
     Effect.timeout(CAPABILITIES_PROBE_TIMEOUT_MS),
-    Effect.flatMap(
-      /**
-       * Read `get_usage` after initialization. Its deadline is separate so a
-       * slow optional request cannot discard account info that already arrived.
-       */
-      ({ q, init }) =>
-        Effect.gen(
-          /**
-           * Keep the availability flag and whether windows were present. The
-           * raw usage body is not useful after the probe is classified.
-           */
-          function* () {
-            const usageResult = yield* Effect.tryPromise(() =>
-              q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
-            ).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result);
-            const usage = Result.isSuccess(usageResult)
-              ? {
-                  rate_limits_available: usageResult.success.rate_limits_available,
-                  rate_limits: usageResult.success.rate_limits,
-                }
-              : undefined;
-            yield* Effect.logInfo(
-              "Claude get_usage probe finished.",
-              usage
-                ? {
-                    rateLimitsAvailable: usage.rate_limits_available,
-                    rateLimitsPresent: usage.rate_limits != null,
-                  }
-                : { failed: true },
-            );
-            const account = init.account as
-              | {
-                  readonly email?: string;
-                  readonly subscriptionType?: string;
-                  readonly tokenSource?: string;
-                  readonly apiProvider?: string;
-                }
-              | undefined;
-            return {
-              email: account?.email,
-              subscriptionType: account?.subscriptionType,
-              tokenSource: account?.tokenSource,
-              apiProvider: account?.apiProvider,
-              slashCommands: parseClaudeInitializationCommands(init.commands),
-              ...(usage ? { usage } : {}),
-            } satisfies ClaudeCapabilitiesProbe;
-          },
-        ),
-    ),
+    Effect.flatMap(collectClaudeCapabilitiesProbe),
     Effect.ensuring(
       Effect.sync(() => {
         if (!abort.signal.aborted) abort.abort();

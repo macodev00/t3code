@@ -56,14 +56,20 @@ export interface ClaudeScopedLimitNames {
   readonly overageIncluded: string | undefined;
 }
 
+/** Per-instance memory of the overage-included bucket name the last successful probe saw. */
 export const makeClaudeScopedLimitNames = Ref.make<ClaudeScopedLimitNames>({
   overageIncluded: undefined,
 });
 
+/** Stable id for a model-scoped weekly row, derived from the model's display name. */
 function scopedWindowId(displayName: string): string {
   return `seven_day_${displayName.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
 }
 
+/**
+ * The model-scoped weekly window the probe draws and later streamed events
+ * must land on, so a mid-turn update does not open a second row.
+ */
 function scopedWindow(
   displayName: string,
   usedPercent: number,
@@ -89,6 +95,7 @@ interface ModelScopedWindow {
   readonly resets_at: string | null;
 }
 
+/** Read `model_scoped` structurally until the pinned SDK typings include it. */
 function readModelScoped(rateLimits: object): ReadonlyArray<ModelScopedWindow> {
   const raw = (rateLimits as { readonly model_scoped?: unknown }).model_scoped;
   if (!Array.isArray(raw)) return [];
@@ -100,18 +107,21 @@ function readModelScoped(rateLimits: object): ReadonlyArray<ModelScopedWindow> {
   );
 }
 
+/** ISO timestamp from a streamed event's epoch-second reset. */
 function isoFromEpochSeconds(value: number | undefined): string | undefined {
   if (value === undefined || !Number.isFinite(value) || value <= 0) return undefined;
   const dt = DateTime.make(value * 1000);
   return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
 }
 
+/** ISO timestamp from a `get_usage` reset string. */
 function isoFromString(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
   const dt = DateTime.make(value);
   return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
 }
 
+/** An account-wide session or weekly window from the SDK's `rateLimitType` key. */
 function makeWindow(
   id: keyof typeof WINDOWS & string,
   usedPercent: number,
