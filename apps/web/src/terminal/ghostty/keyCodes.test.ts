@@ -11,10 +11,10 @@ describe("ghosttyKeyForCode", () => {
   });
 });
 
-describe("ghosttyConsumedMods", () => {
+describe("ghosttyConsumedMods", /** Consumed Ghostty modifier bits for a one-character chord. Shift applies on every platform. Option applies on macOS only. */ () => {
   const shifted = { altKey: false, ctrlKey: false, key: "@", metaKey: false, shiftKey: true };
 
-  it("consumes a lone Shift producing a character", () => {
+  it("consumes a lone Shift producing a character", /** A lone Shift that yields one character is consumed, including Shift+Space. Shift with Ctrl, or Shift on a non-character key, is not. */ () => {
     expect(ghosttyConsumedMods(shifted, "Linux")).toBe(1);
     expect(ghosttyConsumedMods({ ...shifted, ctrlKey: true }, "MacIntel")).toBe(0);
     expect(ghosttyConsumedMods({ ...shifted, key: "Tab" }, "MacIntel")).toBe(0);
@@ -22,7 +22,7 @@ describe("ghosttyConsumedMods", () => {
     expect(ghosttyConsumedMods({ ...shifted, key: " " }, "Linux")).toBe(1);
   });
 
-  it("consumes a lone macOS Option that produced a character", () => {
+  it("consumes a lone macOS Option that produced a character", /** A lone macOS Option that yields one character is consumed, together with Shift. Ctrl, Meta, non-characters, and non-macOS platforms are not. */ () => {
     const option = { altKey: true, ctrlKey: false, key: "@", metaKey: false, shiftKey: false };
     expect(ghosttyConsumedMods(option, "MacIntel")).toBe(1 << 2);
     expect(ghosttyConsumedMods({ ...option, key: "€" }, "MacIntel")).toBe(1 << 2);
