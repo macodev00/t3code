@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { claudeRateLimitEventToUpdate, claudeUsageResponseToLimits } from "./claudeUsageLimits.ts";
+import { applyUsageLimitsUpdate, resolveUsageLimitsAfterProbe } from "../providerUsageLimits.ts";
+import {
+  claudeAccountReportsSubscriptionUsage,
+  claudeProbeUsageLimits,
+  claudeRateLimitEventToUpdate,
+  claudeUsageResponseToLimits,
+} from "./claudeUsageLimits.ts";
 
 const checkedAt = "2026-07-18T10:00:00.000Z";
 const noNames = { overageIncluded: undefined } as const;
@@ -95,6 +101,15 @@ describe("claudeUsageResponseToLimits", () => {
     ).toEqual({ checkedAt, windows: [], unavailable: { reason: "unsupported" } });
   });
 
+  it("treats a null rate-limit body as a failed probe", () => {
+    expect(
+      claudeUsageResponseToLimits({
+        checkedAt,
+        response: { rate_limits_available: true, rate_limits: null },
+      }).limits,
+    ).toEqual({ checkedAt, windows: [], unavailable: { reason: "probeFailed" } });
+  });
+
   it("skips a window the endpoint reports without a utilization", () => {
     expect(
       claudeUsageResponseToLimits({
@@ -116,6 +131,96 @@ describe("claudeUsageResponseToLimits", () => {
         windowDurationMins: 10080,
       },
     ]);
+  });
+});
+
+const noAccount = {
+  subscriptionType: undefined,
+  tokenSource: undefined,
+  apiProvider: undefined,
+} as const;
+
+describe("claudeProbeUsageLimits", () => {
+  it("keeps API key and Bedrock logins unsupported", () => {
+    const unavailable = { rate_limits_available: false, rate_limits: null } as const;
+    expect(
+      claudeProbeUsageLimits({
+        checkedAt,
+        usage: unavailable,
+        account: { ...noAccount, tokenSource: "ANTHROPIC_AUTH_TOKEN" },
+      }).limits.unavailable?.reason,
+    ).toBe("unsupported");
+    expect(
+      claudeProbeUsageLimits({
+        checkedAt,
+        usage: unavailable,
+        account: { ...noAccount, apiProvider: "bedrock" },
+      }).limits.unavailable?.reason,
+    ).toBe("unsupported");
+    expect(claudeAccountReportsSubscriptionUsage({ ...noAccount, apiProvider: "vertex" })).toBe(
+      false,
+    );
+  });
+
+  it("does not lock a subscription instance that returned no windows", () => {
+    const account = { subscriptionType: "max", tokenSource: "oauth", apiProvider: undefined };
+    for (const usage of [
+      { rate_limits_available: false, rate_limits: null },
+      { rate_limits_available: true, rate_limits: null },
+    ] as const) {
+      expect(claudeProbeUsageLimits({ checkedAt, usage, account }).limits.unavailable?.reason).toBe(
+        "probeFailed",
+      );
+    }
+    expect(
+      claudeProbeUsageLimits({
+        checkedAt,
+        usage: undefined,
+        account,
+      }).limits.unavailable?.reason,
+    ).toBe("probeFailed");
+  });
+
+  it("publishes a second instance's turn windows and keeps them across the next bad probe", () => {
+    const account = { subscriptionType: "max", tokenSource: "oauth", apiProvider: undefined };
+    const probed = claudeProbeUsageLimits({
+      checkedAt,
+      account,
+      usage: { rate_limits_available: false, rate_limits: null },
+    });
+    const update = claudeRateLimitEventToUpdate(
+      {
+        status: "rejected",
+        rateLimitType: "five_hour",
+        utilization: 1.09,
+        resetsAt: 1_789_938_600,
+      },
+      probed.names,
+    );
+    const recovered = applyUsageLimitsUpdate({
+      previous: probed.limits,
+      checkedAt: "2026-09-20T18:58:27.751Z",
+      update: update!,
+    });
+    expect(recovered?.windows).toEqual([
+      {
+        id: "five_hour",
+        kind: "session",
+        label: "Session",
+        usedPercent: 100,
+        windowDurationMins: 300,
+        resetsAt: "2026-09-20T21:10:00.000Z",
+      },
+    ]);
+    expect(recovered?.unavailable?.reason).toBe("probeFailed");
+    const again = claudeProbeUsageLimits({
+      checkedAt: "2026-09-20T19:00:00.000Z",
+      account,
+      usage: { rate_limits_available: true, rate_limits: null },
+    });
+    expect(resolveUsageLimitsAfterProbe({ published: recovered, probed: again.limits })).toBe(
+      recovered,
+    );
   });
 });
 

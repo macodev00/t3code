@@ -36,10 +36,9 @@ import {
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
-import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
 import {
   type ClaudeScopedLimitNames,
-  claudeUsageResponseToLimits,
+  claudeProbeUsageLimits,
   recordClaudeUsageResponse,
 } from "./claudeUsageLimits.ts";
 import {
@@ -238,8 +237,9 @@ type ClaudeCapabilitiesProbe = {
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
   /**
    * Subscription windows from the SDK's `get_usage` control request, or
-   * `undefined` when the request itself failed. Absent windows on an
-   * otherwise successful response mean the account has none (API key).
+   * `undefined` when the request itself failed. A present body with
+   * `rate_limits_available: false` is an account that cannot report, except
+   * a subscription login, which is classified as a failed read instead.
    */
   readonly usage?: Pick<SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">;
 };
@@ -373,6 +373,17 @@ const probeClaudeCapabilities = (
               rate_limits: usageResult.success.rate_limits,
             }
           : undefined;
+        // The raw body is not useful later; the flag and whether windows
+        // were present are enough to tell a locked instance from a failed read.
+        yield* Effect.logInfo(
+          "Claude get_usage probe finished.",
+          usage
+            ? {
+                rateLimitsAvailable: usage.rate_limits_available,
+                rateLimitsPresent: usage.rate_limits != null,
+              }
+            : { failed: true },
+        );
         const account = init.account as
           | {
               readonly email?: string;
@@ -417,6 +428,12 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
+/**
+ * Build the Claude provider snapshot from the CLI version probe and the
+ * capabilities probe. Usage limits come from `claudeProbeUsageLimits`, so a
+ * subscription instance with an empty `get_usage` body is a failed read
+ * rather than an account with no quota.
+ */
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   claudeSettings: ClaudeSettings,
   resolveCapabilities?: (
@@ -563,14 +580,18 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       subscriptionType: capabilities.subscriptionType,
       authMethod: capabilities.tokenSource,
     }) ?? apiProviderAuthMetadata(capabilities.apiProvider);
-  const usageLimits = !capabilities.usage
-    ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
-    : scopedLimitNames
-      ? yield* recordClaudeUsageResponse(scopedLimitNames, {
-          response: capabilities.usage,
-          checkedAt,
-        })
-      : claudeUsageResponseToLimits({ response: capabilities.usage, checkedAt }).limits;
+  const usageProbe = {
+    usage: capabilities.usage,
+    account: {
+      subscriptionType: capabilities.subscriptionType,
+      tokenSource: capabilities.tokenSource,
+      apiProvider: capabilities.apiProvider,
+    },
+    checkedAt,
+  };
+  const usageLimits = scopedLimitNames
+    ? yield* recordClaudeUsageResponse(scopedLimitNames, usageProbe)
+    : claudeProbeUsageLimits(usageProbe).limits;
   const resetCredits =
     resolveResetCredits &&
     capabilities.subscriptionType &&

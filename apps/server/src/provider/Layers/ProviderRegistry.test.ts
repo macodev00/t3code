@@ -151,6 +151,10 @@ type TestClaudeCapabilities = {
   readonly tokenSource: string | undefined;
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly usage?: {
+    readonly rate_limits_available: boolean;
+    readonly rate_limits: null;
+  };
 };
 
 function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
@@ -2970,6 +2974,34 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             }),
           ),
         ),
+      );
+
+      it.effect(
+        "does not mark a second subscription Claude instance unsupported when usage is empty",
+        () =>
+          Effect.gen(function* () {
+            const status = yield* checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              claudeCapabilities({
+                email: "other@example.com",
+                subscriptionType: "max",
+                tokenSource: "oauth",
+                usage: { rate_limits_available: false, rate_limits: null },
+              }),
+            );
+            assert.strictEqual(status.auth.status, "authenticated");
+            assert.strictEqual(status.auth.email, "other@example.com");
+            assert.strictEqual(status.usageLimits?.unavailable?.reason, "probeFailed");
+            assert.deepStrictEqual(status.usageLimits?.windows, []);
+          }).pipe(
+            Effect.provide(
+              mockSpawnerLayer((args) => {
+                const joined = args.join(" ");
+                if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+                throw new Error(`Unexpected args: ${joined}`);
+              }),
+            ),
+          ),
       );
 
       it.effect("returns an api key label for claude api key auth", () =>
