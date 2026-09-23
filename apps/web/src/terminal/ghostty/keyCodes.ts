@@ -233,13 +233,34 @@ export function loadGhosttyKeyboardLayoutMap(): Promise<GhosttyKeyboardLayoutMap
   return promise;
 }
 
-// Browsers do not expose consumed modifiers; treat Shift as consumed for
-// unchorded character input.
+const GHOSTTY_MOD_SHIFT = 1 << 0;
+const GHOSTTY_MOD_ALT = 1 << 2;
+
+/**
+ * Modifiers the layout consumed to produce `event.key`, as a GhosttyMods bitmask.
+ *
+ * The DOM does not report consumed modifiers. A lone Shift is consumed so a
+ * shifted character is encoded as text. On macOS a lone Option is consumed too,
+ * along with Shift when Shift participated. This WASM build of libghostty-vt is
+ * not macOS, so it ignores `macos-option-as-alt` and DEC 1036 prefixes Alt:
+ * German Option+L (`@`) becomes `ESC @` (readline set-mark) and the rest of the
+ * Option layer (`€`, `~`, `[]{}|`, `\`) is dropped the same way. Consuming
+ * Option makes the encoder write the composed character, matching Ghostty's
+ * default of `macos-option-as-alt = false`. Ctrl and Meta are never consumed,
+ * so those chords stay intact. Option+arrow is not a single character, so word
+ * motion is unchanged.
+ */
 export function ghosttyConsumedMods(
   event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+  platform = typeof navigator === "undefined" ? "" : (navigator.platform ?? ""),
 ): number {
-  if (!event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return 0;
-  return [...event.key].length === 1 ? 1 : 0;
+  if ([...event.key].length !== 1 || event.ctrlKey || event.metaKey) return 0;
+  const shift = event.shiftKey ? GHOSTTY_MOD_SHIFT : 0;
+  // Same host check as isMacPlatform in lib/utils.ts. Kept local so this module
+  // stays free of the app utility graph.
+  if (event.altKey && /mac|iphone|ipad|ipod/i.test(platform)) return shift | GHOSTTY_MOD_ALT;
+  if (!event.shiftKey || event.altKey) return 0;
+  return GHOSTTY_MOD_SHIFT;
 }
 
 export function ghosttyUnshiftedCodepoint(
