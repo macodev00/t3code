@@ -22,6 +22,22 @@ export const PROVIDER_STATUS_STYLES = {
 export type ProviderStatusKey = keyof typeof PROVIDER_STATUS_STYLES;
 
 /**
+ * Antigravity's periodic health probe only calls ACP `initialize()`. A passed
+ * probe with Google auth still `unknown` is published as `warning`, which
+ * Settings would otherwise render as amber "Needs attention". Chat already
+ * hides that state; Settings should treat it as informational too.
+ */
+export function isAntigravityUncheckedAuth(provider: ServerProvider | undefined) {
+  return (
+    provider !== undefined &&
+    provider.driver === "antigravity" &&
+    provider.installed &&
+    provider.status === "warning" &&
+    provider.auth.status === "unknown"
+  );
+}
+
+/**
  * Derive the headline + detail copy shown under a provider's name in the
  * settings page. Prefers `provider.message` for server-supplied detail and
  * falls back to generic phrasing when the server has not yet reported any
@@ -52,6 +68,12 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
   if (provider.auth.status === "unauthenticated") {
     return {
       headline: "Not authenticated",
+      detail: provider.message ?? null,
+    };
+  }
+  if (isAntigravityUncheckedAuth(provider)) {
+    return {
+      headline: "Installed · Sign-in required",
       detail: provider.message ?? null,
     };
   }

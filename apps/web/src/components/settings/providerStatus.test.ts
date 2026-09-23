@@ -1,7 +1,7 @@
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { getProviderSummary } from "./providerStatus";
+import { getProviderSummary, isAntigravityUncheckedAuth } from "./providerStatus";
 
 const provider: ServerProvider = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -25,6 +25,63 @@ describe("getProviderSummary", () => {
     });
   });
 
+  it("treats healthy Antigravity with unchecked Google auth as sign-in required, not attention", () => {
+    const message = "Antigravity is installed. Google account access is not checked yet.";
+    const antigravity = {
+      ...provider,
+      instanceId: ProviderInstanceId.make("antigravity"),
+      driver: ProviderDriverKind.make("antigravity"),
+      status: "warning" as const,
+      auth: { status: "unknown" as const },
+      message,
+    };
+
+    expect(isAntigravityUncheckedAuth(antigravity)).toBe(true);
+    expect(getProviderSummary(antigravity)).toEqual({
+      headline: "Installed · Sign-in required",
+      detail: message,
+    });
+  });
+
+  it("keeps confirmed Antigravity sign-out and real probe failures as they are", () => {
+    const antigravity = {
+      ...provider,
+      instanceId: ProviderInstanceId.make("antigravity"),
+      driver: ProviderDriverKind.make("antigravity"),
+    };
+
+    expect(
+      getProviderSummary({
+        ...antigravity,
+        status: "warning",
+        auth: { status: "unauthenticated" },
+        message: "Sign in with Google to use Antigravity.",
+      }),
+    ).toEqual({
+      headline: "Not authenticated",
+      detail: "Sign in with Google to use Antigravity.",
+    });
+    expect(
+      isAntigravityUncheckedAuth({
+        ...antigravity,
+        status: "error",
+        auth: { status: "unknown" },
+        message: "Antigravity could not complete its local health check.",
+      }),
+    ).toBe(false);
+    expect(
+      getProviderSummary({
+        ...antigravity,
+        status: "error",
+        auth: { status: "unknown" },
+        message: "Antigravity could not complete its local health check.",
+      }),
+    ).toEqual({
+      headline: "Unavailable",
+      detail: "Antigravity could not complete its local health check.",
+    });
+  });
+
   it("does not hide a provider error behind a previous authenticated state", () => {
     expect(
       getProviderSummary({
@@ -43,6 +100,17 @@ describe("getProviderSummary", () => {
       getProviderSummary({
         ...provider,
         status: "warning",
+        message: "The provider version is unsupported.",
+      }),
+    ).toEqual({
+      headline: "Needs attention",
+      detail: "The provider version is unsupported.",
+    });
+    expect(
+      getProviderSummary({
+        ...provider,
+        status: "warning",
+        auth: { status: "unknown" },
         message: "The provider version is unsupported.",
       }),
     ).toEqual({

@@ -57,6 +57,25 @@ const CREDENTIAL_PHASE_LABELS: Record<ProviderAuthState["phase"], string> = {
   cancelled: "Connection cancelled.",
 };
 
+/** Personal and Enterprise open Google in the browser; API key methods do not. */
+export function usesAntigravityBrowserAuth(authMethod: AntigravityAuthMethod): boolean {
+  return authMethod === "oauth-personal" || authMethod === "oauth-business";
+}
+
+/** Offer Google sign-in when the instance can authenticate and is not already signed in. */
+export function offersAntigravityGoogleSignIn(
+  provider: ServerProvider | undefined,
+  authMethod: AntigravityAuthMethod,
+): boolean {
+  return (
+    provider?.driver === "antigravity" &&
+    provider.installed &&
+    provider.auth.status !== "authenticated" &&
+    provider.setup?.canAuthenticate === true &&
+    usesAntigravityBrowserAuth(authMethod)
+  );
+}
+
 /** Read the configured method from the instance config. Unknown values fall back to personal. */
 export function readAntigravityAuthMethod(config: unknown): AntigravityAuthMethod {
   const value =
@@ -65,6 +84,65 @@ export function readAntigravityAuthMethod(config: unknown): AntigravityAuthMetho
       : undefined;
   return (
     ANTIGRAVITY_AUTH_METHODS.find((method) => method.value === value)?.value ?? "oauth-personal"
+  );
+}
+
+/**
+ * Starts Google OAuth from the provider settings card (list row and editor
+ * header) without opening a chat. The setup section still owns waiting-state
+ * UI such as the sign-in link and callback field.
+ */
+export function AntigravityGoogleSignInButton({
+  environmentId,
+  instanceId,
+  provider,
+  authMethod,
+  size = "xs",
+  onStarted,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ProviderInstanceId;
+  readonly provider: ServerProvider | undefined;
+  readonly authMethod: AntigravityAuthMethod;
+  readonly size?: "xs" | "sm" | undefined;
+  readonly onStarted?: (() => void) | undefined;
+}) {
+  const target = { environmentId, input: { instanceId } };
+  const authQuery = useEnvironmentQuery(serverEnvironment.providerAuthState(target));
+  const startAuth = useAtomCommand(serverEnvironment.startProviderAuth, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const auth = authQuery.data;
+  const authActive =
+    auth?.phase === "starting" || auth?.phase === "waiting" || auth?.phase === "verifying";
+
+  if (!offersAntigravityGoogleSignIn(provider, authMethod) || authActive) {
+    return null;
+  }
+
+  return (
+    <Button
+      size={size}
+      variant="outline"
+      disabled={pending || auth === null || authQuery.error !== null}
+      onClick={() => {
+        if (pendingRef.current) return;
+        onStarted?.();
+        pendingRef.current = true;
+        setPending(true);
+        void startAuth(target).finally(() => {
+          pendingRef.current = false;
+          setPending(false);
+        });
+      }}
+    >
+      {auth?.phase === "failed" || auth?.phase === "cancelled"
+        ? "Retry Google sign-in"
+        : "Sign in with Google"}
+    </Button>
   );
 }
 
@@ -131,7 +209,7 @@ function ProviderSetupActions({
   readonly authMethod: AntigravityAuthMethod;
 }) {
   const target = { environmentId, input: { instanceId } };
-  const usesBrowser = authMethod === "oauth-personal" || authMethod === "oauth-business";
+  const usesBrowser = usesAntigravityBrowserAuth(authMethod);
   const phaseLabels = usesBrowser ? AUTH_PHASE_LABELS : CREDENTIAL_PHASE_LABELS;
   const methodLabel =
     ANTIGRAVITY_AUTH_METHODS.find((method) => method.value === authMethod)?.label ??
@@ -391,14 +469,7 @@ function ProviderSetupActions({
         }
         control={
           <div className="flex min-w-0 flex-col gap-2 sm:max-w-56 sm:items-end sm:text-right xl:max-w-72">
-            <p
-              role="status"
-              className={
-                authStatusMessage === phaseLabels.idle
-                  ? "sr-only"
-                  : "text-muted-foreground [overflow-wrap:anywhere]"
-              }
-            >
+            <p role="status" className="text-muted-foreground [overflow-wrap:anywhere]">
               {authStatusMessage}
             </p>
             {authorizationUrl ? (

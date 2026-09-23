@@ -83,7 +83,12 @@ import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { UsageProviderSettings } from "./UsageProviderSettings";
-import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
+import {
+  AntigravityGoogleSignInButton,
+  offersAntigravityGoogleSignIn,
+  ProviderSetupSection,
+  readAntigravityAuthMethod,
+} from "./ProviderSetupSection";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import {
@@ -900,6 +905,7 @@ export function EnvironmentProviderSettings({
       favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
     );
     const resetLabel = driverOption?.label ?? String(row.driver);
+    const authMethod = readAntigravityAuthMethod(row.instance.config);
 
     return (
       <ProviderInstanceCard
@@ -912,6 +918,18 @@ export function EnvironmentProviderSettings({
         selected={mode === "list" && selectedRow?.instanceId === row.instanceId}
         onSelect={mode === "list" ? () => setSelectedInstanceId(row.instanceId) : undefined}
         readOnly={readOnly}
+        signInAction={
+          !readOnly && offersAntigravityGoogleSignIn(liveProvider, authMethod) ? (
+            <AntigravityGoogleSignInButton
+              environmentId={environmentId}
+              instanceId={row.instanceId}
+              provider={liveProvider}
+              authMethod={authMethod}
+              size={mode === "list" ? "xs" : "sm"}
+              onStarted={mode === "list" ? () => setSelectedInstanceId(row.instanceId) : undefined}
+            />
+          ) : null
+        }
         setup={
           mode === "editor" && row.driver === "antigravity" ? (
             <ProviderSetupSection
@@ -920,7 +938,7 @@ export function EnvironmentProviderSettings({
               instanceId={row.instanceId}
               provider={liveProvider}
               binaryPath={configuredBinaryPath(row.instance.config)}
-              authMethod={readAntigravityAuthMethod(row.instance.config)}
+              authMethod={authMethod}
               enabled={resolveProviderInstanceEnabled(row.instance)}
               readOnly={readOnly}
               onEnable={() => updateProviderInstance(row, { ...row.instance, enabled: true })}
