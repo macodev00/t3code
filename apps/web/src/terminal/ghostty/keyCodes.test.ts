@@ -55,7 +55,10 @@ function describeGhosttyConsumedMods() {
     expect(ghosttyConsumedMods({ ...option, shiftKey: true }, "Linux")).toBe(0);
   }
 
-  it("consumes a lone macOS Option that produced a character", consumesLoneMacOSOptionThatProducedACharacter);
+  it(
+    "consumes a lone macOS Option that produced a character",
+    consumesLoneMacOSOptionThatProducedACharacter,
+  );
 }
 
 describe("ghosttyConsumedMods", describeGhosttyConsumedMods);
