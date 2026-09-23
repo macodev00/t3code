@@ -50,6 +50,8 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { HttpServer } from "effect/unstable/http";
+import * as NetAddress from "effect/unstable/net/NetAddress";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
@@ -74,6 +76,9 @@ import {
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
 import * as ServerConfig from "../../config.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
@@ -5148,5 +5153,552 @@ describe("agent browser access", () => {
       );
       assert.deepEqual(issued, [{ threadId, capabilities: ["preview", "pull-requests"] }]);
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
+interface ClaudeStartHold {
+  readonly entered: Deferred.Deferred<void>;
+  readonly release: Deferred.Deferred<void>;
+}
+
+interface ClaudeStartControl {
+  rejectNextStart: boolean;
+  stopThenFailProbe: boolean;
+  failHasSession: boolean;
+  hold: ClaudeStartHold | null;
+}
+
+/**
+ * Two Claude instances that share a continuation key, so a start may switch
+ * between them without a resume-state validation error. Ids in
+ * `missingAdapters` still have routing info, but `getByInstance` fails as if
+ * that provider instance's adapter is already gone.
+ */
+function makeSharedClaudeRegistry(
+  entries: ReadonlyArray<readonly [ProviderInstanceId, ProviderAdapterShape<ProviderAdapterError>]>,
+  missingAdapters?: ReadonlySet<ProviderInstanceId>,
+): ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] {
+  const adapters = new Map(entries);
+  const continuationKey = "claudeAgent:shared-continuation";
+  const unsupported = new ProviderUnsupportedError({ provider: CLAUDE_AGENT_DRIVER });
+  return {
+    getByInstance: (instanceId) => {
+      if (missingAdapters?.has(instanceId)) {
+        return Effect.fail(unsupported);
+      }
+      const adapter = adapters.get(instanceId);
+      return adapter ? Effect.succeed(adapter) : Effect.fail(unsupported);
+    },
+    getInstanceInfo: (instanceId) => {
+      const adapter = adapters.get(instanceId);
+      if (!adapter) {
+        return Effect.fail(unsupported);
+      }
+      return Effect.succeed({
+        instanceId,
+        driverKind: adapter.provider,
+        displayName: undefined,
+        enabled: true,
+        continuationIdentity: {
+          driverKind: adapter.provider,
+          continuationKey,
+        },
+      });
+    },
+    listInstances: () => Effect.succeed(Array.from(adapters.keys())),
+    subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), (pubsub) =>
+      PubSub.subscribe(pubsub),
+    ),
+  };
+}
+
+/**
+ * Record the MCP header a start would bake in. Can refuse the start, stall it,
+ * or stop the current session and then fail the follow-up probe.
+ */
+function instrumentClaudeStart(
+  claude: ReturnType<typeof makeFakeCodexAdapter>,
+  seenAuthorizationHeaders: Array<string | undefined>,
+  control: ClaudeStartControl,
+) {
+  const originalStart = claude.startSession.getMockImplementation() as
+    | ((input: ProviderSessionStartInput) => Effect.Effect<ProviderSession, ProviderAdapterError>)
+    | undefined;
+  const originalHasSession = claude.hasSession.getMockImplementation() as
+    | ((threadId: ThreadId) => Effect.Effect<boolean>)
+    | undefined;
+
+  /**
+   * Probe the adapter session, or fail after a replacement has stopped it.
+   */
+  const probeSession = (threadId: ThreadId): Effect.Effect<boolean> => {
+    if (control.failHasSession) {
+      return Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: CLAUDE_AGENT_DRIVER,
+          method: "hasSession",
+          detail: "session probe failed after replacement",
+        }),
+      ) as unknown as Effect.Effect<boolean>;
+    }
+    if (originalHasSession === undefined) {
+      return Effect.die("Claude hasSession mock is missing its original implementation");
+    }
+    return originalHasSession(threadId);
+  };
+
+  /**
+   * Capture the credential a start would bake in, then continue, refuse, or stall.
+   */
+  const implementStart = (input: ProviderSessionStartInput) =>
+    Effect.gen(function* () {
+      seenAuthorizationHeaders.push(
+        McpProviderSession.readMcpProviderSession(input.threadId)?.authorizationHeader,
+      );
+      const hold = control.hold;
+      if (hold !== null) {
+        control.hold = null;
+        yield* Deferred.succeed(hold.entered, undefined);
+        yield* Deferred.await(hold.release);
+        return yield* new ProviderAdapterRequestError({
+          provider: CLAUDE_AGENT_DRIVER,
+          method: "startSession",
+          detail: "Claude session replacement is blocked: 1 live task(s) are still running.",
+        });
+      }
+      if (control.stopThenFailProbe) {
+        control.stopThenFailProbe = false;
+        yield* claude.stopSession(input.threadId);
+        control.failHasSession = true;
+        return yield* new ProviderAdapterRequestError({
+          provider: CLAUDE_AGENT_DRIVER,
+          method: "startSession",
+          detail: "replacement stopped the session and the follow-up probe failed",
+        });
+      }
+      if (control.rejectNextStart) {
+        control.rejectNextStart = false;
+        return yield* new ProviderAdapterRequestError({
+          provider: CLAUDE_AGENT_DRIVER,
+          method: "startSession",
+          detail: "Claude session replacement is blocked: 1 live task(s) are still running.",
+        });
+      }
+      if (originalStart === undefined) {
+        return yield* Effect.die("Claude startSession mock is missing its original implementation");
+      }
+      return yield* originalStart(input);
+    });
+
+  (
+    claude.hasSession as unknown as {
+      mockImplementation(fn: typeof probeSession): void;
+    }
+  ).mockImplementation(probeSession);
+  (
+    claude.startSession as unknown as {
+      mockImplementation(fn: typeof implementStart): void;
+    }
+  ).mockImplementation(implementStart);
+}
+
+/**
+ * Provider service wired to the real MCP registry and Claude adapters.
+ * `startSession` records the authorization header the adapter would bake in.
+ * `missingAdapters` hides those instances from `getByInstance` after setup.
+ */
+function makeClaudeMcpProviderHarness(options?: {
+  readonly secondaryInstanceId?: ProviderInstanceId;
+  readonly missingAdapters?: ReadonlySet<ProviderInstanceId>;
+}) {
+  const primary = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const secondary =
+    options?.secondaryInstanceId === undefined
+      ? undefined
+      : makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const seenAuthorizationHeaders: Array<string | undefined> = [];
+  const control: ClaudeStartControl = {
+    rejectNextStart: false,
+    stopThenFailProbe: false,
+    failHasSession: false,
+    hold: null,
+  };
+  instrumentClaudeStart(primary, seenAuthorizationHeaders, control);
+  if (secondary) {
+    instrumentClaudeStart(secondary, seenAuthorizationHeaders, control);
+  }
+
+  const httpServer = HttpServer.HttpServer.of({
+    address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+    serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
+  });
+  const mcpRegistryLayer = McpSessionRegistry.layer.pipe(
+    Layer.provide(Layer.succeed(HttpServer.HttpServer, httpServer)),
+    Layer.provide(
+      Layer.succeed(
+        ServerEnvironment.ServerEnvironment,
+        ServerEnvironment.ServerEnvironment.of({
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-mcp-retain")),
+          getDescriptor: Effect.die("unused"),
+        }),
+      ),
+    ),
+    Layer.provide(NodeServices.layer),
+  );
+  const registry =
+    secondary && options?.secondaryInstanceId !== undefined
+      ? makeSharedClaudeRegistry(
+          [
+            [claudeAgentInstanceId, primary.adapter],
+            [options.secondaryInstanceId, secondary.adapter],
+          ],
+          options.missingAdapters,
+        )
+      : makeAdapterRegistryMock({ [CLAUDE_AGENT_DRIVER]: primary.adapter });
+  const providerLayer = makeProviderServiceLive().pipe(
+    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+    Layer.provide(
+      ProviderSessionDirectoryLive.pipe(
+        Layer.provide(ProviderSessionRuntime.layer.pipe(Layer.provide(SqlitePersistenceMemory))),
+      ),
+    ),
+    Layer.provide(defaultServerSettingsLayer),
+    Layer.provide(serverConfigTestLayer),
+    Layer.provide(AnalyticsService.layerTest),
+    Layer.provide(
+      Layer.succeed(
+        ProviderEventLoggers.ProviderEventLoggers,
+        ProviderEventLoggers.NoOpProviderEventLoggers,
+      ),
+    ),
+  );
+
+  return {
+    primary,
+    secondary,
+    seenAuthorizationHeaders,
+    rejectNextStart: () => {
+      control.rejectNextStart = true;
+    },
+    stopThenFailProbe: () => {
+      control.stopThenFailProbe = true;
+    },
+    holdNextStart: (hold: ClaudeStartHold) => {
+      control.hold = hold;
+    },
+    layer: Layer.mergeAll(providerLayer, mcpRegistryLayer),
+  };
+}
+
+/** Bearer token carried by an MCP authorization header. */
+function mcpBearerToken(authorizationHeader: string | undefined): string {
+  return authorizationHeader?.replace(/^Bearer\s+/, "") ?? "";
+}
+
+/**
+ * Inputs for a Claude `startSession` against a real workspace directory.
+ */
+function claudeStartInput(
+  threadId: ThreadId,
+  cwd: string,
+  runtimeMode: "full-access" | "approval-required" | "auto-accept-edits",
+  providerInstanceId: ProviderInstanceId = claudeAgentInstanceId,
+) {
+  return {
+    provider: CLAUDE_AGENT_DRIVER,
+    providerInstanceId,
+    threadId,
+    cwd,
+    runtimeMode,
+  };
+}
+
+/**
+ * A refused restart leaves the credential the live query already presented.
+ */
+function keepsLiveMcpCredentialWhenSessionReplacementIsRefused() {
+  const harness = makeClaudeMcpProviderHarness();
+  const threadId = asThreadId("thread-mcp-refuse");
+  const cwd = fixtureCwd("mcp-refuse");
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService.ProviderService;
+    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    yield* provider.startSession(threadId, claudeStartInput(threadId, cwd, "full-access"));
+    const liveHeader = harness.seenAuthorizationHeaders[0];
+    const liveToken = mcpBearerToken(liveHeader);
+    assert.equal(liveToken.length > 20, true);
+    assert.equal((yield* registry.resolve(liveToken))?.threadId, threadId);
+
+    harness.rejectNextStart();
+    const failure = yield* provider
+      .startSession(threadId, claudeStartInput(threadId, cwd, "approval-required"))
+      .pipe(Effect.flip);
+    const replacementToken = mcpBearerToken(harness.seenAuthorizationHeaders[1]);
+
+    assert.equal(failure._tag, "ProviderAdapterRequestError");
+    assert.notEqual(harness.seenAuthorizationHeaders[1], liveHeader);
+    assert.equal(
+      McpProviderSession.readMcpProviderSession(threadId)?.authorizationHeader,
+      liveHeader,
+    );
+    assert.equal((yield* registry.resolve(liveToken))?.threadId, threadId);
+    assert.equal(yield* registry.resolve(replacementToken), undefined);
+    const sessions = yield* harness.primary.adapter.listSessions();
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]?.runtimeMode, "full-access");
+  }).pipe(Effect.provide(harness.layer));
+}
+
+/**
+ * An accepted replacement revokes the credential the stopped query was using.
+ */
+function rotatesMcpCredentialWhenSessionReplacementIsAccepted() {
+  const harness = makeClaudeMcpProviderHarness();
+  const threadId = asThreadId("thread-mcp-replace");
+  const cwd = fixtureCwd("mcp-replace");
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService.ProviderService;
+    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    yield* provider.startSession(threadId, claudeStartInput(threadId, cwd, "full-access"));
+    const liveHeader = harness.seenAuthorizationHeaders[0];
+    const liveToken = mcpBearerToken(liveHeader);
+
+    const replaced = yield* provider.startSession(
+      threadId,
+      claudeStartInput(threadId, cwd, "approval-required"),
+    );
+    const nextHeader = harness.seenAuthorizationHeaders[1];
+    const nextToken = mcpBearerToken(nextHeader);
+
+    assert.equal(replaced.runtimeMode, "approval-required");
+    assert.notEqual(nextHeader, liveHeader);
+    assert.equal(
+      McpProviderSession.readMcpProviderSession(threadId)?.authorizationHeader,
+      nextHeader,
+    );
+    assert.equal(yield* registry.resolve(liveToken), undefined);
+    assert.equal((yield* registry.resolve(nextToken))?.threadId, threadId);
+  }).pipe(Effect.provide(harness.layer));
+}
+
+/**
+ * A failed first start still revokes the credential it just issued.
+ */
+function clearsMcpCredentialWhenInitialStartFails() {
+  const harness = makeClaudeMcpProviderHarness();
+  const threadId = asThreadId("thread-mcp-initial-fail");
+  const cwd = fixtureCwd("mcp-initial-fail");
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService.ProviderService;
+    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    harness.rejectNextStart();
+    const failure = yield* provider
+      .startSession(threadId, claudeStartInput(threadId, cwd, "full-access"))
+      .pipe(Effect.flip);
+    const issuedToken = mcpBearerToken(harness.seenAuthorizationHeaders[0]);
+
+    assert.equal(failure._tag, "ProviderAdapterRequestError");
+    assert.equal(yield* registry.resolve(issuedToken), undefined);
+    assert.equal(McpProviderSession.readMcpProviderSession(threadId), undefined);
+    assert.equal(yield* harness.primary.adapter.hasSession(threadId), false);
+  }).pipe(Effect.provide(harness.layer));
+}
+
+/**
+ * A probe that fails after the old session was stopped revokes that session's
+ * bearer token instead of restoring it.
+ */
+function revokesPreviousCredentialWhenSessionProbeFailsAfterStop() {
+  const harness = makeClaudeMcpProviderHarness();
+  const threadId = asThreadId("thread-mcp-probe-fail");
+  const cwd = fixtureCwd("mcp-probe-fail");
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService.ProviderService;
+    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    yield* provider.startSession(threadId, claudeStartInput(threadId, cwd, "full-access"));
+    const liveToken = mcpBearerToken(harness.seenAuthorizationHeaders[0]);
+
+    harness.stopThenFailProbe();
+    const failure = yield* provider
+      .startSession(threadId, claudeStartInput(threadId, cwd, "approval-required"))
+      .pipe(Effect.flip);
+    const replacementToken = mcpBearerToken(harness.seenAuthorizationHeaders[1]);
+
+    assert.equal(failure._tag, "ProviderAdapterRequestError");
+    assert.equal(yield* registry.resolve(liveToken), undefined);
+    assert.equal(yield* registry.resolve(replacementToken), undefined);
+    assert.equal(McpProviderSession.readMcpProviderSession(threadId), undefined);
+    const sessions = yield* harness.primary.adapter.listSessions();
+    assert.equal(sessions.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+}
+
+/**
+ * Overlapping starts must not leave the original query's MCP credential
+ * authorized after a later start replaces the session.
+ */
+function revokesSupersededCredentialsWhenReplacementStartsOverlap() {
+  const harness = makeClaudeMcpProviderHarness();
+  const threadId = asThreadId("thread-mcp-overlap");
+  const cwd = fixtureCwd("mcp-overlap");
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService.ProviderService;
+    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    yield* provider.startSession(threadId, claudeStartInput(threadId, cwd, "full-access"));
+    const originalToken = mcpBearerToken(harness.seenAuthorizationHeaders[0]);
+
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    harness.holdNextStart({ entered, release });
+    const failureFiber = yield* provider
+      .startSession(threadId, claudeStartInput(threadId, cwd, "auto-accept-edits"))
+      .pipe(Effect.flip, Effect.forkChild);
+    yield* Deferred.await(entered);
+    const replacedFiber = yield* provider
+      .startSession(threadId, claudeStartInput(threadId, cwd, "approval-required"))
+      .pipe(Effect.forkChild);
+    yield* Deferred.succeed(release, undefined);
+    const failure = yield* Fiber.join(failureFiber);
+    const replaced = yield* Fiber.join(replacedFiber);
+    const stalledToken = mcpBearerToken(harness.seenAuthorizationHeaders[1]);
+    const winnerToken = mcpBearerToken(harness.seenAuthorizationHeaders[2]);
+
+    assert.equal(failure._tag, "ProviderAdapterRequestError");
+    assert.equal(replaced.runtimeMode, "approval-required");
+    assert.equal(yield* registry.resolve(originalToken), undefined);
+    assert.equal(yield* registry.resolve(stalledToken), undefined);
+    assert.equal((yield* registry.resolve(winnerToken))?.threadId, threadId);
+    assert.equal(
+      McpProviderSession.readMcpProviderSession(threadId)?.authorizationHeader,
+      harness.seenAuthorizationHeaders[2],
+    );
+  }).pipe(Effect.provide(harness.layer));
+}
+
+/**
+ * A failed replacement revokes the thread MCP credential when the previous
+ * provider instance's adapter is already gone, instead of restoring that
+ * stopped process's bearer token.
+ */
+function revokesThreadCredentialWhenPreviousAdapterIsGone() {
+  const secondaryInstanceId = ProviderInstanceId.make("claudeAgent-missing-adapter");
+  const missingAdapters = new Set<ProviderInstanceId>();
+  const harness = makeClaudeMcpProviderHarness({
+    secondaryInstanceId,
+    missingAdapters,
+  });
+  const threadId = asThreadId("thread-mcp-missing-adapter");
+  const cwd = fixtureCwd("mcp-missing-adapter");
+  return Effect.gen(
+    /**
+     * Hide the previous adapter, fail the replacement, and require both bearer
+     * tokens and the stored session config to be gone.
+     */
+    function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      yield* provider.startSession(threadId, claudeStartInput(threadId, cwd, "full-access"));
+      const liveToken = mcpBearerToken(harness.seenAuthorizationHeaders[0]);
+      assert.equal((yield* registry.resolve(liveToken))?.threadId, threadId);
+
+      // Routing info remains so the switch reaches credential settlement, but
+      // the previous adapter can no longer be located.
+      missingAdapters.add(claudeAgentInstanceId);
+      harness.rejectNextStart();
+      const failure = yield* provider
+        .startSession(
+          threadId,
+          claudeStartInput(threadId, cwd, "approval-required", secondaryInstanceId),
+        )
+        .pipe(Effect.flip);
+      const replacementToken = mcpBearerToken(harness.seenAuthorizationHeaders[1]);
+
+      assert.equal(failure._tag, "ProviderAdapterRequestError");
+      assert.equal(yield* registry.resolve(liveToken), undefined);
+      assert.equal(yield* registry.resolve(replacementToken), undefined);
+      assert.equal(McpProviderSession.readMcpProviderSession(threadId), undefined);
+    },
+  ).pipe(Effect.provide(harness.layer));
+}
+
+/**
+ * A rejected switch to another provider instance keeps the session and MCP
+ * credential that the previous instance still owns.
+ */
+function keepsPreviousSessionWhenReplacementSwitchesInstanceAndIsRejected() {
+  const secondaryInstanceId = ProviderInstanceId.make("claudeAgent-alt");
+  const harness = makeClaudeMcpProviderHarness({ secondaryInstanceId });
+  const threadId = asThreadId("thread-mcp-switch");
+  const cwd = fixtureCwd("mcp-switch");
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService.ProviderService;
+    const registry = yield* McpSessionRegistry.McpSessionRegistry;
+    const secondary = harness.secondary;
+    if (secondary === undefined) {
+      return yield* Effect.die("expected a secondary Claude adapter");
+    }
+    yield* provider.startSession(threadId, claudeStartInput(threadId, cwd, "full-access"));
+    const liveHeader = harness.seenAuthorizationHeaders[0];
+    const liveToken = mcpBearerToken(liveHeader);
+
+    harness.rejectNextStart();
+    const failure = yield* provider
+      .startSession(
+        threadId,
+        claudeStartInput(threadId, cwd, "approval-required", secondaryInstanceId),
+      )
+      .pipe(Effect.flip);
+    const replacementToken = mcpBearerToken(harness.seenAuthorizationHeaders[1]);
+    const primarySessions = yield* harness.primary.adapter.listSessions();
+
+    assert.equal(failure._tag, "ProviderAdapterRequestError");
+    assert.equal(harness.primary.stopSession.mock.calls.length, 0);
+    assert.equal(yield* secondary.adapter.hasSession(threadId), false);
+    assert.equal(primarySessions.length, 1);
+    assert.equal(primarySessions[0]?.runtimeMode, "full-access");
+    assert.equal(
+      McpProviderSession.readMcpProviderSession(threadId)?.authorizationHeader,
+      liveHeader,
+    );
+    assert.equal((yield* registry.resolve(liveToken))?.threadId, threadId);
+    assert.equal(yield* registry.resolve(replacementToken), undefined);
+  }).pipe(Effect.provide(harness.layer));
+}
+
+describe("MCP credential across session replacement", () => {
+  it.effect(
+    "keeps the live query credential when replacement is refused",
+    keepsLiveMcpCredentialWhenSessionReplacementIsRefused,
+  );
+
+  it.effect(
+    "rotates the MCP credential when replacement is accepted",
+    rotatesMcpCredentialWhenSessionReplacementIsAccepted,
+  );
+
+  it.effect(
+    "clears the MCP credential when the first start fails",
+    clearsMcpCredentialWhenInitialStartFails,
+  );
+
+  it.effect(
+    "revokes the previous credential when the session probe fails after the old session stopped",
+    revokesPreviousCredentialWhenSessionProbeFailsAfterStop,
+  );
+
+  it.effect(
+    "revokes superseded credentials when replacement starts overlap",
+    revokesSupersededCredentialsWhenReplacementStartsOverlap,
+  );
+
+  it.effect(
+    "revokes the thread credential when the previous provider adapter is gone",
+    revokesThreadCredentialWhenPreviousAdapterIsGone,
+  );
+
+  it.effect(
+    "keeps the previous session when a switch to another instance is rejected",
+    keepsPreviousSessionWhenReplacementSwitchesInstanceAndIsRejected,
   );
 });

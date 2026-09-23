@@ -16,6 +16,11 @@ export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
+  /**
+   * Keep credentials already issued for this thread. A refused session
+   * replacement still needs the token the running query baked in.
+   */
+  readonly retainExisting?: boolean;
 }
 
 export interface McpIssuedCredential {
@@ -34,6 +39,19 @@ export interface McpSessionRegistryShape {
    */
   readonly touch: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
+  /**
+   * Drop every credential for a thread except one provider session.
+   * An accepted replacement uses this so every superseded bearer token stops
+   * authorizing `/mcp`, not only the snapshot the caller happened to hold.
+   */
+  readonly revokeThreadExcept: (
+    threadId: ThreadId,
+    keepProviderSessionId: string,
+  ) => Effect.Effect<void>;
+  /**
+   * Whether a provider session's bearer token is still authorized.
+   */
+  readonly hasProviderSession: (providerSessionId: string) => Effect.Effect<boolean>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeAll: Effect.Effect<void>;
 }
@@ -196,6 +214,34 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         yield* revokeWhere((record) => record.scope.providerSessionId === providerSessionId);
       },
     ),
+    revokeThreadExcept: Effect.fn("McpSessionRegistry.revokeThreadExcept")(
+      /**
+       * Revoke every credential for a thread except the provider session a
+       * replacement just accepted.
+       */
+      function* (threadId, keepProviderSessionId) {
+        yield* revokeWhere(
+          (record) =>
+            record.scope.threadId === threadId &&
+            record.scope.providerSessionId !== keepProviderSessionId,
+        );
+      },
+    ),
+    hasProviderSession: Effect.fn("McpSessionRegistry.hasProviderSession")(
+      /**
+       * Report whether a provider session's bearer token is still authorized.
+       */
+      function* (providerSessionId) {
+        const timestamp = yield* currentTimeMillis;
+        return yield* SynchronizedRef.modify(state, ({ records }) => {
+          const current = pruneDead(records, timestamp);
+          const alive = Array.from(current.values()).some(
+            (record) => record.scope.providerSessionId === providerSessionId,
+          );
+          return [alive, { records: current }] as const;
+        });
+      },
+    ),
     revokeThread: Effect.fn("McpSessionRegistry.revokeThread")(function* (threadId) {
       yield* revokeWhere((record) => record.scope.threadId === threadId);
     }),
@@ -223,14 +269,50 @@ const make = Effect.acquireRelease(
 
 export const layer = Layer.effect(McpSessionRegistry, make);
 
+/**
+ * Issue the MCP credential a provider session presents to `/mcp`.
+ * Replaces any credential already issued for the thread unless
+ * `retainExisting` is set, which keeps the live query's token valid until
+ * the caller revokes it.
+ */
 export const issueActiveMcpCredential = (
   request: McpCredentialRequest,
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
-    ? activeMcpSessionRegistry
-        .revokeThread(request.threadId)
-        .pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
+    ? (request.retainExisting === true
+        ? Effect.void
+        : activeMcpSessionRegistry.revokeThread(request.threadId)
+      ).pipe(Effect.andThen(activeMcpSessionRegistry.issue(request)))
     : Effect.sync((): McpIssuedCredential | undefined => undefined);
+
+/**
+ * Revoke one issued MCP credential without touching the thread's other tokens.
+ * Drops a rejected replacement credential while a live query keeps its own.
+ */
+export const revokeActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<void> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.revokeProviderSession(providerSessionId)
+    : Effect.void;
+
+/**
+ * Revoke every MCP credential for a thread except the provider session a
+ * replacement just accepted. Superseded bearer tokens stop authorizing `/mcp`.
+ */
+export const revokeActiveMcpThreadExcept = (
+  threadId: ThreadId,
+  keepProviderSessionId: string,
+): Effect.Effect<void> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.revokeThreadExcept(threadId, keepProviderSessionId)
+    : Effect.void;
+
+/**
+ * Whether a provider session's bearer token is still authorized for `/mcp`.
+ */
+export const hasActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<boolean> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.hasProviderSession(providerSessionId)
+    : Effect.succeed(false);
 
 /**
  * Refreshes the liveness of a thread's MCP credential. Called on every provider
