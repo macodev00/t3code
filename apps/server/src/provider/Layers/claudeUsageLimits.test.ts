@@ -144,6 +144,42 @@ const noAccount = {
   apiProvider: undefined,
 } as const;
 
+describe("claudeAccountReportsSubscriptionUsage", () => {
+  it("treats a named subscription or known OAuth source as subscription usage", () => {
+    expect(
+      claudeAccountReportsSubscriptionUsage({
+        ...noAccount,
+        subscriptionType: "max",
+      }),
+    ).toBe(true);
+    expect(claudeAccountReportsSubscriptionUsage({ ...noAccount, tokenSource: "oauth" })).toBe(
+      true,
+    );
+    expect(claudeAccountReportsSubscriptionUsage({ ...noAccount, tokenSource: "claude.ai" })).toBe(
+      true,
+    );
+    expect(
+      claudeAccountReportsSubscriptionUsage({
+        ...noAccount,
+        tokenSource: "CLAUDE_CODE_OAUTH_TOKEN",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects API-key, cloud, and unknown token sources", () => {
+    expect(
+      claudeAccountReportsSubscriptionUsage({ ...noAccount, tokenSource: "ANTHROPIC_AUTH_TOKEN" }),
+    ).toBe(false);
+    expect(claudeAccountReportsSubscriptionUsage({ ...noAccount, apiProvider: "vertex" })).toBe(
+      false,
+    );
+    expect(
+      claudeAccountReportsSubscriptionUsage({ ...noAccount, tokenSource: "some-other-key" }),
+    ).toBe(false);
+    expect(claudeAccountReportsSubscriptionUsage(noAccount)).toBe(false);
+  });
+});
+
 describe("claudeProbeUsageLimits", () => {
   it("keeps API key and Bedrock logins unsupported", () => {
     const unavailable = { rate_limits_available: false, rate_limits: null } as const;
@@ -161,13 +197,18 @@ describe("claudeProbeUsageLimits", () => {
         account: { ...noAccount, apiProvider: "bedrock" },
       }).limits.unavailable?.reason,
     ).toBe("unsupported");
-    expect(claudeAccountReportsSubscriptionUsage({ ...noAccount, apiProvider: "vertex" })).toBe(
-      false,
-    );
+    expect(
+      claudeProbeUsageLimits({
+        checkedAt,
+        usage: unavailable,
+        account: { ...noAccount, tokenSource: "some-other-key" },
+      }).limits.unavailable?.reason,
+    ).toBe("unsupported");
   });
 
   it("does not lock a subscription instance that returned no windows", () => {
     const account = { subscriptionType: "max", tokenSource: "oauth", apiProvider: undefined };
+    const oauthOnly = { ...noAccount, tokenSource: "claude.ai" };
     for (const usage of [
       { rate_limits_available: false, rate_limits: null },
       { rate_limits_available: true, rate_limits: null },
@@ -176,6 +217,13 @@ describe("claudeProbeUsageLimits", () => {
         "probeFailed",
       );
     }
+    expect(
+      claudeProbeUsageLimits({
+        checkedAt,
+        usage: { rate_limits_available: false, rate_limits: null },
+        account: oauthOnly,
+      }).limits.unavailable?.reason,
+    ).toBe("probeFailed");
     expect(
       claudeProbeUsageLimits({
         checkedAt,

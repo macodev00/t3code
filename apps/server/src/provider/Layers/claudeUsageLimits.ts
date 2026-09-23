@@ -163,11 +163,20 @@ export function claudeRateLimitEventToUpdate(
 const NON_SUBSCRIPTION_API_PROVIDERS = new Set(["bedrock", "vertex"]);
 
 /**
+ * Claude.ai OAuth token sources, after the same separator-stripping used for
+ * API-key names. `claude.ai` keeps its dot because that is the CLI's
+ * `authMethod` literally.
+ */
+const SUBSCRIPTION_TOKEN_SOURCES = new Set(["claude.ai", "claudecodeoauthtoken", "oauth"]);
+
+/**
  * Whether this Claude login can have subscription windows.
  *
- * API-key, Bedrock, and Vertex accounts cannot. A named subscription, or any
- * other token source, can — a `get_usage` flag that says otherwise is a
- * failed read, not proof the account has no quota.
+ * API-key, Bedrock, and Vertex accounts cannot. A named subscription, or a
+ * known OAuth token source, can — a `get_usage` flag that says otherwise is a
+ * failed read, not proof the account has no quota. Unknown token sources are
+ * treated as non-subscription accounts so they stay `unsupported` instead of
+ * showing a failed limits probe.
  */
 export function claudeAccountReportsSubscriptionUsage(account: {
   readonly subscriptionType: string | undefined;
@@ -185,7 +194,7 @@ export function claudeAccountReportsSubscriptionUsage(account: {
     return false;
   }
   if (account.subscriptionType?.trim()) return true;
-  return Boolean(account.tokenSource?.trim());
+  return tokenSource !== undefined && SUBSCRIPTION_TOKEN_SOURCES.has(tokenSource);
 }
 
 /**
