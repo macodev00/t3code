@@ -184,6 +184,13 @@ const codeToGhosttyKey = new Map<string, number>(
   ghosttyKeyboardCodes.map((code, index) => [code, index]),
 );
 
+/**
+ * GhosttyKey enum index for a `KeyboardEvent.code`, or Unidentified (0).
+ *
+ * Values match GhosttyKey in ghostty/vt/key/event.h so the WASM encoder sees
+ * the same key identity as Ghostty. Used with consumed mods when encoding a
+ * composed character such as German Option+L (`@`).
+ */
 export function ghosttyKeyForCode(code: string): number {
   return codeToGhosttyKey.get(code) ?? 0;
 }
@@ -237,6 +244,16 @@ const GHOSTTY_MOD_SHIFT = 1 << 0;
 const GHOSTTY_MOD_ALT = 1 << 2;
 
 /**
+ * True when `platform` is a macOS or iOS `navigator.platform` string.
+ *
+ * Same host check as isMacPlatform in lib/utils.ts. Kept local so this module
+ * stays free of the app utility graph. Option is only consumed on these hosts.
+ */
+function isGhosttyMacPlatform(platform: string): boolean {
+  return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
+/**
  * Modifiers the layout consumed to produce `event.key`, as a GhosttyMods bitmask.
  *
  * The DOM does not report consumed modifiers. A lone Shift is consumed so a
@@ -249,6 +266,10 @@ const GHOSTTY_MOD_ALT = 1 << 2;
  * default of `macos-option-as-alt = false`. Ctrl and Meta are never consumed,
  * so those chords stay intact. Option+arrow is not a single character, so word
  * motion is unchanged.
+ *
+ * @param event - DOM key state (`key` plus Shift/Ctrl/Alt/Meta).
+ * @param platform - `navigator.platform`; defaults to the current host, or `""` off-DOM.
+ * @returns Consumed GhosttyMods bits, or `0` when the chord must stay intact.
  */
 export function ghosttyConsumedMods(
   event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
@@ -256,13 +277,23 @@ export function ghosttyConsumedMods(
 ): number {
   if ([...event.key].length !== 1 || event.ctrlKey || event.metaKey) return 0;
   const shift = event.shiftKey ? GHOSTTY_MOD_SHIFT : 0;
-  // Same host check as isMacPlatform in lib/utils.ts. Kept local so this module
-  // stays free of the app utility graph.
-  if (event.altKey && /mac|iphone|ipad|ipod/i.test(platform)) return shift | GHOSTTY_MOD_ALT;
+  if (event.altKey && isGhosttyMacPlatform(platform)) return shift | GHOSTTY_MOD_ALT;
   if (!event.shiftKey || event.altKey) return 0;
   return GHOSTTY_MOD_SHIFT;
 }
 
+/**
+ * Unshifted codepoint for Kitty alternate-key encoding.
+ *
+ * Prefers the active layout map. Falls back to US letter/symbol pairs, then
+ * lowercasing. Returns 0 when the unshifted form cannot be known, rather than
+ * reporting the shifted character as unshifted (which corrupts Kitty alts).
+ * Option-composed characters such as `@` still report their layout base key.
+ *
+ * @param event - Physical `code`, produced `key`, and whether Shift was held.
+ * @param layoutMap - Optional KeyboardLayoutMap from {@link loadGhosttyKeyboardLayoutMap}.
+ * @returns Unicode code point, or `0` when unshifted form is unknown / not a character.
+ */
 export function ghosttyUnshiftedCodepoint(
   event: Pick<KeyboardEvent, "code" | "key" | "shiftKey">,
   layoutMap?: GhosttyKeyboardLayoutMap,
