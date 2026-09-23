@@ -150,18 +150,57 @@ export function claudeRateLimitEventToUpdate(
   return undefined;
 }
 
+const NON_SUBSCRIPTION_API_PROVIDERS = new Set(["bedrock", "vertex"]);
+
+/**
+ * Whether this Claude login can have subscription windows.
+ *
+ * API-key, Bedrock, and Vertex accounts cannot. A named subscription, or any
+ * other token source, can — a `get_usage` flag that says otherwise is a
+ * failed read, not proof the account has no quota.
+ */
+export function claudeAccountReportsSubscriptionUsage(account: {
+  readonly subscriptionType: string | undefined;
+  readonly tokenSource: string | undefined;
+  readonly apiProvider: string | undefined;
+}): boolean {
+  const apiProvider = account.apiProvider?.trim().toLowerCase();
+  if (apiProvider !== undefined && NON_SUBSCRIPTION_API_PROVIDERS.has(apiProvider)) return false;
+  const tokenSource = account.tokenSource?.toLowerCase().replace(/[\s_-]+/g, "");
+  if (
+    tokenSource === "apikey" ||
+    tokenSource === "anthropicapikey" ||
+    tokenSource === "anthropicauthtoken"
+  ) {
+    return false;
+  }
+  if (account.subscriptionType?.trim()) return true;
+  return Boolean(account.tokenSource?.trim());
+}
+
 /**
  * Percentages on the `get_usage` response are already 0–100. Also yields the
  * scoped-bucket names the response carried, for the event mapper to reuse.
+ *
+ * `rate_limits_available: false` is an account the SDK says cannot report
+ * subscription windows. `rate_limits_available: true` with no `rate_limits`
+ * is a fetch that failed this time — Claude keeps the flag and nulls the
+ * body — so that is `probeFailed`, not a permanent unsupported lock.
  */
 export function claudeUsageResponseToLimits(input: {
   readonly response: Pick<SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">;
   readonly checkedAt: string;
 }): { readonly limits: ServerProviderUsageLimits; readonly names: ClaudeScopedLimitNames } {
   const { response, checkedAt } = input;
-  if (!response.rate_limits_available || !response.rate_limits) {
+  if (!response.rate_limits_available) {
     return {
       limits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }),
+      names: { overageIncluded: undefined },
+    };
+  }
+  if (!response.rate_limits) {
+    return {
+      limits: makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" }),
       names: { overageIncluded: undefined },
     };
   }
@@ -189,11 +228,56 @@ export function claudeUsageResponseToLimits(input: {
   };
 }
 
-/** Probe-side helper: map the response and remember the scoped names for events. */
+/**
+ * Limits to publish from one Claude capabilities probe.
+ *
+ * No usage payload means the request failed. `unsupported` stands only when
+ * the account cannot have a subscription. A subscription login that comes
+ * back `unsupported`, including a second instance whose `get_usage` omits
+ * windows, is `probeFailed` so a later turn can fill the bars in.
+ */
+export function claudeProbeUsageLimits(input: {
+  readonly usage:
+    | Pick<SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">
+    | undefined;
+  readonly account: {
+    readonly subscriptionType: string | undefined;
+    readonly tokenSource: string | undefined;
+    readonly apiProvider: string | undefined;
+  };
+  readonly checkedAt: string;
+}): { readonly limits: ServerProviderUsageLimits; readonly names: ClaudeScopedLimitNames } {
+  if (!input.usage) {
+    return {
+      limits: makeUnavailableUsageLimits({ checkedAt: input.checkedAt, reason: "probeFailed" }),
+      names: { overageIncluded: undefined },
+    };
+  }
+  const mapped = claudeUsageResponseToLimits({
+    response: input.usage,
+    checkedAt: input.checkedAt,
+  });
+  if (
+    mapped.limits.unavailable?.reason === "unsupported" &&
+    claudeAccountReportsSubscriptionUsage(input.account)
+  ) {
+    return {
+      limits: makeUnavailableUsageLimits({ checkedAt: input.checkedAt, reason: "probeFailed" }),
+      names: mapped.names,
+    };
+  }
+  return mapped;
+}
+
+/**
+ * Probe-side helper: map the response and remember the scoped names for events.
+ * A failed request leaves the names from the last successful body in place.
+ */
 export const recordClaudeUsageResponse = (
   namesRef: Ref.Ref<ClaudeScopedLimitNames>,
-  input: Parameters<typeof claudeUsageResponseToLimits>[0],
+  input: Parameters<typeof claudeProbeUsageLimits>[0],
 ): Effect.Effect<ServerProviderUsageLimits> => {
-  const { limits, names } = claudeUsageResponseToLimits(input);
-  return Ref.set(namesRef, names).pipe(Effect.as(limits));
+  const probed = claudeProbeUsageLimits(input);
+  if (!input.usage) return Effect.succeed(probed.limits);
+  return Ref.set(namesRef, probed.names).pipe(Effect.as(probed.limits));
 };
