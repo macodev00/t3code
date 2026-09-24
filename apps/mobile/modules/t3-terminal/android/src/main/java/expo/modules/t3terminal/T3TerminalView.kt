@@ -48,7 +48,9 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       onCapture(mapOf("text" to text))
     }
   private var terminalHandle = 0L
-  private var fedBuffer = ""
+
+  /** Local-echo cursor. [TerminalLocalEcho] keeps this aligned with Ghostty. */
+  private var echoState = TerminalEchoState()
   private var cols = 0
   private var rows = 0
   private var clearingInput = false
@@ -245,7 +247,7 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       val isEnter = isImeSend || isHardwareEnter
       if (isEnter) {
         // Enter must send CR: raw-mode TUIs treat LF as Ctrl+J (insert newline).
-        onInput(mapOf("data" to "\r"))
+        emitTypedInput("\r")
         true
       } else {
         false
@@ -255,14 +257,12 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
       when {
         keyCode == KeyEvent.KEYCODE_DEL -> {
-          onInput(mapOf("data" to "\u007F"))
+          emitTypedInput("\u007F")
           true
         }
         // Hardware keyboard Ctrl+A..Z -> control bytes 0x01..0x1A (Ctrl+C, Ctrl+Z, ...).
         event.isCtrlPressed && keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> {
-          onInput(
-            mapOf("data" to (keyCode - KeyEvent.KEYCODE_A + 1).toChar().toString()),
-          )
+          emitTypedInput((keyCode - KeyEvent.KEYCODE_A + 1).toChar().toString())
           true
         }
         else -> false
@@ -278,7 +278,7 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
           if (start >= end) return
           val insertedText = s.subSequence(start, end).toString()
           if (insertedText.isNotEmpty()) {
-            onInput(mapOf("data" to insertedText))
+            emitTypedInput(insertedText)
           }
         }
 
@@ -343,12 +343,12 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
       cursorColorValue,
       paletteColors,
     )
-    fedBuffer = ""
   }
 
   private fun recreateTerminal() {
     if (terminalHandle == 0L) return
     destroyTerminal()
+    echoState = TerminalEchoState()
     createTerminal()
     feedPendingBuffer()
     renderSnapshot()
@@ -358,28 +358,89 @@ class T3TerminalView(context: Context, appContext: AppContext) : ExpoView(contex
     if (terminalHandle == 0L) return
     GhosttyBridge.nativeDestroy(terminalHandle)
     terminalHandle = 0L
-    fedBuffer = ""
     terminalCanvas.resetSelectionState()
   }
 
+  /**
+   * Reconciles [initialBuffer] with keystrokes already painted locally.
+   * A confirmed echo is not fed again. Any other pty bytes clear the echo
+   * gate and are drawn from the authoritative buffer.
+   */
   private fun feedPendingBuffer() {
-    if (terminalHandle == 0L || initialBuffer == fedBuffer) return
-    if (!initialBuffer.startsWith(fedBuffer)) {
-      recreateTerminal()
-      if (terminalHandle == 0L) return
+    if (terminalHandle == 0L) return
+    when (val sync = TerminalLocalEcho.applyRemoteBuffer(echoState, initialBuffer)) {
+      is TerminalBufferSync.InSync -> echoState = sync.state
+      is TerminalBufferSync.Feed -> applyRemoteSuffix(sync)
+      is TerminalBufferSync.Reset -> rebuildFromRemote(sync)
     }
-    val suffix = initialBuffer.substring(fedBuffer.length)
-    if (suffix.isNotEmpty()) {
-      emitResponse(GhosttyBridge.nativeFeed(terminalHandle, suffix.toByteArray(Charsets.UTF_8)))
-      // New output invalidates an active selection (matches the web drawer);
-      // otherwise the copy toolbar drifts out of sync with the grid.
-      if (terminalCanvas.hasActiveSelection()) {
-        GhosttyBridge.nativeClearSelection(terminalHandle)
-        terminalCanvas.resetSelectionState()
-      }
+  }
+
+  /**
+   * Sends [data] to the remote pty. Printable typing is painted only after
+   * the pty has echoed a previous printable key verbatim. Echo-off and
+   * unknown states, including `read -s -p 'API token: '`, are not painted.
+   */
+  private fun emitTypedInput(data: String) {
+    if (data.isEmpty() || isCleanedUp) return
+    val decision = TerminalLocalEcho.noteLocalInput(
+      echoState,
+      data,
+      terminalHandle != 0L,
+    )
+    val paint = decision.paint
+    echoState = decision.state
+    if (paint != null) {
+      feedBytes(paint)
+      clearSelectionAfterOutput()
+      renderSnapshot()
     }
-    fedBuffer = initialBuffer
+    onInput(mapOf("data" to data))
+  }
+
+  private fun applyRemoteSuffix(sync: TerminalBufferSync.Feed) {
+    echoState = sync.state
+    feedBytes(sync.suffix)
+    clearSelectionAfterOutput()
     renderSnapshot()
+  }
+
+  /**
+   * Discards the Ghostty session and replays [TerminalBufferSync.Reset.buffer].
+   * Bytes before [TerminalBufferSync.Reset.replyFrom] were already answered, so
+   * their device replies are dropped.
+   */
+  private fun rebuildFromRemote(sync: TerminalBufferSync.Reset) {
+    destroyTerminal()
+    createTerminal()
+    if (terminalHandle == 0L) {
+      echoState = TerminalEchoState()
+      return
+    }
+    val replyFrom = sync.replyFrom.coerceIn(0, sync.buffer.length)
+    val history = sync.buffer.substring(0, replyFrom)
+    val live = sync.buffer.substring(replyFrom)
+    if (history.isNotEmpty()) {
+      GhosttyBridge.nativeFeed(terminalHandle, history.toByteArray(Charsets.UTF_8))
+    }
+    if (live.isNotEmpty()) {
+      feedBytes(live)
+    }
+    if (sync.buffer.isNotEmpty()) {
+      clearSelectionAfterOutput()
+    }
+    echoState = sync.state
+    renderSnapshot()
+  }
+
+  private fun feedBytes(data: String) {
+    if (terminalHandle == 0L || data.isEmpty()) return
+    emitResponse(GhosttyBridge.nativeFeed(terminalHandle, data.toByteArray(Charsets.UTF_8)))
+  }
+
+  private fun clearSelectionAfterOutput() {
+    if (terminalHandle == 0L || !terminalCanvas.hasActiveSelection()) return
+    GhosttyBridge.nativeClearSelection(terminalHandle)
+    terminalCanvas.resetSelectionState()
   }
 
   private fun renderSnapshot() {
