@@ -2254,11 +2254,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
-  /**
-   * Clear a persisted provider goal through the bound adapter.
-   * Fails when that adapter has no goal channel.
-   */
   const clearGoal: ProviderServiceMethod<"clearGoal"> = Effect.fn("clearGoal")(
+    /**
+     * Clear a persisted provider goal through the bound adapter.
+     * Fails when that adapter has no goal channel.
+     */
     function* (threadId) {
       const routed = yield* resolveRoutableSession({
         threadId,
