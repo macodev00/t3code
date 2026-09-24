@@ -1787,11 +1787,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadTurnsProjection",
     )(applyThreadTurnsProjectionBody);
 
-    const applyCheckpointsProjection: ProjectorDefinition["apply"] =
-      /**
-       * Checkpoint rows are not part of this orchestration read model.
-       */
-      () => Effect.void;
+    /** Checkpoint rows are not part of this orchestration read model. */
+    function applyCheckpointsProjection() {
+      return Effect.void;
+    }
 
     const applyPendingApprovalsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyPendingApprovalsProjection",

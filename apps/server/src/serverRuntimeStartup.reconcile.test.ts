@@ -54,64 +54,82 @@ const makeThread = (
   },
 });
 
-const makeProviderService =
-  /**
-   * Stub the provider service. Goal clear is unused during startup reconcile.
-   */
-  (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
-  ({
-    startSession:
-      /**
-       * Unused reconcile stub. Startup never starts a provider session.
-       */
-      () => Effect.die("unused"),
-    sendTurn:
-      /**
-       * Unused reconcile stub. Startup never sends a provider turn.
-       */
-      () => Effect.die("unused"),
-    compactThread:
-      /**
-       * Unused reconcile stub. Startup never compacts a thread.
-       */
-      () => Effect.die("unused"),
-    clearGoal:
-      /**
-       * Unused goal-clear stub for startup reconcile.
-       */
-      () => Effect.die("unused"),
-    interruptTurn:
-      /**
-       * Unused reconcile stub. Startup never interrupts a turn.
-       */
-      () => Effect.die("unused"),
-    respondToRequest:
-      /**
-       * Unused reconcile stub. Startup never answers an approval.
-       */
-      () => Effect.die("unused"),
-    respondToUserInput:
-      /**
-       * Unused reconcile stub. Startup never answers user input.
-       */
-      () => Effect.die("unused"),
-    stopSession:
-      /**
-       * Unused reconcile stub. Startup never stops a session here.
-       */
-      () => Effect.die("unused"),
-    listSessions:
-      /**
-       * Report the live thread ids this reconcile fixture was given.
-       */
-      () => Effect.succeed(liveThreadIds.map((threadId) => ({ threadId }) as never)),
-    getCapabilities: () => Effect.die("unused"),
-    assertConversationRollbackSupported: () => Effect.die("unused"),
-    getInstanceInfo: () => Effect.die("unused"),
-    rollbackConversation: () => Effect.die("unused"),
-    uploadFeedback: () => Effect.die("unused"),
+/**
+ * Stub the provider service. Goal clear is unused during startup reconcile.
+ */
+function makeProviderService(liveThreadIds: ReadonlyArray<ThreadId> = []) {
+  /** Unused reconcile stub. Startup never starts a provider session. */
+  function unusedReconcileStartSession() {
+    return Effect.die("unused");
+  }
+  /** Unused reconcile stub. Startup never sends a provider turn. */
+  function unusedReconcileSendTurn() {
+    return Effect.die("unused");
+  }
+  /** Unused reconcile stub. Startup never compacts a thread. */
+  function unusedReconcileCompactThread() {
+    return Effect.die("unused");
+  }
+  /** Unused goal-clear stub for startup reconcile. */
+  function unusedReconcileClearGoal() {
+    return Effect.die("unused");
+  }
+  /** Unused reconcile stub. Startup never interrupts a turn. */
+  function unusedReconcileInterruptTurn() {
+    return Effect.die("unused");
+  }
+  /** Unused reconcile stub. Startup never answers an approval. */
+  function unusedReconcileRespondToRequest() {
+    return Effect.die("unused");
+  }
+  /** Unused reconcile stub. Startup never answers user input. */
+  function unusedReconcileRespondToUserInput() {
+    return Effect.die("unused");
+  }
+  /** Unused reconcile stub. Startup never stops a session here. */
+  function unusedReconcileStopSession() {
+    return Effect.die("unused");
+  }
+  /** Report the live thread ids this reconcile fixture was given. */
+  function listReconcileSessions() {
+    return Effect.succeed(liveThreadIds.map((threadId) => ({ threadId }) as never));
+  }
+  /** Unused reconcile stub for provider calls startup never makes. */
+  function unusedReconcileProviderCall() {
+    return Effect.die("unused");
+  }
+  return {
+    /** Unused reconcile stub. Startup never starts a provider session. */
+    startSession: unusedReconcileStartSession,
+    /** Unused reconcile stub. Startup never sends a provider turn. */
+    sendTurn: unusedReconcileSendTurn,
+    /** Unused reconcile stub. Startup never compacts a thread. */
+    compactThread: unusedReconcileCompactThread,
+    /** Unused goal-clear stub for startup reconcile. */
+    clearGoal: unusedReconcileClearGoal,
+    /** Unused reconcile stub. Startup never interrupts a turn. */
+    interruptTurn: unusedReconcileInterruptTurn,
+    /** Unused reconcile stub. Startup never answers an approval. */
+    respondToRequest: unusedReconcileRespondToRequest,
+    /** Unused reconcile stub. Startup never answers user input. */
+    respondToUserInput: unusedReconcileRespondToUserInput,
+    /** Unused reconcile stub. Startup never stops a session here. */
+    stopSession: unusedReconcileStopSession,
+    /** Report the live thread ids this reconcile fixture was given. */
+    listSessions: listReconcileSessions,
+    /** Unused reconcile stub for provider calls startup never makes. */
+    getCapabilities: unusedReconcileProviderCall,
+    /** Unused reconcile stub for provider calls startup never makes. */
+    assertConversationRollbackSupported: unusedReconcileProviderCall,
+    /** Unused reconcile stub for provider calls startup never makes. */
+    getInstanceInfo: unusedReconcileProviderCall,
+    /** Unused reconcile stub for provider calls startup never makes. */
+    rollbackConversation: unusedReconcileProviderCall,
+    /** Unused reconcile stub for provider calls startup never makes. */
+    uploadFeedback: unusedReconcileProviderCall,
     streamEvents: Stream.empty,
-  }) satisfies ProviderService.ProviderService["Service"];
+  } satisfies ProviderService.ProviderService["Service"];
+}
 
 const queryWithThreads = (threads: ReadonlyArray<ReturnType<typeof makeThread>>) =>
   ({

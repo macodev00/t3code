@@ -208,17 +208,12 @@ export interface CodexThreadSnapshot {
 export interface CodexSessionRuntimeShape {
   readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
-  readonly sendTurn:
-    /**
-     * Start a turn on the live Codex thread.
-     */
-    (
-      input: CodexSessionRuntimeSendTurnInput,
-    )
-    /**
-     * Start a turn on the live Codex thread.
-     */
-    => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  /**
+   * Start a turn on the live Codex thread.
+   */
+  readonly sendTurn: (
+    input: CodexSessionRuntimeSendTurnInput,
+  ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
   readonly compactThread: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly clearGoal: Effect.Effect<{ readonly cleared: boolean }, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
@@ -1306,12 +1301,8 @@ export const makeCodexSessionRuntime =
     CodexSessionRuntimeShape,
     CodexErrors.CodexAppServerError,
     ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
-  >
-  /**
-   * Open one app-server connection and return its session runtime.
-   */
-  =>
-    Effect.gen(
+  > =>
+  Effect.gen(
       /**
        * Open the app-server session and implement runtime methods on that connection.
        */

@@ -60,17 +60,12 @@ export interface ProviderServiceShape {
     requestId?: MessageId,
   ) => Effect.Effect<void, ProviderServiceError>;
 
-  readonly clearGoal:
-    /**
-     * Clear a persisted provider goal. Fails when the bound adapter has no goal channel.
-     */
-    (
-      threadId: ThreadId,
-    )
-    /**
-     * Clear a persisted provider goal. Fails when the bound adapter has no goal channel.
-     */
-    => Effect.Effect<{ readonly cleared: boolean }, ProviderServiceError>;
+  /**
+   * Clear a persisted provider goal. Fails when the bound adapter has no goal channel.
+   */
+  readonly clearGoal: (
+    threadId: ThreadId,
+  ) => Effect.Effect<{ readonly cleared: boolean }, ProviderServiceError>;
 
   /**
    * Interrupt a running provider turn.

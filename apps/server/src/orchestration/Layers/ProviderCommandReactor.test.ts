@@ -189,29 +189,22 @@ describe(
     readonly beforeTurnStartDispatch?: () => Effect.Effect<void>;
     readonly afterTurnStartDispatch?: () => Effect.Effect<void>;
     readonly compactThreadEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
-    readonly clearGoalEffect?:
-      /**
-       * Optional goal-clear effect override for a reactor harness case.
-       */
-      () => Effect.Effect<{ readonly cleared: boolean }, ProviderServiceError>;
-    readonly beforeInstanceInfo?:
-      /**
-       * Optional hook that runs before instance lookup classifies `/goal clear`.
-       */
-      () => Effect.Effect<void>;
+    /**
+     * Optional goal-clear effect override for a reactor harness case.
+     */
+    readonly clearGoalEffect?: () => Effect.Effect<{ readonly cleared: boolean }, ProviderServiceError>;
+    /**
+     * Optional hook that runs before instance lookup classifies `/goal clear`.
+     */
+    readonly beforeInstanceInfo?: () => Effect.Effect<void>;
     readonly interruptTurnEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
-    readonly startSessionEffect?:
-      /**
-       * Optional override for the harness startSession effect.
-       */
-      (
-        session: ProviderSession,
-      )
-      /**
-       * Return the session the harness should expose after start.
-       */
-      => Effect.Effect<ProviderSession, ProviderServiceError>;
+    /**
+     * Optional override for the harness startSession effect.
+     */
+    readonly startSessionEffect?: (
+      session: ProviderSession,
+    ) => Effect.Effect<ProviderSession, ProviderServiceError>;
     readonly tryHandlePromptCommandEffect?: ProviderAuthService["Service"]["tryHandlePromptCommand"];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
@@ -292,47 +285,42 @@ describe(
         ),
       );
     });
-    const sendTurn = vi.fn(
-      /**
-       * Resolve a fake turn id for harness sendTurn calls.
-       */
-      (_: unknown) =>
-        Effect.succeed({
-          threadId: ThreadId.make("thread-1"),
-          turnId: asTurnId("turn-1"),
-        }),
-    );
-    const compactThread = vi.fn(
-      /**
-       * Run the harness compact effect, or succeed when a case does not set one.
-       */
-      (_: ThreadId) => input?.compactThreadEffect?.() ?? Effect.void,
-    );
-    const clearGoal = vi.fn(
-      /**
-       * Default goal-clear double. Tests can replace the effect.
-       */
-      (_: ThreadId) => {
-        return input?.clearGoalEffect?.() ?? Effect.succeed({ cleared: true as const });
-      },
-    );
-    const interruptTurn = vi.fn(
-      /**
-       * Run the harness interrupt effect, or succeed when a case does not set one.
-       */
-      (_: unknown) => input?.interruptTurnEffect?.() ?? Effect.void,
-    );
+    /** Resolve a fake turn id for harness sendTurn calls. */
+    function resolveHarnessSendTurn(_: unknown) {
+      return Effect.succeed({
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
+      });
+    }
+    const sendTurn = vi.fn(resolveHarnessSendTurn);
+    /** Run the harness compact effect, or succeed when a case does not set one. */
+    function runHarnessCompactThread(_: ThreadId) {
+      return input?.compactThreadEffect?.() ?? Effect.void;
+    }
+    const compactThread = vi.fn(runHarnessCompactThread);
+    /** Default goal-clear double. Tests can replace the effect. */
+    function runHarnessClearGoal(_: ThreadId) {
+      return input?.clearGoalEffect?.() ?? Effect.succeed({ cleared: true as const });
+    }
+    const clearGoal = vi.fn(runHarnessClearGoal);
+    /** Run the harness interrupt effect, or succeed when a case does not set one. */
+    function runHarnessInterruptTurn(_: unknown) {
+      return input?.interruptTurnEffect?.() ?? Effect.void;
+    }
+    const interruptTurn = vi.fn(runHarnessInterruptTurn);
+    /** Approval replies are unused by the goal-clear cases. */
+    function unusedHarnessRespondToRequest() {
+      return Effect.void;
+    }
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(
-      /**
-       * Approval replies are unused by the goal-clear cases.
-       */
-      () => Effect.void,
+      unusedHarnessRespondToRequest,
     );
+    /** User-input replies are unused by the goal-clear cases. */
+    function unusedHarnessRespondToUserInput() {
+      return Effect.void;
+    }
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(
-      /**
-       * User-input replies are unused by the goal-clear cases.
-       */
-      () => Effect.void,
+      unusedHarnessRespondToUserInput,
     );
     const stopSession = vi.fn((stopInput: unknown) =>
       (input?.stopSessionEffect?.() ?? Effect.void).pipe(
@@ -412,11 +400,49 @@ describe(
       },
     ];
 
-    const unsupported =
-      /**
-       * Fail any provider call this reactor harness does not implement.
-       */
-      () => Effect.die(new Error("Unsupported provider call in test")) as never;
+    /** Fail any provider call this reactor harness does not implement. */
+    function unsupported() {
+      return Effect.die(new Error("Unsupported provider call in test")) as never;
+    }
+    /** Return the sessions this reactor harness has recorded. */
+    function listHarnessSessions() {
+      return Effect.succeed(runtimeSessions);
+    }
+    /** Report whether this harness allows in-session model switches. */
+    function readHarnessCapabilities(_instanceId: ProviderInstanceId) {
+      return Effect.succeed({
+        sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
+      });
+    }
+    /** Resolve a driver kind so `/goal clear` can be classified as Codex. */
+    function readHarnessInstanceInfo(instanceId: ProviderInstanceId) {
+      const raw = String(instanceId);
+      const notify = input?.beforeInstanceInfo?.() ?? Effect.void;
+      const driverKind = ProviderDriverKind.make(
+        raw.startsWith("claude")
+          ? "claudeAgent"
+          : raw.startsWith("codex")
+            ? "codex"
+            : raw.startsWith("antigravity")
+              ? "antigravity"
+              : raw,
+      );
+      return notify.pipe(
+        Effect.as({
+          instanceId,
+          driverKind,
+          displayName: undefined,
+          enabled: true,
+          continuationIdentity: {
+            driverKind,
+            continuationKey:
+              driverKind === ProviderDriverKind.make("codex")
+                ? "codex:home:/shared-codex"
+                : `${driverKind}:instance:${instanceId}`,
+          },
+        }),
+      );
+    }
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
@@ -426,66 +452,18 @@ describe(
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
       stopSession: stopSession as ProviderServiceShape["stopSession"],
-      listSessions:
-        /**
-         * Return the sessions this reactor harness has recorded.
-         */
-        () => Effect.succeed(runtimeSessions),
-      getCapabilities:
-        /**
-         * Report whether this harness allows in-session model switches.
-         */
-        (_provider) =>
-          Effect.succeed({
-            sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
-          }),
-      assertConversationRollbackSupported:
-        /**
-         * Rollback support is not part of the goal-clear harness.
-         */
-        () => unsupported(),
-      getInstanceInfo:
-        /**
-         * Resolve a driver kind so `/goal clear` can be classified as Codex.
-         */
-        (instanceId) => {
-        const raw = String(instanceId);
-        const notify = input?.beforeInstanceInfo?.() ?? Effect.void;
-        const driverKind = ProviderDriverKind.make(
-          raw.startsWith("claude")
-            ? "claudeAgent"
-            : raw.startsWith("codex")
-              ? "codex"
-              : raw.startsWith("antigravity")
-                ? "antigravity"
-                : raw,
-        );
-        return notify.pipe(
-          Effect.as({
-            instanceId,
-            driverKind,
-            displayName: undefined,
-            enabled: true,
-            continuationIdentity: {
-              driverKind,
-              continuationKey:
-                driverKind === ProviderDriverKind.make("codex")
-                  ? "codex:home:/shared-codex"
-                  : `${driverKind}:instance:${instanceId}`,
-            },
-          }),
-        );
-      },
-      rollbackConversation:
-        /**
-         * Conversation rollback is not part of the goal-clear harness.
-         */
-        () => unsupported(),
-      uploadFeedback:
-        /**
-         * Feedback upload is not part of the goal-clear harness.
-         */
-        () => unsupported(),
+      /** Return the sessions this reactor harness has recorded. */
+      listSessions: listHarnessSessions,
+      /** Report whether this harness allows in-session model switches. */
+      getCapabilities: readHarnessCapabilities,
+      /** Rollback support is not part of the goal-clear harness. */
+      assertConversationRollbackSupported: unsupported,
+      /** Resolve a driver kind so `/goal clear` can be classified as Codex. */
+      getInstanceInfo: readHarnessInstanceInfo,
+      /** Conversation rollback is not part of the goal-clear harness. */
+      rollbackConversation: unsupported,
+      /** Feedback upload is not part of the goal-clear harness. */
+      uploadFeedback: unsupported,
       get streamEvents() {
         return Stream.fromPubSub(runtimeEventPubSub);
       },
@@ -1129,34 +1107,19 @@ describe(
   );
 
   /**
-   * Codex `/goal clear` records a cleared-goal activity and does not send a turn.
+   * Dispatch `/goal clear` and assert the cleared-goal activity.
    */
-  effectIt.effect(
-    "clears a Codex goal instead of sending /goal clear as a turn",
-    /**
-     * A bare Codex `/goal clear` records goal activity and does not send a turn.
-     */
-    () =>
-      Effect.gen(
-        /**
-         * Dispatch `/goal clear` and assert the cleared-goal activity.
-         */
-        function* () {
+  function* dispatchClearedCodexGoal() {
           const cleared = yield* Deferred.make<void>();
-          const harness = yield* Effect.promise(
-            /**
-             * Build a harness whose clearGoal effect resolves the cleared deferred.
-             */
-            () =>
-              createHarness({
-                clearGoalEffect:
-                  /**
-                   * Signal that a goal was cleared, then return `{ cleared: true }`.
-                   */
-                  () =>
-                    Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: true })),
-              }),
-          );
+          /** Signal that a goal was cleared, then return `{ cleared: true }`. */
+          function signalGoalCleared() {
+            return Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: true }));
+          }
+          /** Build a harness whose clearGoal effect resolves the cleared deferred. */
+          function buildClearedGoalHarness() {
+            return createHarness({ clearGoalEffect: signalGoalCleared });
+          }
+          const harness = yield* Effect.promise(buildClearedGoalHarness);
           const threadId = ThreadId.make("thread-1");
 
           yield* harness.engine.dispatch({
@@ -1221,39 +1184,33 @@ describe(
       expect(harness.clearGoal).toHaveBeenCalledWith(threadId);
       expect(harness.sendTurn).not.toHaveBeenCalled();
       expect(harness.generateThreadTitle).not.toHaveBeenCalled();
-        },
-      ),
+  }
+  /** A bare Codex `/goal clear` records goal activity and does not send a turn. */
+  function runClearedCodexGoalCase() {
+    return Effect.gen(dispatchClearedCodexGoal);
+  }
+  /**
+   * Codex `/goal clear` records a cleared-goal activity and does not send a turn.
+   */
+  effectIt.effect(
+    "clears a Codex goal instead of sending /goal clear as a turn",
+    runClearedCodexGoalCase,
   );
 
   /**
-   * Codex `/goal clear` with nothing stored records that there was no goal.
+   * Dispatch a spaced `/goal clear` and assert the empty-goal activity.
    */
-  effectIt.effect(
-    "reports when Codex has no goal to clear",
-    /**
-     * Codex reports `cleared: false` when the thread has no persisted goal.
-     */
-    () =>
-      Effect.gen(
-        /**
-         * Dispatch a spaced `/goal clear` and assert the empty-goal activity.
-         */
-        function* () {
+  function* dispatchEmptyCodexGoal() {
           const cleared = yield* Deferred.make<void>();
-          const harness = yield* Effect.promise(
-            /**
-             * Build a harness whose clearGoal effect reports that no goal was set.
-             */
-            () =>
-              createHarness({
-                clearGoalEffect:
-                  /**
-                   * Signal completion and report that no goal was set.
-                   */
-                  () =>
-                    Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: false })),
-              }),
-          );
+          /** Signal completion and report that no goal was set. */
+          function signalEmptyGoal() {
+            return Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: false }));
+          }
+          /** Build a harness whose clearGoal effect reports that no goal was set. */
+          function buildEmptyGoalHarness() {
+            return createHarness({ clearGoalEffect: signalEmptyGoal });
+          }
+          const harness = yield* Effect.promise(buildEmptyGoalHarness);
           const threadId = ThreadId.make("thread-1");
 
           yield* harness.engine.dispatch({
@@ -1295,38 +1252,36 @@ describe(
         expect.objectContaining({ kind: "provider.goal.cleared", summary: "No goal to clear" }),
       );
       expect(harness.sendTurn).not.toHaveBeenCalled();
-        },
-      ),
+  }
+  /** Codex reports `cleared: false` when the thread has no persisted goal. */
+  function runEmptyCodexGoalCase() {
+    return Effect.gen(dispatchEmptyCodexGoal);
+  }
+  /**
+   * Codex `/goal clear` with nothing stored records that there was no goal.
+   */
+  effectIt.effect(
+    "reports when Codex has no goal to clear",
+    runEmptyCodexGoalCase,
   );
 
   /**
    * A running turn blocks `/goal clear` and records a turn-start failure.
    */
-  effectIt.effect(
-    "does not clear a Codex goal while a turn is running",
-    /**
-     * Goal clear is rejected while the provider session is already running a turn.
-     */
-    () =>
-      Effect.gen(
-        /**
-         * Start a running session, send `/goal clear`, and assert the failure activity.
-         */
-        function* () {
+  /**
+   * Start a running session, send `/goal clear`, and assert the failure activity.
+   */
+  function* dispatchRunningCodexGoal() {
           const lookedUp = yield* Deferred.make<void>();
-          const harness = yield* Effect.promise(
-            /**
-             * Build a harness that signals when instance lookup runs.
-             */
-            () =>
-              createHarness({
-                beforeInstanceInfo:
-                  /**
-                   * Signal once instance lookup runs, while the session is still running.
-                   */
-                  () => Deferred.succeed(lookedUp, undefined),
-              }),
-          );
+          /** Signal once instance lookup runs, while the session is still running. */
+          function signalInstanceLookup() {
+            return Deferred.succeed(lookedUp, undefined);
+          }
+          /** Build a harness that signals when instance lookup runs. */
+          function buildRunningGoalHarness() {
+            return createHarness({ beforeInstanceInfo: signalInstanceLookup });
+          }
+          const harness = yield* Effect.promise(buildRunningGoalHarness);
           const threadId = ThreadId.make("thread-1");
           const createdAt = "2026-01-01T00:00:00.000Z";
           yield* harness.engine.dispatch({
@@ -1388,8 +1343,17 @@ describe(
       );
       expect(harness.clearGoal).not.toHaveBeenCalled();
       expect(harness.sendTurn).not.toHaveBeenCalled();
-        },
-      ),
+  }
+  /** Goal clear is rejected while the provider session is already running a turn. */
+  function runRunningCodexGoalCase() {
+    return Effect.gen(dispatchRunningCodexGoal);
+  }
+  /**
+   * A running turn blocks `/goal clear` and records a turn-start failure.
+   */
+  effectIt.effect(
+    "does not clear a Codex goal while a turn is running",
+    runRunningCodexGoalCase,
   );
 
   /**
@@ -1403,31 +1367,27 @@ describe(
     /**
      * Other `/goal` text and non-Codex threads still start a normal provider turn.
      */
-    ({ text, instanceId }) =>
-      Effect.gen(
-        /**
-         * Dispatch the sample text and assert `sendTurn` receives it unchanged.
-         */
-        function* () {
+    ({ text, instanceId }) => {
+      /**
+       * Dispatch the sample text and assert `sendTurn` receives it unchanged.
+       */
+      function* dispatchGoalPassthroughTurn() {
           const started = yield* Deferred.make<void>();
-          const harness = yield* Effect.promise(
-            /**
-             * Build a harness that starts a normal turn for this sample.
-             */
-            () =>
-              createHarness({
-                threadModelSelection: {
-                  instanceId: ProviderInstanceId.make(instanceId),
-                  model: "test-model",
-                },
-                startSessionEffect:
-                  /**
-                   * Signal that the normal turn path started a session.
-                   */
-                  (session) =>
-                    Deferred.succeed(started, undefined).pipe(Effect.as(session)),
-              }),
-          );
+          /** Signal that the normal turn path started a session. */
+          function signalPassthroughSession(session: ProviderSession) {
+            return Deferred.succeed(started, undefined).pipe(Effect.as(session));
+          }
+          /** Build a harness that starts a normal turn for this sample. */
+          function buildPassthroughHarness() {
+            return createHarness({
+              threadModelSelection: {
+                instanceId: ProviderInstanceId.make(instanceId),
+                model: "test-model",
+              },
+              startSessionEffect: signalPassthroughSession,
+            });
+          }
+          const harness = yield* Effect.promise(buildPassthroughHarness);
 
           yield* harness.engine.dispatch({
             type: "thread.turn.start",
@@ -1453,8 +1413,9 @@ describe(
 
       expect(harness.clearGoal).not.toHaveBeenCalled();
       expect(harness.sendTurn).toHaveBeenCalledWith(expect.objectContaining({ input: text }));
-        },
-      ),
+      }
+      return Effect.gen(dispatchGoalPassthroughTurn);
+    },
   );
 
   effectIt.effect.each(["resume", "stop before resume", "stop after send"])(

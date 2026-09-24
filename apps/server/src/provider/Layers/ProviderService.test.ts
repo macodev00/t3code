@@ -260,13 +260,13 @@ function makeFakeCodexAdapter(
       Effect.succeed({ threadId, turns: [] }),
   );
 
-  const clearGoal = vi.fn(
-    /**
-     * Fake Codex goal clear. Returns a cleared goal.
-     */
-    (_threadId: ThreadId): Effect.Effect<{ readonly cleared: boolean }, ProviderAdapterError> =>
-      Effect.succeed({ cleared: true }),
-  );
+  /** Fake Codex goal clear. Returns a cleared goal. */
+  function fakeCodexClearGoal(
+    _threadId: ThreadId,
+  ): Effect.Effect<{ readonly cleared: boolean }, ProviderAdapterError> {
+    return Effect.succeed({ cleared: true });
+  }
+  const clearGoal = vi.fn(fakeCodexClearGoal);
 
   const uploadFeedback = vi.fn(
     (
@@ -2088,19 +2088,9 @@ routing.layer(
   );
 
   /**
-   * ProviderService sends goal clear to the Codex adapter bound to the thread.
+   * Start a Codex session and assert `clearGoal` is forwarded once.
    */
-  it.effect(
-    "routes goal clear to the Codex adapter",
-    /**
-     * ProviderService sends goal clear to the Codex adapter bound to the thread.
-     */
-    () =>
-      Effect.gen(
-        /**
-         * Start a Codex session and assert `clearGoal` is forwarded once.
-         */
-        function* () {
+  function* routeGoalClearToCodexAdapter() {
           const provider = yield* ProviderService.ProviderService;
           const threadId = asThreadId("thread-goal-clear-route");
           yield* provider.startSession(threadId, {
@@ -2115,24 +2105,23 @@ routing.layer(
 
           assert.deepStrictEqual(result, { cleared: true });
           assert.deepStrictEqual(routing.codex.clearGoal.mock.calls, [[threadId]]);
-        },
-      ),
+  }
+  /** ProviderService sends goal clear to the Codex adapter bound to the thread. */
+  function runRouteGoalClearToCodexAdapter() {
+    return Effect.gen(routeGoalClearToCodexAdapter);
+  }
+  /**
+   * ProviderService sends goal clear to the Codex adapter bound to the thread.
+   */
+  it.effect(
+    "routes goal clear to the Codex adapter",
+    runRouteGoalClearToCodexAdapter,
   );
 
   /**
-   * Providers without a goal channel fail validation instead of starting a turn.
+   * Start a Claude session and assert goal clear returns a validation error.
    */
-  it.effect(
-    "rejects goal clear for providers without a goal channel",
-    /**
-     * Providers without a goal channel fail validation instead of starting a turn.
-     */
-    () =>
-      Effect.gen(
-        /**
-         * Start a Claude session and assert goal clear returns a validation error.
-         */
-        function* () {
+  function* rejectGoalClearWithoutChannel() {
           const provider = yield* ProviderService.ProviderService;
           const threadId = asThreadId("thread-goal-clear-claude");
           yield* provider.startSession(threadId, {
@@ -2146,8 +2135,17 @@ routing.layer(
 
           assert.instanceOf(error, ProviderValidationError);
           assert.include(error.issue, "does not support clearing a goal");
-        },
-      ),
+  }
+  /** Providers without a goal channel fail validation instead of starting a turn. */
+  function runRejectGoalClearWithoutChannel() {
+    return Effect.gen(rejectGoalClearWithoutChannel);
+  }
+  /**
+   * Providers without a goal channel fail validation instead of starting a turn.
+   */
+  it.effect(
+    "rejects goal clear for providers without a goal channel",
+    runRejectGoalClearWithoutChannel,
   );
 
   it.effect("routes feedback to the Codex adapter and returns its feedback ID", () =>

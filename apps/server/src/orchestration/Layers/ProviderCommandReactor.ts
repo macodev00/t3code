@@ -107,6 +107,16 @@ function isGoalClearCommandMessage(message: ThreadTitleMessage): boolean {
     message.text.trim().toLowerCase().replace(/\s+/g, " ") === "/goal clear"
   );
 }
+
+/** Treat only a Codex driver as a goal-clear target. */
+function isCodexGoalClearDriver(info: { readonly driverKind: ProviderDriverKind }): boolean {
+  return info.driverKind === "codex";
+}
+
+/** If instance lookup fails, do not treat the message as goal clear. */
+function goalClearLookupFailed(): boolean {
+  return false;
+}
 function mapProviderSessionStatusToOrchestrationStatus(
   status: "connecting" | "ready" | "running" | "error" | "closed",
 ): OrchestrationSession["status"] {
@@ -1272,6 +1282,13 @@ const make = Effect.gen(
         createdAt: event.payload.createdAt,
         requestId: event.payload.messageId,
       });
+    /** Record a turn-start failure when goal clear fails for a non-interrupt cause. */
+    function recordGoalClearFailure(cause: Cause.Cause<unknown>) {
+      if (Cause.hasInterruptsOnly(cause)) {
+        return Effect.void;
+      }
+      return appendTurnStartFailure("Could not clear the goal", formatFailureDetail(cause));
+    }
     if (resumed && turnsAfterCompaction.get(event.payload.threadId) !== resumed.queued) {
       return yield* appendTurnStartFailure(
         "Queued message was not sent",
@@ -1368,18 +1385,8 @@ const make = Effect.gen(
       thread.modelSelection.instanceId;
     const handleGoalClear = isGoalClearCommandMessage(message)
       ? yield* providerService.getInstanceInfo(goalClearInstanceId).pipe(
-          Effect.map(
-            /**
-             * Treat only a Codex driver as a goal-clear target.
-             */
-            (info) => info.driverKind === "codex",
-          ),
-          Effect.orElseSucceed(
-            /**
-             * If instance lookup fails, do not treat the message as goal clear.
-             */
-            () => false,
-          ),
+          Effect.map(isCodexGoalClearDriver),
+          Effect.orElseSucceed(goalClearLookupFailed),
         )
       : false;
     if (!hasOtherUserMessages && !isCompactCommand && !handleGoalClear) {
@@ -1602,18 +1609,7 @@ const make = Effect.gen(
         }
       }
 
-      yield* Effect.gen(clearLiveCodexGoal).pipe(
-        Effect.catchCause(
-          /**
-           * Record a turn-start failure when goal clear fails for a non-interrupt cause.
-           */
-          (cause) => {
-          if (Cause.hasInterruptsOnly(cause)) {
-            return Effect.void;
-          }
-          return appendTurnStartFailure("Could not clear the goal", formatFailureDetail(cause));
-        }),
-      );
+      yield* Effect.gen(clearLiveCodexGoal).pipe(Effect.catchCause(recordGoalClearFailure));
       return;
     }
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
