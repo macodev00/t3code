@@ -23,7 +23,11 @@ function makeMessage(prompt: string): Omit<QueuedComposerMessage, "id"> {
 
 describe("queuedMessageStore", () => {
   beforeEach(() => {
-    useQueuedMessageStore.setState({ queuesByThreadKey: {}, drainGeneration: 0 });
+    useQueuedMessageStore.setState({
+      queuesByThreadKey: {},
+      backgroundSendsByThreadKey: {},
+      drainGeneration: 0,
+    });
   });
 
   it("keeps messages in submission order per thread", () => {
@@ -97,6 +101,32 @@ describe("queuedMessageStore", () => {
     expect(drain("thread-a")).toEqual([]);
     expect(useQueuedMessageStore.getState().drainGeneration).toBe(1);
     expect(useQueuedMessageStore.getState().queuesByThreadKey["thread-b"]).toHaveLength(1);
+  });
+
+  it("lets one background send claim a message and ignores a second take", () => {
+    const { enqueue, take, finishBackgroundSend } = useQueuedMessageStore.getState();
+    const entry = enqueue("thread-a", makeMessage("first"));
+
+    expect(take("thread-a", entry.id, null, true)?.prompt).toBe("first");
+    expect(take("thread-a", entry.id, null)).toBeNull();
+    expect(useQueuedMessageStore.getState().backgroundSendsByThreadKey["thread-a"]).toEqual({
+      cancelled: false,
+    });
+
+    finishBackgroundSend("thread-a");
+    expect(useQueuedMessageStore.getState().backgroundSendsByThreadKey["thread-a"]).toBeUndefined();
+  });
+
+  it("marks an in-flight background send cancelled when the thread is drained", () => {
+    const { enqueue, take, drain } = useQueuedMessageStore.getState();
+    const entry = enqueue("thread-a", makeMessage("first"));
+    take("thread-a", entry.id, null, true);
+    enqueue("thread-a", makeMessage("second"));
+
+    expect(drain("thread-a").map((message) => message.prompt)).toEqual(["second"]);
+    expect(useQueuedMessageStore.getState().backgroundSendsByThreadKey["thread-a"]).toEqual({
+      cancelled: true,
+    });
   });
 });
 
