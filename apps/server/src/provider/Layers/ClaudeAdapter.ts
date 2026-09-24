@@ -2038,6 +2038,17 @@ function describeUnknownSdkMessage(kind: string, message: unknown): string {
   return preview ? `${kind} — ${preview}` : `${kind} (no displayable text content)`;
 }
 
+/**
+ * Replacing the Claude query stops child tasks and records them completed
+ * without `session.exited`. Refuse that while any child task is still running.
+ */
+function shouldBlockClaudeSessionReplacementForLiveTasks(existingContext: {
+  readonly stopped: boolean;
+  readonly liveTaskIds: ReadonlySet<string>;
+}): boolean {
+  return !existingContext.stopped && existingContext.liveTaskIds.size > 0;
+}
+
 function sdkNativeItemId(message: SDKMessage): string | undefined {
   if (message.type === "assistant") {
     const maybeId = (message.message as { id?: unknown }).id;
@@ -4404,6 +4415,25 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
       const existingContext = sessions.get(input.threadId);
       if (existingContext) {
+        // Fail instead of returning the current session: callers bind the
+        // requested runtime mode and send the turn on whatever comes back.
+        // Stopping here would mark live tasks completed without session.exited.
+        if (shouldBlockClaudeSessionReplacementForLiveTasks(existingContext)) {
+          const liveTaskCount = existingContext.liveTaskIds.size;
+          yield* emitRuntimeWarning(
+            existingContext,
+            `Claude session replacement blocked: ${liveTaskCount} live task(s) are still running.`,
+            {
+              existingSessionStatus: existingContext.session.status,
+              liveTaskCount,
+            },
+          );
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "startSession",
+            detail: `Claude session replacement is blocked: ${liveTaskCount} live task(s) are still running. Retry after background work finishes.`,
+          });
+        }
         yield* Effect.logWarning("claude.session.replacing", {
           threadId: input.threadId,
           existingSessionStatus: existingContext.session.status,

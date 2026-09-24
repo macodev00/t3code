@@ -51,7 +51,9 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { appendUserInputAttachmentPaths } from "../userInputAttachments.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -231,6 +233,14 @@ function compactAccessibilityForPrompt(
 
 /** How long a manual context compaction may run before ProviderService gives up on it. */
 const COMPACTION_COMPLETION_TIMEOUT = "10 minutes";
+
+/** Result of asking an adapter whether it still owns a thread. */
+type McpSessionProbe = "active" | "inactive" | "unconfirmed";
+
+interface McpSessionOwner {
+  readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+  readonly located: boolean;
+}
 
 interface PendingCompaction {
   readonly completion: Deferred.Deferred<string>;
@@ -503,6 +513,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   });
   let turnAnalyticsRequestId = 0;
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  const threadStartLocks = yield* SynchronizedRef.make(new Map<ThreadId, Semaphore.Semaphore>());
+
+  // One permit per thread so a start and a recovery cannot mint or revoke
+  // MCP credentials for that thread at the same time.
+  const lockForThreadStart = (threadId: ThreadId) =>
+    SynchronizedRef.modifyEffect(threadStartLocks, (current) => {
+      const existing = current.get(threadId);
+      if (existing) {
+        return Effect.succeed([existing, current] as const);
+      }
+      return Semaphore.make(1).pipe(
+        Effect.map((semaphore) => {
+          const next = new Map(current);
+          next.set(threadId, semaphore);
+          return [semaphore, next] as const;
+        }),
+      );
+    });
+
+  const withThreadStartLock = <A, E, R>(
+    threadId: ThreadId,
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    lockForThreadStart(threadId).pipe(Effect.flatMap((semaphore) => semaphore.withPermit(effect)));
 
   const finishTurnAnalytics = (
     state: TurnAnalyticsState,
@@ -940,10 +974,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     } satisfies Record<string, string>;
   });
 
-  const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
+  // `retainExisting` leaves the thread's current bearer registered so a
+  // rejected restart can keep the token the live query already baked in.
+  const prepareMcpSession = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    options?: { readonly retainExisting?: boolean },
+  ) =>
     Effect.gen(function* () {
       const capabilities = yield* agentAccessCapabilities(threadId);
-      const credential = yield* issueMcpCredential({ threadId, providerInstanceId, capabilities });
+      const credential = yield* issueMcpCredential({
+        threadId,
+        providerInstanceId,
+        capabilities,
+        ...(options?.retainExisting === true ? { retainExisting: true } : {}),
+      });
       if (credential) {
         const deviceEnvironment = capabilities.has("device")
           ? yield* agentDeviceEnvironment
@@ -961,6 +1006,133 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     McpSessionRegistry.revokeActiveMcpThread(threadId).pipe(
       Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
     );
+
+  // A failed probe is `unconfirmed`: callers must not treat it as proof the
+  // session is still running.
+  const probeMcpSession = (
+    adapter: ProviderAdapterShape<ProviderAdapterError>,
+    threadId: ThreadId,
+  ) =>
+    adapter.hasSession(threadId).pipe(
+      Effect.map((active): McpSessionProbe => (active ? "active" : "inactive")),
+      Effect.orElseSucceed((): McpSessionProbe => "unconfirmed"),
+    );
+
+  // The previous provider instance owns the credential when it differs from
+  // the instance being started. `located` is false when that adapter is gone.
+  const resolveMcpSessionOwner = (input: {
+    readonly selected: ProviderAdapterShape<ProviderAdapterError>;
+    readonly selectedInstanceId: ProviderInstanceId;
+    readonly previous: McpProviderSession.McpProviderSessionConfig | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const previousInstanceId = input.previous?.providerInstanceId;
+      if (previousInstanceId === undefined || previousInstanceId === input.selectedInstanceId) {
+        return { adapter: input.selected, located: true } satisfies McpSessionOwner;
+      }
+      const previousAdapter = yield* registry
+        .getByInstance(previousInstanceId)
+        .pipe(
+          Effect.catch(() =>
+            Effect.succeed<ProviderAdapterShape<ProviderAdapterError> | undefined>(undefined),
+          ),
+        );
+      if (previousAdapter === undefined) {
+        return { adapter: input.selected, located: false } satisfies McpSessionOwner;
+      }
+      return { adapter: previousAdapter, located: true } satisfies McpSessionOwner;
+    });
+
+  // Keep the existing bearer while a replacement is attempted only when a
+  // located owner still has the session, or the probe itself failed.
+  const mcpSessionShouldRetainCredential = (input: {
+    readonly owner: McpSessionOwner;
+    readonly previous: McpProviderSession.McpProviderSessionConfig | undefined;
+    readonly threadId: ThreadId;
+  }) =>
+    Effect.gen(function* () {
+      if (!input.owner.located) {
+        return false;
+      }
+      const probe = yield* probeMcpSession(input.owner.adapter, input.threadId);
+      if (probe === "active") {
+        return true;
+      }
+      if (probe === "inactive") {
+        return false;
+      }
+      return input.previous !== undefined;
+    });
+
+  // Drop the credential a rejected start just issued and put the live query's
+  // config back when that token is still authorized.
+  const keepLiveMcpCredential = (
+    threadId: ThreadId,
+    previous: McpProviderSession.McpProviderSessionConfig | undefined,
+    issuedProviderSessionId: string | undefined,
+  ) =>
+    Effect.gen(function* () {
+      if (issuedProviderSessionId !== undefined) {
+        yield* McpSessionRegistry.revokeActiveMcpProviderSession(issuedProviderSessionId);
+      }
+      const previousStillAuthorized =
+        previous !== undefined &&
+        (yield* McpSessionRegistry.hasActiveMcpProviderSession(previous.providerSessionId));
+      yield* Effect.sync(() => {
+        if (previous !== undefined && previousStillAuthorized) {
+          McpProviderSession.setMcpProviderSession(previous);
+          return;
+        }
+        const current = McpProviderSession.readMcpProviderSession(threadId);
+        if (current === undefined || current.providerSessionId === issuedProviderSessionId) {
+          McpProviderSession.clearMcpProviderSession(threadId);
+        }
+      });
+    });
+
+  // A rejection that leaves the session up restores its credential. A missing
+  // previous adapter, or a probe that cannot confirm the session, revokes the
+  // thread instead of restoring a stopped process's bearer. An accepted start
+  // revokes every credential except the one it just issued.
+  const settleMcpCredentialAfterStart = (input: {
+    readonly threadId: ThreadId;
+    readonly sessionAdapter: ProviderAdapterShape<ProviderAdapterError>;
+    readonly ownerLocated: boolean;
+    readonly hadActiveSession: boolean;
+    readonly previous: McpProviderSession.McpProviderSessionConfig | undefined;
+    readonly issuedProviderSessionId: string | undefined;
+    readonly accepted: boolean;
+  }) =>
+    Effect.gen(function* () {
+      if (input.accepted) {
+        if (input.issuedProviderSessionId !== undefined) {
+          yield* McpSessionRegistry.revokeActiveMcpThreadExcept(
+            input.threadId,
+            input.issuedProviderSessionId,
+          );
+        }
+        return;
+      }
+
+      if (!input.ownerLocated) {
+        yield* clearMcpSession(input.threadId);
+        return;
+      }
+
+      const probe = input.hadActiveSession
+        ? yield* probeMcpSession(input.sessionAdapter, input.threadId)
+        : "inactive";
+      if (probe === "active") {
+        yield* keepLiveMcpCredential(input.threadId, input.previous, input.issuedProviderSessionId);
+        return;
+      }
+      if (probe === "unconfirmed") {
+        yield* Effect.logWarning("provider.mcp.session-probe-failed", {
+          threadId: input.threadId,
+        });
+      }
+      yield* clearMcpSession(input.threadId);
+    });
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
@@ -1235,71 +1407,78 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       "provider.instance_id": bindingInstanceId,
       "provider.thread_id": input.binding.threadId,
     });
-    return yield* Effect.gen(function* () {
-      const adapter = yield* registry.getByInstance(bindingInstanceId);
-      const hasResumeCursor =
-        input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
-      const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
-      if (hasActiveSession) {
-        const activeSessions = yield* adapter.listSessions();
-        const existing = activeSessions.find(
-          (session) => session.threadId === input.binding.threadId,
-        );
-        if (existing) {
-          yield* upsertSessionBinding(
-            { ...existing, providerInstanceId: bindingInstanceId },
-            input.binding.threadId,
+    // The hasSession check and any resumed start share startSession's lock.
+    // A replacement can drop the adapter context before the new process is
+    // registered; recovery must wait and adopt that start instead of minting
+    // a second bearer.
+    return yield* withThreadStartLock(
+      input.binding.threadId,
+      Effect.gen(function* () {
+        const adapter = yield* registry.getByInstance(bindingInstanceId);
+        const hasResumeCursor =
+          input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
+        const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
+        if (hasActiveSession) {
+          const activeSessions = yield* adapter.listSessions();
+          const existing = activeSessions.find(
+            (session) => session.threadId === input.binding.threadId,
           );
-          yield* analytics.record("provider.session.recovered", {
-            provider: existing.provider,
-            strategy: "adopt-existing",
-            hasResumeCursor: existing.resumeCursor !== undefined,
-          });
-          return { adapter, session: existing } as const;
+          if (existing) {
+            yield* upsertSessionBinding(
+              { ...existing, providerInstanceId: bindingInstanceId },
+              input.binding.threadId,
+            );
+            yield* analytics.record("provider.session.recovered", {
+              provider: existing.provider,
+              strategy: "adopt-existing",
+              hasResumeCursor: existing.resumeCursor !== undefined,
+            });
+            return { adapter, session: existing } as const;
+          }
         }
-      }
 
-      if (!hasResumeCursor) {
-        return yield* toValidationError(
-          input.operation,
-          `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
+        if (!hasResumeCursor) {
+          return yield* toValidationError(
+            input.operation,
+            `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
+          );
+        }
+
+        const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
+        const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
+
+        yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+        const resumed = yield* adapter
+          .startSession({
+            threadId: input.binding.threadId,
+            provider: input.binding.provider,
+            providerInstanceId: bindingInstanceId,
+            ...(persistedCwd ? { cwd: persistedCwd } : {}),
+            ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
+            ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
+            runtimeMode: input.binding.runtimeMode ?? "full-access",
+          })
+          .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
+        if (resumed.provider !== adapter.provider) {
+          yield* clearMcpSession(input.binding.threadId);
+          return yield* toValidationError(
+            input.operation,
+            `Adapter/provider mismatch while recovering thread '${input.binding.threadId}'. Expected '${adapter.provider}', received '${resumed.provider}'.`,
+          );
+        }
+
+        yield* upsertSessionBinding(
+          { ...resumed, providerInstanceId: bindingInstanceId },
+          input.binding.threadId,
         );
-      }
-
-      const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
-      const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
-
-      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
-      const resumed = yield* adapter
-        .startSession({
-          threadId: input.binding.threadId,
-          provider: input.binding.provider,
-          providerInstanceId: bindingInstanceId,
-          ...(persistedCwd ? { cwd: persistedCwd } : {}),
-          ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
-          ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-          runtimeMode: input.binding.runtimeMode ?? "full-access",
-        })
-        .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
-      if (resumed.provider !== adapter.provider) {
-        yield* clearMcpSession(input.binding.threadId);
-        return yield* toValidationError(
-          input.operation,
-          `Adapter/provider mismatch while recovering thread '${input.binding.threadId}'. Expected '${adapter.provider}', received '${resumed.provider}'.`,
-        );
-      }
-
-      yield* upsertSessionBinding(
-        { ...resumed, providerInstanceId: bindingInstanceId },
-        input.binding.threadId,
-      );
-      yield* analytics.record("provider.session.recovered", {
-        provider: resumed.provider,
-        strategy: "resume-thread",
-        hasResumeCursor: resumed.resumeCursor !== undefined,
-      });
-      return { adapter, session: resumed } as const;
-    }).pipe(
+        yield* analytics.record("provider.session.recovered", {
+          provider: resumed.provider,
+          strategy: "resume-thread",
+          hasResumeCursor: resumed.resumeCursor !== undefined,
+        });
+        return { adapter, session: resumed } as const;
+      }),
+    ).pipe(
       withMetrics({
         counter: providerSessionsTotal,
         attributes: providerMetricAttributes(input.binding.provider, {
@@ -1500,32 +1679,71 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
-        yield* prepareMcpSession(threadId, resolvedInstanceId);
-        const session = yield* adapter
-          .startSession({
-            ...input,
-            providerInstanceId: resolvedInstanceId,
-            ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-            ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
-          })
-          .pipe(Effect.onError(() => clearMcpSession(threadId)));
-
-        if (session.provider !== adapter.provider) {
-          yield* clearMcpSession(threadId);
-          return yield* toValidationError(
-            "ProviderService.startSession",
-            `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
-          );
-        }
-        const sessionWithInstance = {
-          ...session,
-          providerInstanceId: resolvedInstanceId,
-        };
-
-        yield* stopStaleSessionsForThread({
+        const sessionWithInstance = yield* withThreadStartLock(
           threadId,
-          currentInstanceId: resolvedInstanceId,
-        });
+          Effect.gen(function* () {
+            const previousMcpSession = McpProviderSession.readMcpProviderSession(threadId);
+            const owner = yield* resolveMcpSessionOwner({
+              selected: adapter,
+              selectedInstanceId: resolvedInstanceId,
+              previous: previousMcpSession,
+            });
+            const hadActiveSession = yield* mcpSessionShouldRetainCredential({
+              owner,
+              previous: previousMcpSession,
+              threadId,
+            });
+            const issuedCredential = yield* prepareMcpSession(threadId, resolvedInstanceId, {
+              retainExisting: hadActiveSession,
+            });
+            const issuedProviderSessionId = issuedCredential?.config.providerSessionId;
+            const settlement = {
+              threadId,
+              sessionAdapter: owner.adapter,
+              ownerLocated: owner.located,
+              hadActiveSession,
+              previous: previousMcpSession,
+              issuedProviderSessionId,
+            };
+            const session = yield* adapter
+              .startSession({
+                ...input,
+                providerInstanceId: resolvedInstanceId,
+                ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+                ...(effectiveResumeCursor !== undefined
+                  ? { resumeCursor: effectiveResumeCursor }
+                  : {}),
+              })
+              .pipe(
+                Effect.onError(() =>
+                  settleMcpCredentialAfterStart({
+                    ...settlement,
+                    accepted: false,
+                  }),
+                ),
+              );
+
+            if (session.provider !== adapter.provider) {
+              yield* clearMcpSession(threadId);
+              return yield* toValidationError(
+                "ProviderService.startSession",
+                `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+              );
+            }
+            yield* settleMcpCredentialAfterStart({
+              ...settlement,
+              accepted: true,
+            });
+            yield* stopStaleSessionsForThread({
+              threadId,
+              currentInstanceId: resolvedInstanceId,
+            });
+            return {
+              ...session,
+              providerInstanceId: resolvedInstanceId,
+            };
+          }),
+        );
         yield* upsertSessionBinding(sessionWithInstance, threadId, {
           modelSelection: input.modelSelection,
         });
