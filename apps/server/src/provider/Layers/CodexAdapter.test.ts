@@ -383,24 +383,34 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
-  it.effect("clears the persisted goal through the Codex app-server", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CodexAdapter;
-      const threadId = asThreadId("thread-goal-clear");
-      yield* adapter.startSession({
-        provider: ProviderDriverKind.make("codex"),
-        threadId,
-        runtimeMode: "full-access",
-      });
-      const runtime = sessionRuntimeFactory.lastRuntime;
-      NodeAssert.ok(runtime);
+  it.effect(
+    "clears the persisted goal through the Codex app-server",
+    /**
+     * The Codex adapter forwards goal clear to the session runtime.
+     */
+    () =>
+      Effect.gen(
+        /**
+         * Start a session, clear the goal, and assert the runtime was called once.
+         */
+        function* () {
+          const adapter = yield* CodexAdapter;
+          const threadId = asThreadId("thread-goal-clear");
+          yield* adapter.startSession({
+            provider: ProviderDriverKind.make("codex"),
+            threadId,
+            runtimeMode: "full-access",
+          });
+          const runtime = sessionRuntimeFactory.lastRuntime;
+          NodeAssert.ok(runtime);
 
-      const result = yield* adapter.clearGoal!(threadId);
+          const result = yield* adapter.clearGoal!(threadId);
 
-      NodeAssert.deepStrictEqual(result, { cleared: true });
-      NodeAssert.equal(runtime.clearGoalImpl.mock.calls.length, 1);
-      yield* adapter.stopSession(threadId);
-    }),
+          NodeAssert.deepStrictEqual(result, { cleared: true });
+          NodeAssert.equal(runtime.clearGoalImpl.mock.calls.length, 1);
+          yield* adapter.stopSession(threadId);
+        },
+      ),
   );
 
   it.effect("uploads feedback for the active Codex thread", () =>

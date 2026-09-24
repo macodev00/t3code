@@ -2492,6 +2492,14 @@ export const makeCodexSessionRuntime = (
       yield* Queue.shutdown(events);
     });
 
+    /**
+     * Ask Codex to drop the persisted goal. `cleared` is false when none was set.
+     */
+    function* clearCodexSessionGoal() {
+      const providerThreadId = yield* readProviderThreadId;
+      return yield* client.request("thread/goal/clear", { threadId: providerThreadId });
+    }
+
     return {
       start,
       getSession: Ref.get(sessionRef),
@@ -2499,13 +2507,7 @@ export const makeCodexSessionRuntime = (
         const providerThreadId = yield* readProviderThreadId;
         yield* client.request("thread/compact/start", { threadId: providerThreadId });
       }),
-      clearGoal: Effect.gen(
-        /** Ask Codex to drop the persisted goal. `cleared` is false when none was set. */
-        function* () {
-          const providerThreadId = yield* readProviderThreadId;
-          return yield* client.request("thread/goal/clear", { threadId: providerThreadId });
-        },
-      ),
+      clearGoal: clearCodexSessionGoal,
       sendTurn: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;

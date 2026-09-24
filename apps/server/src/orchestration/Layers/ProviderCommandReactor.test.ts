@@ -1050,26 +1050,35 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
-  effectIt.effect("clears a Codex goal instead of sending /goal clear as a turn", () =>
-    Effect.gen(function* () {
-      const cleared = yield* Deferred.make<void>();
-      const harness = yield* Effect.promise(() =>
-        createHarness({
-          clearGoalEffect: () =>
-            Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: true })),
-        }),
-      );
-      const threadId = ThreadId.make("thread-1");
+  effectIt.effect(
+    "clears a Codex goal instead of sending /goal clear as a turn",
+    /**
+     * A bare Codex `/goal clear` records goal activity and does not send a turn.
+     */
+    () =>
+      Effect.gen(
+        /**
+         * Dispatch `/goal clear` and assert the cleared-goal activity.
+         */
+        function* () {
+          const cleared = yield* Deferred.make<void>();
+          const harness = yield* Effect.promise(() =>
+            createHarness({
+              clearGoalEffect: () =>
+                Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: true })),
+            }),
+          );
+          const threadId = ThreadId.make("thread-1");
 
-      yield* harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-goal-clear"),
-        threadId,
-        message: {
-          messageId: MessageId.make("message-goal-clear"),
-          role: "user",
-          text: "/goal clear",
-          attachments: [],
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-goal-clear"),
+            threadId,
+            message: {
+              messageId: MessageId.make("message-goal-clear"),
+              role: "user",
+              text: "/goal clear",
+              attachments: [],
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
@@ -1094,29 +1103,39 @@ describe("ProviderCommandReactor", () => {
       expect(harness.clearGoal).toHaveBeenCalledWith(threadId);
       expect(harness.sendTurn).not.toHaveBeenCalled();
       expect(harness.generateThreadTitle).not.toHaveBeenCalled();
-    }),
+        },
+      ),
   );
 
-  effectIt.effect("reports when Codex has no goal to clear", () =>
-    Effect.gen(function* () {
-      const cleared = yield* Deferred.make<void>();
-      const harness = yield* Effect.promise(() =>
-        createHarness({
-          clearGoalEffect: () =>
-            Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: false })),
-        }),
-      );
-      const threadId = ThreadId.make("thread-1");
+  effectIt.effect(
+    "reports when Codex has no goal to clear",
+    /**
+     * Codex reports `cleared: false` when the thread has no persisted goal.
+     */
+    () =>
+      Effect.gen(
+        /**
+         * Dispatch a spaced `/goal clear` and assert the empty-goal activity.
+         */
+        function* () {
+          const cleared = yield* Deferred.make<void>();
+          const harness = yield* Effect.promise(() =>
+            createHarness({
+              clearGoalEffect: () =>
+                Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: false })),
+            }),
+          );
+          const threadId = ThreadId.make("thread-1");
 
-      yield* harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-goal-clear-empty"),
-        threadId,
-        message: {
-          messageId: MessageId.make("message-goal-clear-empty"),
-          role: "user",
-          text: "  /Goal   Clear  ",
-          attachments: [],
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-goal-clear-empty"),
+            threadId,
+            message: {
+              messageId: MessageId.make("message-goal-clear-empty"),
+              role: "user",
+              text: "  /Goal   Clear  ",
+              attachments: [],
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
@@ -1132,32 +1151,42 @@ describe("ProviderCommandReactor", () => {
         expect.objectContaining({ kind: "provider.goal.cleared", summary: "No goal to clear" }),
       );
       expect(harness.sendTurn).not.toHaveBeenCalled();
-    }),
+        },
+      ),
   );
 
-  effectIt.effect("does not clear a Codex goal while a turn is running", () =>
-    Effect.gen(function* () {
-      const lookedUp = yield* Deferred.make<void>();
-      const harness = yield* Effect.promise(() =>
-        createHarness({
-          beforeInstanceInfo: () => Deferred.succeed(lookedUp, undefined),
-        }),
-      );
-      const threadId = ThreadId.make("thread-1");
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      yield* harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-goal-clear-running-session"),
-        threadId,
-        session: {
-          threadId,
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          providerName: "codex",
-          status: "running",
-          runtimeMode: "approval-required",
-          activeTurnId: TurnId.make("turn-running"),
-          lastError: null,
-          updatedAt: createdAt,
+  effectIt.effect(
+    "does not clear a Codex goal while a turn is running",
+    /**
+     * Goal clear is rejected while the provider session is already running a turn.
+     */
+    () =>
+      Effect.gen(
+        /**
+         * Start a running session, send `/goal clear`, and assert the failure activity.
+         */
+        function* () {
+          const lookedUp = yield* Deferred.make<void>();
+          const harness = yield* Effect.promise(() =>
+            createHarness({
+              beforeInstanceInfo: () => Deferred.succeed(lookedUp, undefined),
+            }),
+          );
+          const threadId = ThreadId.make("thread-1");
+          const createdAt = "2026-01-01T00:00:00.000Z";
+          yield* harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("cmd-goal-clear-running-session"),
+            threadId,
+            session: {
+              threadId,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              providerName: "codex",
+              status: "running",
+              runtimeMode: "approval-required",
+              activeTurnId: TurnId.make("turn-running"),
+              lastError: null,
+              updatedAt: createdAt,
         },
         createdAt,
       });
@@ -1189,35 +1218,45 @@ describe("ProviderCommandReactor", () => {
       );
       expect(harness.clearGoal).not.toHaveBeenCalled();
       expect(harness.sendTurn).not.toHaveBeenCalled();
-    }),
+        },
+      ),
   );
 
   effectIt.effect.each([
     { label: "another goal command", text: "/goal status", instanceId: "codex" },
     { label: "a non-Codex thread", text: "/goal clear", instanceId: "claude" },
-  ])("sends $label as a normal turn", ({ text, instanceId }) =>
-    Effect.gen(function* () {
-      const started = yield* Deferred.make<void>();
-      const harness = yield* Effect.promise(() =>
-        createHarness({
-          threadModelSelection: {
-            instanceId: ProviderInstanceId.make(instanceId),
-            model: "test-model",
-          },
-          startSessionEffect: (session) =>
-            Deferred.succeed(started, undefined).pipe(Effect.as(session)),
-        }),
-      );
+  ])(
+    "sends $label as a normal turn",
+    /**
+     * Other `/goal` text and non-Codex threads still start a normal provider turn.
+     */
+    ({ text, instanceId }) =>
+      Effect.gen(
+        /**
+         * Dispatch the sample text and assert `sendTurn` receives it unchanged.
+         */
+        function* () {
+          const started = yield* Deferred.make<void>();
+          const harness = yield* Effect.promise(() =>
+            createHarness({
+              threadModelSelection: {
+                instanceId: ProviderInstanceId.make(instanceId),
+                model: "test-model",
+              },
+              startSessionEffect: (session) =>
+                Deferred.succeed(started, undefined).pipe(Effect.as(session)),
+            }),
+          );
 
-      yield* harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-goal-clear-passthrough"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: MessageId.make("message-goal-clear-passthrough"),
-          role: "user",
-          text,
-          attachments: [],
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-goal-clear-passthrough"),
+            threadId: ThreadId.make("thread-1"),
+            message: {
+              messageId: MessageId.make("message-goal-clear-passthrough"),
+              role: "user",
+              text,
+              attachments: [],
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
@@ -1228,7 +1267,8 @@ describe("ProviderCommandReactor", () => {
 
       expect(harness.clearGoal).not.toHaveBeenCalled();
       expect(harness.sendTurn).toHaveBeenCalledWith(expect.objectContaining({ input: text }));
-    }),
+        },
+      ),
   );
 
   effectIt.effect.each(["resume", "stop before resume", "stop after send"])(

@@ -558,152 +558,154 @@ function accountProbeStatus(account: CodexAppServerProviderSnapshot["account"]):
   return { status: "ready", auth };
 }
 
-export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(
-  /**
-   * Probe Codex and build the provider snapshot, including the `/goal clear`
-   * slash command when the app-server is reachable.
-   */
-  function* (
-    codexSettings: CodexSettings,
-    probe: (input: {
-      readonly binaryPath: string;
-      readonly homePath?: string;
-      readonly launchArgs?: string;
-      readonly cwd: string;
-      readonly customModels: ReadonlyArray<CustomModelSetting>;
-      readonly environment?: NodeJS.ProcessEnv;
-    }) => Effect.Effect<
-      CodexAppServerProviderSnapshot,
-      CodexErrors.CodexAppServerError,
-      ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
-    > = probeCodexAppServerProvider,
-    environment?: NodeJS.ProcessEnv,
-  ): Effect.fn.Return<
-    ServerProviderDraft,
-    ServerSettingsError,
-    ChildProcessSpawner.ChildProcessSpawner
-  > {
-    const resolvedEnvironment = environment ?? process.env;
-    const checkedAt = DateTime.formatIso(yield* DateTime.now);
-    const emptyModels = emptyCodexModelsFromSettings(codexSettings);
+/**
+ * Probe Codex and build the provider snapshot, including the `/goal clear`
+ * slash command when the app-server is reachable.
+ */
+function* probeCodexProviderStatus(
+  codexSettings: CodexSettings,
+  probe: (input: {
+    readonly binaryPath: string;
+    readonly homePath?: string;
+    readonly launchArgs?: string;
+    readonly cwd: string;
+    readonly customModels: ReadonlyArray<CustomModelSetting>;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) => Effect.Effect<
+    CodexAppServerProviderSnapshot,
+    CodexErrors.CodexAppServerError,
+    ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+  > = probeCodexAppServerProvider,
+  environment?: NodeJS.ProcessEnv,
+): Effect.fn.Return<
+  ServerProviderDraft,
+  ServerSettingsError,
+  ChildProcessSpawner.ChildProcessSpawner
+> {
+  const resolvedEnvironment = environment ?? process.env;
+  const checkedAt = DateTime.formatIso(yield* DateTime.now);
+  const emptyModels = emptyCodexModelsFromSettings(codexSettings);
 
-    if (!codexSettings.enabled) {
-      return buildServerProvider({
-        presentation: CODEX_PRESENTATION,
-        enabled: false,
-        checkedAt,
-        models: emptyModels,
-        skills: [],
-        probe: {
-          installed: false,
-          version: null,
-          status: "warning",
-          auth: { status: "unknown" },
-          message: "Codex is disabled in T3 Code settings.",
-        },
-      });
-    }
+  if (!codexSettings.enabled) {
+    return buildServerProvider({
+      presentation: CODEX_PRESENTATION,
+      enabled: false,
+      checkedAt,
+      models: emptyModels,
+      skills: [],
+      probe: {
+        installed: false,
+        version: null,
+        status: "warning",
+        auth: { status: "unknown" },
+        message: "Codex is disabled in T3 Code settings.",
+      },
+    });
+  }
 
-    const probeResult = yield* probe({
-      binaryPath: codexSettings.binaryPath,
-      homePath: codexSettings.homePath,
-      launchArgs: resolveCodexLaunchArgs(codexSettings.launchArgs, resolvedEnvironment),
-      cwd: process.cwd(),
-      customModels: codexSettings.customModels,
-      environment: resolvedEnvironment,
-    }).pipe(
-      Effect.scoped,
-      Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),
-      Effect.result,
-    );
+  const probeResult = yield* probe({
+    binaryPath: codexSettings.binaryPath,
+    homePath: codexSettings.homePath,
+    launchArgs: resolveCodexLaunchArgs(codexSettings.launchArgs, resolvedEnvironment),
+    cwd: process.cwd(),
+    customModels: codexSettings.customModels,
+    environment: resolvedEnvironment,
+  }).pipe(
+    Effect.scoped,
+    Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)),
+    Effect.result,
+  );
 
-    if (Result.isFailure(probeResult)) {
-      const error = probeResult.failure;
-      const installed = !isCodexAppServerSpawnError(error);
-      return buildServerProvider({
-        presentation: CODEX_PRESENTATION,
-        enabled: codexSettings.enabled,
-        checkedAt,
-        models: emptyModels,
-        skills: [],
-        probe: {
-          installed,
-          version: null,
-          status: "error",
-          auth: { status: "unknown" },
-          message: installed
-            ? `Codex app-server provider probe failed: ${error.message}.`
-            : `Could not start Codex CLI (\`${codexSettings.binaryPath}\`). Check Settings → Providers → Codex → Binary path on the server.` +
-              (codexSettings.binaryPath === "codex"
-                ? " Installing ChatGPT or Codex desktop may not add codex to PATH."
-                : " Make sure the configured executable exists and can be run."),
-        },
-      });
-    }
-
-    if (Option.isNone(probeResult.success)) {
-      return buildServerProvider({
-        presentation: CODEX_PRESENTATION,
-        enabled: codexSettings.enabled,
-        checkedAt,
-        models: emptyModels,
-        skills: [],
-        probe: {
-          installed: true,
-          version: null,
-          status: "error",
-          auth: { status: "unknown" },
-          message: "Timed out while checking Codex app-server provider status.",
-        },
-      });
-    }
-
-    const snapshot = probeResult.success.value;
-    const accountStatus = accountProbeStatus(snapshot.account);
-    const usageLimits =
-      snapshot.account.account?.type === "apiKey"
-        ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
-        : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
-          ? makeUnavailableUsageLimits({
-              checkedAt,
-              reason: "probeFailed",
-              ...(snapshot.rateLimits ? { message: snapshot.rateLimits.failure } : {}),
-            })
-          : codexRateLimitsToLimits({
-              snapshot: snapshot.rateLimits.snapshot,
-              rateLimitsByLimitId: snapshot.rateLimits.rateLimitsByLimitId,
-              resetCredits: snapshot.rateLimits.resetCredits,
-              checkedAt,
-            });
-
+  if (Result.isFailure(probeResult)) {
+    const error = probeResult.failure;
+    const installed = !isCodexAppServerSpawnError(error);
     return buildServerProvider({
       presentation: CODEX_PRESENTATION,
       enabled: codexSettings.enabled,
       checkedAt,
-      models: snapshot.models,
-      skills: snapshot.skills,
-      slashCommands: [
-        COMPACT_SLASH_COMMAND,
-        {
-          name: "feedback",
-          description: "Send this thread and Codex logs to OpenAI",
-          input: { hint: "Describe the issue (optional)" },
-        },
-        {
-          name: "goal clear",
-          description: "Remove the persisted goal",
-        },
-      ],
+      models: emptyModels,
+      skills: [],
       probe: {
-        installed: true,
-        version: snapshot.version ?? null,
-        status: accountStatus.status,
-        auth: accountStatus.auth,
-        ...(accountStatus.message ? { message: accountStatus.message } : {}),
-        usageLimits,
+        installed,
+        version: null,
+        status: "error",
+        auth: { status: "unknown" },
+        message: installed
+          ? `Codex app-server provider probe failed: ${error.message}.`
+          : `Could not start Codex CLI (\`${codexSettings.binaryPath}\`). Check Settings → Providers → Codex → Binary path on the server.` +
+            (codexSettings.binaryPath === "codex"
+              ? " Installing ChatGPT or Codex desktop may not add codex to PATH."
+              : " Make sure the configured executable exists and can be run."),
       },
     });
-  },
+  }
+
+  if (Option.isNone(probeResult.success)) {
+    return buildServerProvider({
+      presentation: CODEX_PRESENTATION,
+      enabled: codexSettings.enabled,
+      checkedAt,
+      models: emptyModels,
+      skills: [],
+      probe: {
+        installed: true,
+        version: null,
+        status: "error",
+        auth: { status: "unknown" },
+        message: "Timed out while checking Codex app-server provider status.",
+      },
+    });
+  }
+
+  const snapshot = probeResult.success.value;
+  const accountStatus = accountProbeStatus(snapshot.account);
+  const usageLimits =
+    snapshot.account.account?.type === "apiKey"
+      ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
+      : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
+        ? makeUnavailableUsageLimits({
+            checkedAt,
+            reason: "probeFailed",
+            ...(snapshot.rateLimits ? { message: snapshot.rateLimits.failure } : {}),
+          })
+        : codexRateLimitsToLimits({
+            snapshot: snapshot.rateLimits.snapshot,
+            rateLimitsByLimitId: snapshot.rateLimits.rateLimitsByLimitId,
+            resetCredits: snapshot.rateLimits.resetCredits,
+            checkedAt,
+          });
+
+  return buildServerProvider({
+    presentation: CODEX_PRESENTATION,
+    enabled: codexSettings.enabled,
+    checkedAt,
+    models: snapshot.models,
+    skills: snapshot.skills,
+    slashCommands: [
+      COMPACT_SLASH_COMMAND,
+      {
+        name: "feedback",
+        description: "Send this thread and Codex logs to OpenAI",
+        input: { hint: "Describe the issue (optional)" },
+      },
+      {
+        name: "goal clear",
+        description: "Remove the persisted goal",
+      },
+    ],
+    probe: {
+      installed: true,
+      version: snapshot.version ?? null,
+      status: accountStatus.status,
+      auth: accountStatus.auth,
+      ...(accountStatus.message ? { message: accountStatus.message } : {}),
+      usageLimits,
+    },
+  });
+}
+
+export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(
+  probeCodexProviderStatus,
 );
 
 // NOTE: the singleton `CodexProviderLive` Layer has been removed as part of

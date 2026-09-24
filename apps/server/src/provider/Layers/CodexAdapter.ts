@@ -2581,15 +2581,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
   });
 
-  const clearGoal = Effect.fn("clearGoal")(
-    /** Clear the persisted Codex goal via thread/goal/clear. Does not start a turn. */
-    function* (threadId: ThreadId) {
-      const session = yield* requireSession(threadId);
-      return yield* session.runtime.clearGoal.pipe(
-        Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/goal/clear", cause)),
-      );
-    },
-  );
+  /**
+   * Clear the persisted Codex goal via thread/goal/clear. Does not start a turn.
+   */
+  function* clearCodexAdapterGoal(threadId: ThreadId) {
+    const session = yield* requireSession(threadId);
+    return yield* session.runtime.clearGoal.pipe(
+      Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/goal/clear", cause)),
+    );
+  }
+
+  const clearGoal = Effect.fn("clearGoal")(clearCodexAdapterGoal);
 
   const readThread: CodexAdapterShape["readThread"] = (threadId) =>
     requireSession(threadId).pipe(

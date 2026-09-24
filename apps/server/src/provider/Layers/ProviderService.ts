@@ -2254,31 +2254,35 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  /**
+   * Clear a persisted provider goal through the bound adapter.
+   * Fails when that adapter has no goal channel.
+   */
+  function* clearPersistedProviderGoal(
+    threadId: Parameters<ProviderServiceMethod<"clearGoal">>[0],
+  ) {
+    const routed = yield* resolveRoutableSession({
+      threadId,
+      operation: "ProviderService.clearGoal",
+      allowRecovery: true,
+    });
+    const clearGoalForAdapter = routed.adapter.clearGoal;
+    if (clearGoalForAdapter === undefined) {
+      return yield* toValidationError(
+        "ProviderService.clearGoal",
+        `Provider '${routed.adapter.provider}' does not support clearing a goal.`,
+      );
+    }
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "clear-goal",
+      "provider.kind": routed.adapter.provider,
+      "provider.thread_id": threadId,
+    });
+    return yield* clearGoalForAdapter(routed.threadId);
+  }
+
   const clearGoal: ProviderServiceMethod<"clearGoal"> = Effect.fn("clearGoal")(
-    /**
-     * Clear a persisted provider goal through the bound adapter.
-     * Fails when that adapter has no goal channel.
-     */
-    function* (threadId) {
-      const routed = yield* resolveRoutableSession({
-        threadId,
-        operation: "ProviderService.clearGoal",
-        allowRecovery: true,
-      });
-      const clearGoalForAdapter = routed.adapter.clearGoal;
-      if (clearGoalForAdapter === undefined) {
-        return yield* toValidationError(
-          "ProviderService.clearGoal",
-          `Provider '${routed.adapter.provider}' does not support clearing a goal.`,
-        );
-      }
-      yield* Effect.annotateCurrentSpan({
-        "provider.operation": "clear-goal",
-        "provider.kind": routed.adapter.provider,
-        "provider.thread_id": threadId,
-      });
-      return yield* clearGoalForAdapter(routed.threadId);
-    },
+    clearPersistedProviderGoal,
   );
 
   const uploadFeedback: ProviderServiceMethod<"uploadFeedback"> = Effect.fn("uploadFeedback")(
