@@ -73,6 +73,7 @@ import {
   type KeybindingsUpdateToastController,
 } from "../components/KeybindingsUpdateToast.logic";
 
+import { BackgroundQueueCoordinator } from "../components/BackgroundQueuedMessages";
 import { getDesktopSnapShotBridge } from "../lib/desktopSnapShot";
 import { installDesktopPasteAsText } from "../lib/desktopPasteAsText";
 import { shouldResumeSnapShotSetupOnStartup } from "../lib/snapShotSetupResume";
@@ -224,6 +225,7 @@ function RootRouteView() {
           <SshPasswordPromptDialog />
           <SnapShotCoordinator />
           <ThreadNotificationCoordinator />
+          <BackgroundQueueCoordinator />
           <ConfirmDialogHost />
           <CustomSnoozeDialogHost />
           <SlowRpcRequestToastCoordinator />
