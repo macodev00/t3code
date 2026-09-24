@@ -3201,7 +3201,7 @@ export default function ChatView(props: ChatViewProps) {
     localDispatchStartedAt,
     latestUserMessageAt,
     isPreparingWorktree: isLocallyPreparingWorktree,
-    isSendBusy,
+    isSendBusy: isLocalSendBusy,
     backgroundSubmissionPending,
   } = useLocalDispatchState({
     activeThread,
@@ -3211,6 +3211,11 @@ export default function ChatView(props: ChatViewProps) {
     activePendingUserInput: activePendingUserInput?.requestId ?? null,
     threadError,
   });
+  const isBackgroundQueueSending = useQueuedMessageStore(
+    (state) =>
+      activeThreadKey !== null && state.backgroundSendsByThreadKey[activeThreadKey] !== undefined,
+  );
+  const isSendBusy = isLocalSendBusy || isBackgroundQueueSending;
   const optimisticCompactionMessage = optimisticUserMessages.at(-1);
   const pendingCompactionMessage =
     isSendBusy &&
@@ -7657,6 +7662,22 @@ export default function ChatView(props: ChatViewProps) {
         previewAnnotations: [...composerPreviewAnnotations],
         reviewComments: [...composerReviewComments],
         submissionIntent,
+        sendOptions: {
+          modelSelection: ctxSelectedModelSelection,
+          runtimeMode,
+          interactionMode: sendInteractionMode,
+          promptEffort: resolvePromptInjectedEffort(
+            getProviderModelCapabilities(
+              ctxSelectedProviderModels,
+              ctxSelectedModel,
+              ctxSelectedProvider,
+            ),
+            ctxSelectedPromptEffort,
+          ),
+          ...(localCheckoutBranchMismatch
+            ? { branch: localCheckoutBranchMismatch.currentBranch }
+            : {}),
+        },
         queuedAfterToolActivityId: latestCompletedToolActivityId(threadActivities),
         createdAt: new Date().toISOString(),
       });
@@ -8619,9 +8640,9 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
 
-  // Sends the oldest queued message once it is due: a tool call finished
-  // after it was queued, or the turn ended. Only one leaves per boundary; the
-  // take inside onSend re-anchors the rest.
+  // Sends the oldest queued message for the open thread. Other threads are
+  // dispatched by BackgroundQueueCoordinator, which stays mounted across navigation.
+  // Only one leaves per boundary; the take inside onSend re-anchors the rest.
   const sendQueuedMessage = useEffectEvent((message: QueuedComposerMessage) => {
     void onSend(undefined, message.submissionIntent, undefined, message);
   });
