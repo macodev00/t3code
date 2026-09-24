@@ -257,6 +257,11 @@ function makeFakeCodexAdapter(
       Effect.succeed({ threadId, turns: [] }),
   );
 
+  const clearGoal = vi.fn(
+    (_threadId: ThreadId): Effect.Effect<{ readonly cleared: boolean }, ProviderAdapterError> =>
+      Effect.succeed({ cleared: true }),
+  );
+
   const uploadFeedback = vi.fn(
     (
       input: ProviderUploadFeedbackInput,
@@ -294,7 +299,7 @@ function makeFakeCodexAdapter(
     hasSession,
     readThread,
     rollbackThread,
-    ...(provider === CODEX_DRIVER ? { uploadFeedback } : {}),
+    ...(provider === CODEX_DRIVER ? { uploadFeedback, clearGoal } : {}),
     stopAll,
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);
@@ -332,6 +337,7 @@ function makeFakeCodexAdapter(
     readThread,
     rollbackThread,
     uploadFeedback,
+    clearGoal,
     stopAll,
   };
 }
@@ -2067,6 +2073,43 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
       yield* Fiber.join(retryFiber);
       yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("routes goal clear to the Codex adapter", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-goal-clear-route");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+      routing.codex.clearGoal.mockClear();
+
+      const result = yield* provider.clearGoal(threadId);
+
+      assert.deepStrictEqual(result, { cleared: true });
+      assert.deepStrictEqual(routing.codex.clearGoal.mock.calls, [[threadId]]);
+    }),
+  );
+
+  it.effect("rejects goal clear for providers without a goal channel", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-goal-clear-claude");
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const error = yield* provider.clearGoal(threadId).pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderValidationError);
+      assert.include(error.issue, "does not support clearing a goal");
     }),
   );
 

@@ -420,6 +420,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               description: "Send this thread and Codex logs to OpenAI",
               input: { hint: "Describe the issue (optional)" },
             },
+            {
+              name: "goal clear",
+              description: "Remove the persisted goal",
+            },
           ]);
         }),
       );

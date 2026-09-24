@@ -2581,6 +2581,13 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
   });
 
+  const clearGoal = Effect.fn("clearGoal")(function* (threadId: ThreadId) {
+    const session = yield* requireSession(threadId);
+    return yield* session.runtime.clearGoal.pipe(
+      Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/goal/clear", cause)),
+    );
+  });
+
   const readThread: CodexAdapterShape["readThread"] = (threadId) =>
     requireSession(threadId).pipe(
       Effect.flatMap((session) => session.runtime.readThread),
@@ -2727,6 +2734,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     startSession,
     sendTurn,
     compaction: { type: "native", start: compactThread },
+    clearGoal,
     interruptTurn,
     readThread,
     rollbackThread,

@@ -96,6 +96,11 @@ const isCompactCommandMessage = (message: ThreadTitleMessage): boolean =>
   message.role === "user" &&
   (message.attachments?.length ?? 0) === 0 &&
   message.text.trim().toLowerCase() === "/compact";
+
+const isGoalClearCommandMessage = (message: ThreadTitleMessage): boolean =>
+  message.role === "user" &&
+  (message.attachments?.length ?? 0) === 0 &&
+  message.text.trim().toLowerCase().replace(/\s+/g, " ") === "/goal clear";
 function mapProviderSessionStatusToOrchestrationStatus(
   status: "connecting" | "ready" | "running" | "error" | "closed",
 ): OrchestrationSession["status"] {
@@ -1338,7 +1343,19 @@ const make = Effect.gen(function* () {
     yield* ensureThreadWorktree(thread);
 
     const isCompactCommand = isCompactCommandMessage(message);
-    if (!hasOtherUserMessages && !isCompactCommand) {
+    // Codex persists goals on thread/goal/clear. Sending /goal clear as a turn
+    // leaves the goal in place and shows the command to the assistant.
+    const goalClearInstanceId =
+      thread.session?.providerInstanceId ??
+      event.payload.modelSelection?.instanceId ??
+      thread.modelSelection.instanceId;
+    const handleGoalClear = isGoalClearCommandMessage(message)
+      ? yield* providerService.getInstanceInfo(goalClearInstanceId).pipe(
+          Effect.map((info) => info.driverKind === "codex"),
+          Effect.orElseSucceed(() => false),
+        )
+      : false;
+    if (!hasOtherUserMessages && !isCompactCommand && !handleGoalClear) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
         resolveThreadWorkspaceCwd({
@@ -1481,6 +1498,82 @@ const make = Effect.gen(function* () {
       const queued = turnsAfterCompaction.get(event.payload.threadId) ?? [];
       queued.push(event);
       turnsAfterCompaction.set(event.payload.threadId, queued);
+      return;
+    }
+    if (handleGoalClear) {
+      const latestThread = yield* resolveThreadShell(event.payload.threadId);
+      if (
+        latestThread?.session?.status === "starting" ||
+        latestThread?.session?.status === "running"
+      ) {
+        yield* appendTurnStartFailure(
+          "Could not clear the goal",
+          "Goal clear is unavailable while a provider turn is running.",
+        );
+        return;
+      }
+
+      yield* Effect.gen(function* () {
+        yield* ensureSessionForThread(
+          event.payload.threadId,
+          event.payload.createdAt,
+          event.payload.modelSelection !== undefined
+            ? { modelSelection: event.payload.modelSelection }
+            : {},
+        );
+        if (event.payload.modelSelection !== undefined) {
+          threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+        }
+        const result = yield* providerService.clearGoal(event.payload.threadId);
+        const createdAt = event.payload.createdAt;
+        yield* Effect.all({
+          commandId: serverCommandId("provider-goal-clear"),
+          eventId: serverEventId(),
+        }).pipe(
+          Effect.flatMap(({ commandId, eventId }) =>
+            orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId,
+              threadId: event.payload.threadId,
+              activity: {
+                id: eventId,
+                tone: "info",
+                kind: "provider.goal.cleared",
+                summary: result.cleared ? "Goal cleared" : "No goal to clear",
+                payload: {
+                  cleared: result.cleared,
+                  requestId: event.payload.messageId,
+                },
+                turnId: null,
+                createdAt,
+              },
+              createdAt,
+            }),
+          ),
+        );
+        const settledThread = yield* resolveThreadShell(event.payload.threadId);
+        const session = settledThread?.session;
+        if (session && session.status !== "running" && session.status !== "stopped") {
+          yield* setThreadSession({
+            threadId: event.payload.threadId,
+            session: {
+              ...session,
+              status: "ready",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          });
+        }
+      }).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.void;
+          }
+          return appendTurnStartFailure("Could not clear the goal", formatFailureDetail(cause));
+        }),
+      );
       return;
     }
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
