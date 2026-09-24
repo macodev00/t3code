@@ -1079,15 +1079,19 @@ describe(
          */
         function* () {
           const cleared = yield* Deferred.make<void>();
-          const harness = yield* Effect.promise(() =>
-            createHarness({
-              clearGoalEffect:
-                /**
-                 * Signal that a goal was cleared, then return `{ cleared: true }`.
-                 */
-                () =>
-                Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: true })),
-            }),
+          const harness = yield* Effect.promise(
+            /**
+             * Build a harness whose clearGoal effect resolves the cleared deferred.
+             */
+            () =>
+              createHarness({
+                clearGoalEffect:
+                  /**
+                   * Signal that a goal was cleared, then return `{ cleared: true }`.
+                   */
+                  () =>
+                    Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: true })),
+              }),
           );
           const threadId = ThreadId.make("thread-1");
 
@@ -1106,12 +1110,34 @@ describe(
         createdAt: "2026-01-01T00:00:00.000Z",
       });
       yield* Deferred.await(cleared);
-      yield* Effect.promise(() => harness.drain());
+      yield* Effect.promise(
+        /**
+         * Drain the reactor after the goal-clear dispatch.
+         */
+        () => harness.drain(),
+      );
 
-      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+      const thread = (
+        yield* Effect.promise(
+          /**
+           * Read the projected model after the goal was cleared.
+           */
+          () => harness.readModel(),
+        )
+      ).threads.find(
+        /**
+         * Match the thread created for this goal-clear case.
+         */
         (entry) => entry.id === threadId,
       );
-      expect(thread?.messages.map((message) => message.text)).toEqual(["/goal clear"]);
+      expect(
+        thread?.messages.map(
+          /**
+           * Read the user message text projected onto the thread.
+           */
+          (message) => message.text,
+        ),
+      ).toEqual(["/goal clear"]);
       expect(thread?.activities).toContainEqual(
         expect.objectContaining({
           kind: "provider.goal.cleared",
@@ -1120,7 +1146,14 @@ describe(
           turnId: null,
         }),
       );
-      expect(yield* Effect.promise(() => harness.readPendingTurnStarts())).toEqual([]);
+      expect(
+        yield* Effect.promise(
+          /**
+           * Read turn starts still pending after goal clear.
+           */
+          () => harness.readPendingTurnStarts(),
+        ),
+      ).toEqual([]);
       expect(harness.clearGoal).toHaveBeenCalledWith(threadId);
       expect(harness.sendTurn).not.toHaveBeenCalled();
       expect(harness.generateThreadTitle).not.toHaveBeenCalled();
@@ -1140,15 +1173,19 @@ describe(
          */
         function* () {
           const cleared = yield* Deferred.make<void>();
-          const harness = yield* Effect.promise(() =>
-            createHarness({
-              clearGoalEffect:
-                /**
-                 * Signal completion and report that no goal was set.
-                 */
-                () =>
-                Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: false })),
-            }),
+          const harness = yield* Effect.promise(
+            /**
+             * Build a harness whose clearGoal effect reports that no goal was set.
+             */
+            () =>
+              createHarness({
+                clearGoalEffect:
+                  /**
+                   * Signal completion and report that no goal was set.
+                   */
+                  () =>
+                    Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: false })),
+              }),
           );
           const threadId = ThreadId.make("thread-1");
 
@@ -1167,9 +1204,24 @@ describe(
         createdAt: "2026-01-01T00:00:00.000Z",
       });
       yield* Deferred.await(cleared);
-      yield* Effect.promise(() => harness.drain());
+      yield* Effect.promise(
+        /**
+         * Drain the reactor after the empty-goal dispatch.
+         */
+        () => harness.drain(),
+      );
 
-      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+      const thread = (
+        yield* Effect.promise(
+          /**
+           * Read the projected model after the empty-goal clear.
+           */
+          () => harness.readModel(),
+        )
+      ).threads.find(
+        /**
+         * Match the thread created for the empty-goal case.
+         */
         (entry) => entry.id === threadId,
       );
       expect(thread?.activities).toContainEqual(
@@ -1192,14 +1244,18 @@ describe(
          */
         function* () {
           const lookedUp = yield* Deferred.make<void>();
-          const harness = yield* Effect.promise(() =>
-            createHarness({
-              beforeInstanceInfo:
-                /**
-                 * Signal once instance lookup runs, while the session is still running.
-                 */
-                () => Deferred.succeed(lookedUp, undefined),
-            }),
+          const harness = yield* Effect.promise(
+            /**
+             * Build a harness that signals when instance lookup runs.
+             */
+            () =>
+              createHarness({
+                beforeInstanceInfo:
+                  /**
+                   * Signal once instance lookup runs, while the session is still running.
+                   */
+                  () => Deferred.succeed(lookedUp, undefined),
+              }),
           );
           const threadId = ThreadId.make("thread-1");
           const createdAt = "2026-01-01T00:00:00.000Z";
@@ -1234,9 +1290,24 @@ describe(
         createdAt,
       });
       yield* Deferred.await(lookedUp);
-      yield* Effect.promise(() => harness.drain());
+      yield* Effect.promise(
+        /**
+         * Drain the reactor after the running-session goal-clear attempt.
+         */
+        () => harness.drain(),
+      );
 
-      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+      const thread = (
+        yield* Effect.promise(
+          /**
+           * Read the projected model after the rejected goal clear.
+           */
+          () => harness.readModel(),
+        )
+      ).threads.find(
+        /**
+         * Match the thread whose session was already running.
+         */
         (entry) => entry.id === threadId,
       );
       expect(thread?.activities).toContainEqual(
@@ -1266,19 +1337,23 @@ describe(
          */
         function* () {
           const started = yield* Deferred.make<void>();
-          const harness = yield* Effect.promise(() =>
-            createHarness({
-              threadModelSelection: {
-                instanceId: ProviderInstanceId.make(instanceId),
-                model: "test-model",
-              },
-              startSessionEffect:
-                /**
-                 * Signal that the normal turn path started a session.
-                 */
-                (session) =>
-                Deferred.succeed(started, undefined).pipe(Effect.as(session)),
-            }),
+          const harness = yield* Effect.promise(
+            /**
+             * Build a harness that starts a normal turn for this sample.
+             */
+            () =>
+              createHarness({
+                threadModelSelection: {
+                  instanceId: ProviderInstanceId.make(instanceId),
+                  model: "test-model",
+                },
+                startSessionEffect:
+                  /**
+                   * Signal that the normal turn path started a session.
+                   */
+                  (session) =>
+                    Deferred.succeed(started, undefined).pipe(Effect.as(session)),
+              }),
           );
 
           yield* harness.engine.dispatch({

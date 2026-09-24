@@ -2588,7 +2588,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(
   function* clearCodexAdapterGoal(threadId: ThreadId) {
     const session = yield* requireSession(threadId);
     return yield* session.runtime.clearGoal.pipe(
-      Effect.mapError((cause) => mapCodexRuntimeError(threadId, "thread/goal/clear", cause)),
+      Effect.mapError(
+        /**
+         * Map a thread/goal/clear runtime failure into an adapter error.
+         */
+        (cause) => mapCodexRuntimeError(threadId, "thread/goal/clear", cause),
+      ),
     );
   }
 
