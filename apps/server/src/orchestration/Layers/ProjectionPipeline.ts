@@ -477,6 +477,10 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
 });
 
 const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjectionPipeline")(
+  /**
+   * Project orchestration events into the thread, turn, and session read models.
+   * A goal-clear activity drops a pending turn the same way compaction does.
+   */
   function* () {
     const sql = yield* SqlClient.SqlClient;
     const eventStore = yield* OrchestrationEventStore;
@@ -1486,6 +1490,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           yield* Effect.forEach(
             otherRunningTurns.filter(
+              /**
+               * Other turns that are still running after this session settles.
+               */
               (turn) =>
                 turn.turnId !== null && turn.turnId !== turnId && turn.state === "running",
             ),

@@ -112,6 +112,9 @@ function isLegacyTurnCompletedEvent(
   );
 }
 
+/**
+ * Build a provider service stub for runtime ingestion tests.
+ */
 function createProviderServiceHarness() {
   const runtimeEventPubSub = Effect.runSync(
     PubSub.unbounded<{
@@ -126,7 +129,11 @@ function createProviderServiceHarness() {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
     compactThread: () => unsupported(),
-    clearGoal: () => unsupported(),
+    clearGoal:
+      /**
+       * Goal clear is not exercised by the ingestion harness.
+       */
+      () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),

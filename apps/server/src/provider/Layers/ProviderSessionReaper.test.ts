@@ -120,7 +120,12 @@ function makeReadModel(
   };
 }
 
-describe("ProviderSessionReaper", () => {
+describe(
+  "ProviderSessionReaper",
+  /**
+   * Session reaper coverage. Goal clear is only a service-shape stub.
+   */
+  () => {
   let runtime: ManagedRuntime.ManagedRuntime<
     ProviderSessionReaper | ProviderSessionRuntime.ProviderSessionRuntimeRepository,
     unknown
@@ -173,6 +178,9 @@ describe("ProviderSessionReaper", () => {
     );
   }
 
+  /**
+   * Build a reaper harness. Goal clear is present only to satisfy the service shape.
+   */
   async function createHarness(input: {
     readonly readModel: ReturnType<typeof makeReadModel>;
     readonly stopSessionImplementation?: (input: {
@@ -193,7 +201,11 @@ describe("ProviderSessionReaper", () => {
       startSession: () => unsupported(),
       sendTurn: () => unsupported(),
       compactThread: () => unsupported(),
-      clearGoal: () => unsupported(),
+      clearGoal:
+        /**
+         * Goal clear is not exercised by the session reaper.
+         */
+        () => unsupported(),
       interruptTurn: () => unsupported(),
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),

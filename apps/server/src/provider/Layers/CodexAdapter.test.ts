@@ -86,9 +86,19 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   public readonly compactThread = Effect.void;
 
-  public readonly clearGoalImpl = vi.fn(() => Promise.resolve({ cleared: true }));
+  public readonly clearGoalImpl = vi.fn(
+    /**
+     * Resolve a cleared goal for the fake Codex runtime.
+     */
+    () => Promise.resolve({ cleared: true }),
+  );
 
-  clearGoal = Effect.promise(() => this.clearGoalImpl());
+  clearGoal = Effect.promise(
+    /**
+     * Forward goal clear to the fake runtime implementation.
+     */
+    () => this.clearGoalImpl(),
+  );
 
   public readonly interruptTurnImpl = vi.fn((_turnId?: TurnId): Promise<void> =>
     Promise.resolve(undefined),
@@ -322,7 +332,12 @@ const sessionErrorLayer = it.layer(
   ),
 );
 
-sessionErrorLayer("CodexAdapterLive session errors", (it) => {
+sessionErrorLayer(
+  "CodexAdapterLive session errors",
+  /**
+   * Codex adapter session behavior, including thread/goal/clear.
+   */
+  (it) => {
   it.effect("maps missing adapter sessions to ProviderAdapterSessionNotFoundError", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

@@ -371,10 +371,27 @@ const awaitPersistedProvider = (
 
 it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), TestHttpClientLive))(
   "ProviderRegistry",
+  /**
+   * Provider registry checks, including the Codex goal-clear slash command.
+   */
   (it) => {
-    describe("checkCodexProviderStatus", () => {
-      it.effect("uses the app-server account and model list for provider status", () =>
-        Effect.gen(function* () {
+    describe(
+      "checkCodexProviderStatus",
+      /**
+       * Codex status probe cases.
+       */
+      () => {
+      it.effect(
+        "uses the app-server account and model list for provider status",
+        /**
+         * A reachable app-server lists `goal clear` among slash commands.
+         */
+        () =>
+        Effect.gen(
+          /**
+           * Probe Codex status and assert the goal-clear command is advertised.
+           */
+          function* () {
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
             Effect.succeed(
               makeCodexProbeSnapshot({

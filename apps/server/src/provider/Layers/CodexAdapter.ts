@@ -2222,16 +2222,17 @@ function mapToRuntimeEvents(
   return [];
 }
 
-/**
- * Build a Codex provider adapter bound to a specific `CodexSettings` payload.
- *
- * The adapter is a captured closure over `codexConfig` — the `binaryPath` and
- * `homePath` are read from that payload, not from `ServerSettingsService`.
- * This is what makes multi-instance routing possible: each `ProviderInstance`
- * in the registry owns its own closure with its own config, so two Codex
- * instances with different `homePath`s cannot step on each other.
- */
-export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
+export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(
+  /**
+   * Build a Codex provider adapter bound to a specific `CodexSettings` payload.
+   *
+   * The adapter is a captured closure over `codexConfig` — the `binaryPath` and
+   * `homePath` are read from that payload, not from `ServerSettingsService`.
+   * This is what makes multi-instance routing possible: each `ProviderInstance`
+   * in the registry owns its own closure with its own config, so two Codex
+   * instances with different `homePath`s cannot step on each other.
+   */
+  function* (
   codexConfig: CodexSettings,
   options?: CodexAdapterLiveOptions,
 ) {

@@ -136,6 +136,9 @@ type LegacyProviderRuntimeEvent = {
   readonly [key: string]: unknown;
 };
 
+/**
+ * Fake adapter used to assert provider routing, including goal clear.
+ */
 function makeFakeCodexAdapter(
   provider: ProviderDriverKind = CODEX_DRIVER,
   supportsConversationRollback?: boolean,
@@ -258,6 +261,9 @@ function makeFakeCodexAdapter(
   );
 
   const clearGoal = vi.fn(
+    /**
+     * Fake Codex goal clear. Returns a cleared goal.
+     */
     (_threadId: ThreadId): Effect.Effect<{ readonly cleared: boolean }, ProviderAdapterError> =>
       Effect.succeed({ cleared: true }),
   );
@@ -1551,7 +1557,12 @@ it.effect(
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-routing.layer("ProviderServiceLive routing", (it) => {
+routing.layer(
+  "ProviderServiceLive routing",
+  /**
+   * Provider routing, including goal clear to the bound adapter.
+   */
+  (it) => {
   it.effect.each([CODEX_DRIVER, CLAUDE_AGENT_DRIVER, CURSOR_DRIVER])(
     "rejects missing, file, and saved workspace paths before starting %s",
     (driver) =>

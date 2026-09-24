@@ -85,6 +85,9 @@ type LegacyProviderRuntimeEvent = {
   readonly [key: string]: unknown;
 };
 
+/**
+ * Build a provider service stub for checkpoint tests. Goal clear is unsupported.
+ */
 function createProviderServiceHarness(
   cwd: string,
   hasSession = true,
@@ -120,7 +123,11 @@ function createProviderServiceHarness(
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
     compactThread: () => unsupported(),
-    clearGoal: () => unsupported(),
+    clearGoal:
+      /**
+       * Goal clear is not exercised by the checkpoint harness.
+       */
+      () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),

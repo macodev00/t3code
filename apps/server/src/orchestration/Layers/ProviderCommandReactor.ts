@@ -220,7 +220,12 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
   return `${WORKTREE_BRANCH_PREFIX}/${safeFragment}`;
 }
 
-const make = Effect.gen(function* () {
+const make = Effect.gen(
+  /**
+   * Dispatch provider commands. Codex `/goal clear` clears the persisted goal
+   * instead of being sent as a model turn.
+   */
+  function* () {
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -1363,8 +1368,18 @@ const make = Effect.gen(function* () {
       thread.modelSelection.instanceId;
     const handleGoalClear = isGoalClearCommandMessage(message)
       ? yield* providerService.getInstanceInfo(goalClearInstanceId).pipe(
-          Effect.map((info) => info.driverKind === "codex"),
-          Effect.orElseSucceed(() => false),
+          Effect.map(
+            /**
+             * Treat only a Codex driver as a goal-clear target.
+             */
+            (info) => info.driverKind === "codex",
+          ),
+          Effect.orElseSucceed(
+            /**
+             * If instance lookup fails, do not treat the message as goal clear.
+             */
+            () => false,
+          ),
         )
       : false;
     if (!hasOtherUserMessages && !isCompactCommand && !handleGoalClear) {
@@ -1545,7 +1560,11 @@ const make = Effect.gen(function* () {
           commandId: serverCommandId("provider-goal-clear"),
           eventId: serverEventId(),
         }).pipe(
-          Effect.flatMap(({ commandId, eventId }) =>
+          Effect.flatMap(
+            /**
+             * Append the goal-cleared activity for this command.
+             */
+            ({ commandId, eventId }) =>
             orchestrationEngine.dispatch({
               type: "thread.activity.append",
               commandId,
@@ -1584,7 +1603,11 @@ const make = Effect.gen(function* () {
       }
 
       yield* Effect.gen(clearLiveCodexGoal).pipe(
-        Effect.catchCause((cause) => {
+        Effect.catchCause(
+          /**
+           * Record a turn-start failure when goal clear fails for a non-interrupt cause.
+           */
+          (cause) => {
           if (Cause.hasInterruptsOnly(cause)) {
             return Effect.void;
           }

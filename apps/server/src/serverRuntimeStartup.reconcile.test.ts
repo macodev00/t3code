@@ -54,12 +54,20 @@ const makeThread = (
   },
 });
 
-const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
+const makeProviderService =
+  /**
+   * Stub the provider service. Goal clear is unused during startup reconcile.
+   */
+  (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
   ({
     startSession: () => Effect.die("unused"),
     sendTurn: () => Effect.die("unused"),
     compactThread: () => Effect.die("unused"),
-    clearGoal: () => Effect.die("unused"),
+    clearGoal:
+      /**
+       * Unused goal-clear stub for startup reconcile.
+       */
+      () => Effect.die("unused"),
     interruptTurn: () => Effect.die("unused"),
     respondToRequest: () => Effect.die("unused"),
     respondToUserInput: () => Effect.die("unused"),

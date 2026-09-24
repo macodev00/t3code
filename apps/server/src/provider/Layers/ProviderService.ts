@@ -464,8 +464,11 @@ const correlateRuntimeEventWithInstance = (
   return { ...event, providerInstanceId: source.instanceId };
 };
 
-/** Route provider operations, including goal clear, to the adapter bound to each thread. */
-const makeProviderService = Effect.fn("makeProviderService")(function* (
+const makeProviderService = Effect.fn("makeProviderService")(
+  /**
+   * Route provider operations, including goal clear, to the adapter bound to each thread.
+   */
+  function* (
   options?: ProviderServiceLiveOptions,
 ) {
   const analytics = yield* Effect.service(AnalyticsService.AnalyticsService);

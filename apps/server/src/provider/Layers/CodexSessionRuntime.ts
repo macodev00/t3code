@@ -1288,14 +1288,22 @@ export const rollbackCodexThread = Effect.fn("rollbackCodexThread")(function* (
   return { threadId, turns: snapshot.turns.slice(0, retainedCount) };
 });
 
-export const makeCodexSessionRuntime = (
-  options: CodexSessionRuntimeOptions,
-): Effect.Effect<
-  CodexSessionRuntimeShape,
-  CodexErrors.CodexAppServerError,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
-> =>
-  Effect.gen(function* () {
+export const makeCodexSessionRuntime =
+  /**
+   * Build the live Codex session runtime, including thread/goal/clear.
+   */
+  (
+    options: CodexSessionRuntimeOptions,
+  ): Effect.Effect<
+    CodexSessionRuntimeShape,
+    CodexErrors.CodexAppServerError,
+    ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
+  > =>
+    Effect.gen(
+      /**
+       * Open the app-server session and implement runtime methods on that connection.
+       */
+      function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const crypto = yield* Crypto.Crypto;

@@ -115,7 +115,12 @@ async function waitFor(
   return poll();
 }
 
-describe("ProviderCommandReactor", () => {
+describe(
+  "ProviderCommandReactor",
+  /**
+   * Provider command dispatch, including Codex `/goal clear`.
+   */
+  () => {
   let runtime: ManagedRuntime.ManagedRuntime<
     | OrchestrationEngineService
     | ProviderCommandReactor
@@ -166,6 +171,9 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  /**
+   * Build a reactor harness. `clearGoal` records whether `/goal clear` was routed.
+   */
   async function createHarness(input?: {
     readonly baseDir?: string;
     readonly initialTitle?: string;
@@ -278,9 +286,14 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     const compactThread = vi.fn((_: ThreadId) => input?.compactThreadEffect?.() ?? Effect.void);
-    const clearGoal = vi.fn((_: ThreadId) => {
-      return input?.clearGoalEffect?.() ?? Effect.succeed({ cleared: true as const });
-    });
+    const clearGoal = vi.fn(
+      /**
+       * Default goal-clear double. Tests can replace the effect.
+       */
+      (_: ThreadId) => {
+        return input?.clearGoalEffect?.() ?? Effect.succeed({ cleared: true as const });
+      },
+    );
     const interruptTurn = vi.fn((_: unknown) => input?.interruptTurnEffect?.() ?? Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
@@ -378,7 +391,11 @@ describe("ProviderCommandReactor", () => {
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
         }),
       assertConversationRollbackSupported: () => unsupported(),
-      getInstanceInfo: (instanceId) => {
+      getInstanceInfo:
+        /**
+         * Resolve a driver kind so `/goal clear` can be classified as Codex.
+         */
+        (instanceId) => {
         const raw = String(instanceId);
         const notify = input?.beforeInstanceInfo?.() ?? Effect.void;
         const driverKind = ProviderDriverKind.make(
@@ -1064,7 +1081,11 @@ describe("ProviderCommandReactor", () => {
           const cleared = yield* Deferred.make<void>();
           const harness = yield* Effect.promise(() =>
             createHarness({
-              clearGoalEffect: () =>
+              clearGoalEffect:
+                /**
+                 * Signal that a goal was cleared, then return `{ cleared: true }`.
+                 */
+                () =>
                 Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: true })),
             }),
           );
@@ -1121,7 +1142,11 @@ describe("ProviderCommandReactor", () => {
           const cleared = yield* Deferred.make<void>();
           const harness = yield* Effect.promise(() =>
             createHarness({
-              clearGoalEffect: () =>
+              clearGoalEffect:
+                /**
+                 * Signal completion and report that no goal was set.
+                 */
+                () =>
                 Deferred.succeed(cleared, undefined).pipe(Effect.as({ cleared: false })),
             }),
           );
@@ -1169,7 +1194,11 @@ describe("ProviderCommandReactor", () => {
           const lookedUp = yield* Deferred.make<void>();
           const harness = yield* Effect.promise(() =>
             createHarness({
-              beforeInstanceInfo: () => Deferred.succeed(lookedUp, undefined),
+              beforeInstanceInfo:
+                /**
+                 * Signal once instance lookup runs, while the session is still running.
+                 */
+                () => Deferred.succeed(lookedUp, undefined),
             }),
           );
           const threadId = ThreadId.make("thread-1");
@@ -1243,7 +1272,11 @@ describe("ProviderCommandReactor", () => {
                 instanceId: ProviderInstanceId.make(instanceId),
                 model: "test-model",
               },
-              startSessionEffect: (session) =>
+              startSessionEffect:
+                /**
+                 * Signal that the normal turn path started a session.
+                 */
+                (session) =>
                 Deferred.succeed(started, undefined).pipe(Effect.as(session)),
             }),
           );

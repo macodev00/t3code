@@ -115,7 +115,11 @@ const startupDependencies = Layer.mergeAll(
     startSession: () => Effect.die("unused"),
     sendTurn: () => Effect.die("unused"),
     compactThread: () => Effect.die("unused"),
-    clearGoal: () => Effect.die("unused"),
+    clearGoal:
+      /**
+       * Unused goal-clear stub for orphaned-session startup.
+       */
+      () => Effect.die("unused"),
     interruptTurn: () => Effect.die("unused"),
     respondToRequest: () => Effect.die("unused"),
     respondToUserInput: () => Effect.die("unused"),
