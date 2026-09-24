@@ -11,6 +11,9 @@
  */
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeHttp from "node:http";
+import * as NodeHttps from "node:https";
 import * as NodeOS from "node:os";
 import * as NodeReadlinePromises from "node:readline/promises";
 
@@ -19,6 +22,7 @@ import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -29,7 +33,11 @@ import { Command, Flag } from "effect/unstable/cli";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import { resolveBaseDir } from "../os-jank.ts";
-import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import {
+  isProcessAlive,
+  readPersistedServerRuntimeState,
+  type PersistedServerRuntimeState,
+} from "../serverRuntimeState.ts";
 import { baseDirFlag } from "./config.ts";
 import { resolveCliCommand } from "./invocation.ts";
 import {
@@ -37,6 +45,13 @@ import {
   buildTriageLaunchPrompt,
   buildTriageSeedPrompt,
 } from "./triagePrompt.ts";
+import {
+  formatLocalServerVersion,
+  readLocalServerVersion,
+  recordedServerStillOwnsPid,
+  triageReleaseTag,
+  type ServerVersionProbe,
+} from "./triageServerVersion.ts";
 
 interface TriageAgent {
   readonly id: "claude" | "codex";
@@ -76,21 +91,109 @@ export class TriageAgentSpawnError extends Schema.TaggedError<TriageAgentSpawnEr
   }
 }
 
+/**
+ * Start time of `pid`, in epoch ms. Linux reads `/proc/<pid>` (directory
+ * mtime is process start). Other platforms ask the OS. Unreadable means
+ * unknown, which is not treated as the recorded server.
+ */
+const readProcessStartedAtMs = (pid: number): number | undefined => {
+  try {
+    if (NodeOS.platform() === "linux") {
+      return NodeFS.statSync(`/proc/${pid}`).mtimeMs;
+    }
+    if (NodeOS.platform() === "darwin") {
+      const stdout = NodeChildProcess.execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: 2_000,
+        env: { ...process.env, LC_ALL: "C" },
+      });
+      const parsed = Date.parse(stdout.trim());
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+    if (NodeOS.platform() === "win32") {
+      const stdout = NodeChildProcess.execFileSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-Process -Id ${String(pid)}).StartTime.ToUniversalTime().ToString('o')`,
+        ],
+        { encoding: "utf8", timeout: 5_000, windowsHide: true },
+      );
+      const parsed = Date.parse(stdout.trim());
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+};
+
+const serverVersionProbe = {
+  isAlive: isProcessAlive,
+  processStartedAtMs: readProcessStartedAtMs,
+  readText: (url, timeout) => readEnvironmentBody(url, timeout),
+} satisfies ServerVersionProbe;
+
+/**
+ * GET the environment descriptor. A socket timeout and fiber interruption
+ * both destroy the request, so a stalled body settles as a failure.
+ */
+export const readEnvironmentBody = (url: string, timeout: Duration.Input) =>
+  Effect.callback<string, Error>((resume) => {
+    const timeoutMs = Duration.toMillis(timeout);
+    let settled = false;
+    const finish = (effect: Effect.Effect<string, Error>) => {
+      if (settled) return;
+      settled = true;
+      resume(effect);
+    };
+    const request = (url.startsWith("https:") ? NodeHttps : NodeHttp).get(url, (response) => {
+      response.setTimeout(timeoutMs, () => {
+        request.destroy();
+      });
+      if (response.statusCode !== 200) {
+        response.resume();
+        request.destroy();
+        finish(Effect.fail(new Error(`environment status ${String(response.statusCode)}`)));
+        return;
+      }
+      const chunks: Array<Buffer> = [];
+      response.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        finish(Effect.succeed(Buffer.concat(chunks).toString("utf8")));
+      });
+      response.on("error", (cause) => {
+        finish(Effect.fail(cause));
+      });
+    });
+    request.setTimeout(timeoutMs, () => {
+      request.destroy();
+    });
+    request.on("error", (cause) => {
+      finish(Effect.fail(cause));
+    });
+    return Effect.sync(() => {
+      request.destroy();
+    });
+  });
+
 /** One human-readable line about the local server, for `context.md`. */
-const describeServerProcess = Effect.fn("triage.describeServerProcess")(function* (
-  serverRuntimeStatePath: string,
-) {
-  // readPersistedServerRuntimeState swallows read/decode failures itself and
-  // returns none, so a corrupt state file reads as "not running" here.
-  const state = yield* readPersistedServerRuntimeState(serverRuntimeStatePath);
+const describeServerProcess = (state: Option.Option<PersistedServerRuntimeState>): string => {
   if (Option.isNone(state)) {
     return "not running (no server-runtime.json; the server may never have started here)";
   }
   if (!isProcessAlive(state.value.pid)) {
     return `not running (state file is stale: pid ${String(state.value.pid)} is dead; last origin ${state.value.origin})`;
   }
+  if (!recordedServerStillOwnsPid(state.value.startedAt, readProcessStartedAtMs(state.value.pid))) {
+    return `not running (state file is stale: pid ${String(state.value.pid)} is not the server that wrote it; last origin ${state.value.origin})`;
+  }
   return `running (pid ${String(state.value.pid)}, ${state.value.origin})`;
-});
+};
 
 const pickAgent = (agents: ReadonlyArray<TriageAgent>) =>
   Effect.promise(async () => {
@@ -182,20 +285,24 @@ export const triageCommand = Command.make("triage", {
       );
       yield* fs.makeDirectory(scratchDir, { recursive: true });
 
-      const version = packageJson.version;
+      const cliVersion = packageJson.version;
+      // A corrupt state file reads as "not running"; the reader swallows that.
+      const serverState = yield* readPersistedServerRuntimeState(paths.serverRuntimeStatePath);
+      const localServer = formatLocalServerVersion(
+        yield* readLocalServerVersion(serverState, serverVersionProbe),
+      );
       const contextFilePath = path.join(scratchDir, "context.md");
       yield* fs.writeFileString(
         contextFilePath,
         buildTriageContext({
           generatedAt: DateTime.formatIso(now),
-          version,
-          releaseTag: /^[^-+]+-(?:nightly|preview)\./.test(version)
-            ? `v${version} (prerelease build; if this tag does not exist, clone main)`
-            : `v${version}`,
+          cliVersion,
+          cliReleaseTag: triageReleaseTag(cliVersion),
+          ...localServer,
           os: `${yield* HostProcessPlatform} ${yield* HostProcessArchitecture} (${NodeOS.release()})`,
           nodeVersion: process.version,
           launchedAs: yield* resolveCliCommand("triage"),
-          server: yield* describeServerProcess(paths.serverRuntimeStatePath),
+          server: describeServerProcess(serverState),
           paths: {
             stateDir: paths.stateDir,
             dbPath: paths.dbPath,

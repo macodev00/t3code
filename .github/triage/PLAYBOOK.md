@@ -18,9 +18,14 @@ valuable thing you can extract from this conversation.
 
 ## 2. Read the machine facts
 
-Read the triage context file before investigating. It tells you the installed
-version, the OS, whether the server process is currently running, and the exact
-paths for state, logs, and the database.
+Read the triage context file before investigating. It tells you the OS, whether
+the server process is currently running, and the exact paths for state, logs,
+and the database.
+
+`Installed version` (older CLIs) and `Triage CLI version` (newer CLIs) name the
+`t3` binary that wrote the context file. That is not the build the bug happened
+on. `npx t3 triage` is whichever `t3` npm resolved, and it can be older than the
+desktop app or background service.
 
 ## 3. Check for a newer playbook
 
@@ -30,8 +35,21 @@ instead of this one. The user may be on an old release with an old copy.
 
 ## 4. Get the source
 
-Clone the repo at the tag matching the user's installed version, into the source
-cache directory named in the context file, one subdirectory per commit hash:
+Before cloning, ask which version, device, and surface the bug happened on. A
+version read on this machine is the wrong tree when the bug was on another
+device, a remote server, or a build the user has updated since.
+
+If a server is up, read `serverVersion` from
+`GET /.well-known/t3/environment` (unauthenticated). The context file's
+`Server process` line has the origin. Newer context files may already record it
+as `Local server version`. Desktop and server builds share a version, so that
+value is the desktop app when its bundled server is the one answering. Treat it
+as a local fact to check against the user's answer. Clone it only when they
+confirm the bug happened on that server.
+
+Clone the repo at the tag matching the version the bug happened on, into the
+source cache directory named in the context file, one subdirectory per commit
+hash:
 
     git clone --depth 1 --filter=blob:none --branch <release-tag> \
       https://github.com/pingdotgg/t3code <source-cache-dir>/<hash>
@@ -81,7 +99,7 @@ comes from this repo's `main` branch.
 
 Search existing issues in pingdotgg/t3code (use `gh`, or the public GitHub search
 API if `gh` is missing or not logged in). Then check whether the problem is already
-fixed in a release newer than the user's version: compare versions, read release
+fixed in a release newer than the version the bug happened on: compare versions, read release
 notes and recent commits touching the relevant code.
 
 If the user is behind and the fix likely shipped, say so plainly and give them the
