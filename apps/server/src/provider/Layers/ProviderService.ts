@@ -464,6 +464,7 @@ const correlateRuntimeEventWithInstance = (
   return { ...event, providerInstanceId: source.instanceId };
 };
 
+/** Route provider operations, including goal clear, to the adapter bound to each thread. */
 const makeProviderService = Effect.fn("makeProviderService")(function* (
   options?: ProviderServiceLiveOptions,
 ) {
@@ -2253,6 +2254,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  /**
+   * Clear a persisted provider goal through the bound adapter.
+   * Fails when that adapter has no goal channel.
+   */
   const clearGoal: ProviderServiceMethod<"clearGoal"> = Effect.fn("clearGoal")(
     function* (threadId) {
       const routed = yield* resolveRoutableSession({

@@ -1359,6 +1359,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       });
     });
 
+    /**
+     * Project turn rows. A goal-clear activity drops the pending turn start
+     * the same way context compaction does, so `/goal clear` never becomes a turn.
+     */
     const applyThreadTurnsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadTurnsProjection",
     )(function* (event, _attachmentSideEffects) {

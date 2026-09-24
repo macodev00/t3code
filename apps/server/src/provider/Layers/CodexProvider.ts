@@ -558,6 +558,10 @@ function accountProbeStatus(account: CodexAppServerProviderSnapshot["account"]):
   return { status: "ready", auth };
 }
 
+/**
+ * Probe Codex and build the provider snapshot, including the `/goal clear`
+ * slash command when the app-server is reachable.
+ */
 export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(function* (
   codexSettings: CodexSettings,
   probe: (input: {

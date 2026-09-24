@@ -2581,6 +2581,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
   });
 
+  /** Clear the persisted Codex goal via thread/goal/clear. Does not start a turn. */
   const clearGoal = Effect.fn("clearGoal")(function* (threadId: ThreadId) {
     const session = yield* requireSession(threadId);
     return yield* session.runtime.clearGoal.pipe(

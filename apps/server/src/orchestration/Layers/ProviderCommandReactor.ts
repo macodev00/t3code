@@ -97,6 +97,7 @@ const isCompactCommandMessage = (message: ThreadTitleMessage): boolean =>
   (message.attachments?.length ?? 0) === 0 &&
   message.text.trim().toLowerCase() === "/compact";
 
+/** True when the message is a bare `/goal clear` command with no attachments. */
 const isGoalClearCommandMessage = (message: ThreadTitleMessage): boolean =>
   message.role === "user" &&
   (message.attachments?.length ?? 0) === 0 &&
@@ -1213,6 +1214,10 @@ const make = Effect.gen(function* () {
     processThreadTitleRegenerationSafely,
   );
 
+  /**
+   * Handle a requested turn. Codex `/goal clear` calls thread/goal/clear
+   * instead of starting a model turn; other text still sends as a turn.
+   */
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     receivedEvent: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {

@@ -2499,6 +2499,7 @@ export const makeCodexSessionRuntime = (
         const providerThreadId = yield* readProviderThreadId;
         yield* client.request("thread/compact/start", { threadId: providerThreadId });
       }),
+      /** Ask Codex to drop the persisted goal. `cleared` is false when none was set. */
       clearGoal: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         return yield* client.request("thread/goal/clear", { threadId: providerThreadId });
