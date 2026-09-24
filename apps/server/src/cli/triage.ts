@@ -14,22 +14,34 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
 import * as NodeReadlinePromises from "node:readline/promises";
 
+import { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Command, Flag } from "effect/unstable/cli";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import { resolveBaseDir } from "../os-jank.ts";
-import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import {
+  isProcessAlive,
+  readPersistedServerRuntimeState,
+  type PersistedServerRuntimeState,
+} from "../serverRuntimeState.ts";
 import { baseDirFlag } from "./config.ts";
 import { resolveCliCommand } from "./invocation.ts";
 import {
@@ -76,13 +88,21 @@ export class TriageAgentSpawnError extends Schema.TaggedError<TriageAgentSpawnEr
   }
 }
 
+const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
+const SERVER_VERSION_PROBE_TIMEOUT = Duration.millis(2_500);
+const LOCAL_SERVER_VERSION_UNAVAILABLE =
+  "unavailable (server process is up, but /.well-known/t3/environment did not return serverVersion)";
+
+/** Release tag the playbook clones. Nightlies often have no published tag. */
+export const triageReleaseTag = (version: string) =>
+  /^[^-+]+-(?:nightly|preview)\./.test(version)
+    ? `v${version} (prerelease build; if this tag does not exist, clone main)`
+    : `v${version}`;
+
 /** One human-readable line about the local server, for `context.md`. */
-const describeServerProcess = Effect.fn("triage.describeServerProcess")(function* (
-  serverRuntimeStatePath: string,
-) {
-  // readPersistedServerRuntimeState swallows read/decode failures itself and
-  // returns none, so a corrupt state file reads as "not running" here.
-  const state = yield* readPersistedServerRuntimeState(serverRuntimeStatePath);
+const describeServerProcess = (
+  state: Option.Option<PersistedServerRuntimeState>,
+): string => {
   if (Option.isNone(state)) {
     return "not running (no server-runtime.json; the server may never have started here)";
   }
@@ -90,7 +110,56 @@ const describeServerProcess = Effect.fn("triage.describeServerProcess")(function
     return `not running (state file is stale: pid ${String(state.value.pid)} is dead; last origin ${state.value.origin})`;
   }
   return `running (pid ${String(state.value.pid)}, ${state.value.origin})`;
+};
+
+export type LocalServerVersion =
+  | { readonly status: "not-running" }
+  | { readonly status: "unavailable" }
+  | { readonly status: "probed"; readonly version: string };
+
+const probeServerVersion = (origin: string) =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const request = HttpClientRequest.get(new URL(WELL_KNOWN_ENVIRONMENT_PATH, origin).toString());
+    const response = yield* client
+      .execute(request)
+      .pipe(Effect.timeout(SERVER_VERSION_PROBE_TIMEOUT));
+    const descriptor = yield* HttpClientResponse.filterStatusOk(response).pipe(
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(ExecutionEnvironmentDescriptor)),
+    );
+    return descriptor.serverVersion;
+  }).pipe(
+    Effect.provide(FetchHttpClient.layer),
+    Effect.orElseSucceed(() => undefined),
+  );
+
+/**
+ * `serverVersion` of a live server recorded in `server-runtime.json`.
+ * Desktop and service installs publish it on the unauthenticated environment
+ * descriptor. A dead pid is not probed: the port may have been reused.
+ */
+export const readLocalServerVersion = Effect.fn("triage.readLocalServerVersion")(function* (
+  state: Option.Option<PersistedServerRuntimeState>,
+): Effect.fn.Return<LocalServerVersion> {
+  if (Option.isNone(state) || !isProcessAlive(state.value.pid)) {
+    return { status: "not-running" };
+  }
+  const version = yield* probeServerVersion(state.value.origin);
+  return version === undefined ? { status: "unavailable" } : { status: "probed", version };
 });
+
+const formatLocalServerVersion = (probed: LocalServerVersion) => {
+  if (probed.status === "probed") {
+    return {
+      localServerVersion: probed.version,
+      localServerReleaseTag: triageReleaseTag(probed.version),
+    };
+  }
+  return {
+    localServerVersion:
+      probed.status === "unavailable" ? LOCAL_SERVER_VERSION_UNAVAILABLE : "not running",
+  };
+};
 
 const pickAgent = (agents: ReadonlyArray<TriageAgent>) =>
   Effect.promise(async () => {
@@ -182,20 +251,22 @@ export const triageCommand = Command.make("triage", {
       );
       yield* fs.makeDirectory(scratchDir, { recursive: true });
 
-      const version = packageJson.version;
+      const cliVersion = packageJson.version;
+      // A corrupt state file reads as "not running"; the reader swallows that.
+      const serverState = yield* readPersistedServerRuntimeState(paths.serverRuntimeStatePath);
+      const localServer = formatLocalServerVersion(yield* readLocalServerVersion(serverState));
       const contextFilePath = path.join(scratchDir, "context.md");
       yield* fs.writeFileString(
         contextFilePath,
         buildTriageContext({
           generatedAt: DateTime.formatIso(now),
-          version,
-          releaseTag: /^[^-+]+-(?:nightly|preview)\./.test(version)
-            ? `v${version} (prerelease build; if this tag does not exist, clone main)`
-            : `v${version}`,
+          cliVersion,
+          cliReleaseTag: triageReleaseTag(cliVersion),
+          ...localServer,
           os: `${yield* HostProcessPlatform} ${yield* HostProcessArchitecture} (${NodeOS.release()})`,
           nodeVersion: process.version,
           launchedAs: yield* resolveCliCommand("triage"),
-          server: yield* describeServerProcess(paths.serverRuntimeStatePath),
+          server: describeServerProcess(serverState),
           paths: {
             stateDir: paths.stateDir,
             dbPath: paths.dbPath,
