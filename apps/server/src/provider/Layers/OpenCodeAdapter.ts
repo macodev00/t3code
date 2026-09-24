@@ -2953,6 +2953,8 @@ export function makeOpenCodeAdapter(
                 }
                 const createdSession = yield* runOpenCodeSdk("session.create", () =>
                   client.session.create({
+                    // A title here makes OpenCode skip SessionPrompt.ensureTitle.
+                    // Callers pass one only for a user rename; prompt seeds stay omitted.
                     ...(input.title ? { title: input.title } : {}),
                     permission: buildOpenCodePermissionRules(input.runtimeMode),
                   }),

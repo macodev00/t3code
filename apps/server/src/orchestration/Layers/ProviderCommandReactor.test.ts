@@ -887,6 +887,96 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("title");
+  });
+
+  it("forwards only a user-renamed title when starting a provider session", async () => {
+    const harness = await createHarness({ initialTitle: "Add a progressive blur as you scroll" });
+    const now = "2026-01-01T00:00:00.000Z";
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    };
+    const startTurn = (threadId: string, text: string, titleSeed: string) =>
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-title-${threadId}`),
+          threadId: ThreadId.make(threadId),
+          message: {
+            messageId: asMessageId(`message-${threadId}`),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          titleSeed,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+    await startTurn(
+      "thread-1",
+      "Add a progressive blur as you scroll",
+      "Add a progressive blur as you scroll",
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("title");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-renamed"),
+        threadId: ThreadId.make("thread-renamed"),
+        projectId: ProjectId.make("project-1"),
+        title: "New thread",
+        modelSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-rename"),
+        threadId: ThreadId.make("thread-renamed"),
+        title: "Keep this name",
+      }),
+    );
+    await startTurn("thread-renamed", "hello there", "hello there");
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({ title: "Keep this name" });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-seeded"),
+        threadId: ThreadId.make("thread-seeded"),
+        projectId: ProjectId.make("project-1"),
+        title: "New thread",
+        modelSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-autotitle"),
+        threadId: ThreadId.make("thread-seeded"),
+        title: "hello there",
+      }),
+    );
+    await startTurn("thread-seeded", "hello there", "hello there");
+    await waitFor(() => harness.startSession.mock.calls.length === 3);
+    expect(harness.startSession.mock.calls[2]?.[1]).not.toHaveProperty("title");
   });
 
   effectIt.effect("projects inline context before sending the provider turn", () =>
