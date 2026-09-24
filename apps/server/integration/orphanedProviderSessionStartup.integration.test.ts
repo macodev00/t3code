@@ -112,19 +112,51 @@ const startupDependencies = Layer.mergeAll(
   AnalyticsService.layerTest,
   Layer.mock(GitVcsDriver.GitVcsDriver)({}),
   Layer.succeed(ProviderService.ProviderService, {
-    startSession: () => Effect.die("unused"),
-    sendTurn: () => Effect.die("unused"),
-    compactThread: () => Effect.die("unused"),
+    startSession:
+      /**
+       * Unused startup stub. Orphan recovery never starts a provider session.
+       */
+      () => Effect.die("unused"),
+    sendTurn:
+      /**
+       * Unused startup stub. Orphan recovery never sends a provider turn.
+       */
+      () => Effect.die("unused"),
+    compactThread:
+      /**
+       * Unused startup stub. Orphan recovery never compacts a thread.
+       */
+      () => Effect.die("unused"),
     clearGoal:
       /**
        * Unused goal-clear stub for orphaned-session startup.
        */
       () => Effect.die("unused"),
-    interruptTurn: () => Effect.die("unused"),
-    respondToRequest: () => Effect.die("unused"),
-    respondToUserInput: () => Effect.die("unused"),
-    stopSession: () => Effect.die("unused"),
-    listSessions: () => Effect.succeed([]),
+    interruptTurn:
+      /**
+       * Unused startup stub. Orphan recovery never interrupts a turn.
+       */
+      () => Effect.die("unused"),
+    respondToRequest:
+      /**
+       * Unused startup stub. Orphan recovery never answers an approval.
+       */
+      () => Effect.die("unused"),
+    respondToUserInput:
+      /**
+       * Unused startup stub. Orphan recovery never answers user input.
+       */
+      () => Effect.die("unused"),
+    stopSession:
+      /**
+       * Unused startup stub. Orphan recovery never stops a session.
+       */
+      () => Effect.die("unused"),
+    listSessions:
+      /**
+       * Unused startup stub. Orphan recovery reads no live provider sessions.
+       */
+      () => Effect.succeed([]),
     getCapabilities: () => Effect.die("unused"),
     assertConversationRollbackSupported: () => Effect.die("unused"),
     getInstanceInfo: () => Effect.die("unused"),

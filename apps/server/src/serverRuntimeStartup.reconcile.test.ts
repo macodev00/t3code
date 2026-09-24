@@ -60,19 +60,51 @@ const makeProviderService =
    */
   (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
   ({
-    startSession: () => Effect.die("unused"),
-    sendTurn: () => Effect.die("unused"),
-    compactThread: () => Effect.die("unused"),
+    startSession:
+      /**
+       * Unused reconcile stub. Startup never starts a provider session.
+       */
+      () => Effect.die("unused"),
+    sendTurn:
+      /**
+       * Unused reconcile stub. Startup never sends a provider turn.
+       */
+      () => Effect.die("unused"),
+    compactThread:
+      /**
+       * Unused reconcile stub. Startup never compacts a thread.
+       */
+      () => Effect.die("unused"),
     clearGoal:
       /**
        * Unused goal-clear stub for startup reconcile.
        */
       () => Effect.die("unused"),
-    interruptTurn: () => Effect.die("unused"),
-    respondToRequest: () => Effect.die("unused"),
-    respondToUserInput: () => Effect.die("unused"),
-    stopSession: () => Effect.die("unused"),
-    listSessions: () => Effect.succeed(liveThreadIds.map((threadId) => ({ threadId }) as never)),
+    interruptTurn:
+      /**
+       * Unused reconcile stub. Startup never interrupts a turn.
+       */
+      () => Effect.die("unused"),
+    respondToRequest:
+      /**
+       * Unused reconcile stub. Startup never answers an approval.
+       */
+      () => Effect.die("unused"),
+    respondToUserInput:
+      /**
+       * Unused reconcile stub. Startup never answers user input.
+       */
+      () => Effect.die("unused"),
+    stopSession:
+      /**
+       * Unused reconcile stub. Startup never stops a session here.
+       */
+      () => Effect.die("unused"),
+    listSessions:
+      /**
+       * Report the live thread ids this reconcile fixture was given.
+       */
+      () => Effect.succeed(liveThreadIds.map((threadId) => ({ threadId }) as never)),
     getCapabilities: () => Effect.die("unused"),
     assertConversationRollbackSupported: () => Effect.die("unused"),
     getInstanceInfo: () => Effect.die("unused"),

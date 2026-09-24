@@ -198,17 +198,41 @@ describe(
     );
 
     const providerService: ProviderServiceShape = {
-      startSession: () => unsupported(),
-      sendTurn: () => unsupported(),
-      compactThread: () => unsupported(),
+      startSession:
+        /**
+         * Unused reaper stub. Session sweeps never start a provider session.
+         */
+        () => unsupported(),
+      sendTurn:
+        /**
+         * Unused reaper stub. Session sweeps never send a provider turn.
+         */
+        () => unsupported(),
+      compactThread:
+        /**
+         * Unused reaper stub. Session sweeps never compact a thread.
+         */
+        () => unsupported(),
       clearGoal:
         /**
          * Goal clear is not exercised by the session reaper.
          */
         () => unsupported(),
-      interruptTurn: () => unsupported(),
-      respondToRequest: () => unsupported(),
-      respondToUserInput: () => unsupported(),
+      interruptTurn:
+        /**
+         * Unused reaper stub. Session sweeps never interrupt a turn.
+         */
+        () => unsupported(),
+      respondToRequest:
+        /**
+         * Unused reaper stub. Session sweeps never answer an approval.
+         */
+        () => unsupported(),
+      respondToUserInput:
+        /**
+         * Unused reaper stub. Session sweeps never answer user input.
+         */
+        () => unsupported(),
       stopSession,
       listSessions: () => Effect.succeed([]),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),

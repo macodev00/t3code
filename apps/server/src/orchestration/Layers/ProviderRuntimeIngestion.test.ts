@@ -124,21 +124,57 @@ function createProviderServiceHarness() {
   );
   const runtimeSessions: ProviderSession[] = [];
 
-  const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
+  const unsupported =
+    /**
+     * Fail any provider call this ingestion harness does not implement.
+     */
+    () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
-    startSession: () => unsupported(),
-    sendTurn: () => unsupported(),
-    compactThread: () => unsupported(),
+    startSession:
+      /**
+       * Unused ingestion stub. This harness never starts a provider session.
+       */
+      () => unsupported(),
+    sendTurn:
+      /**
+       * Unused ingestion stub. This harness never sends a provider turn.
+       */
+      () => unsupported(),
+    compactThread:
+      /**
+       * Unused ingestion stub. This harness never compacts a thread.
+       */
+      () => unsupported(),
     clearGoal:
       /**
        * Goal clear is not exercised by the ingestion harness.
        */
       () => unsupported(),
-    interruptTurn: () => unsupported(),
-    respondToRequest: () => unsupported(),
-    respondToUserInput: () => unsupported(),
-    stopSession: () => unsupported(),
-    listSessions: () => Effect.succeed([...runtimeSessions]),
+    interruptTurn:
+      /**
+       * Unused ingestion stub. This harness never interrupts a turn.
+       */
+      () => unsupported(),
+    respondToRequest:
+      /**
+       * Unused ingestion stub. This harness never answers an approval.
+       */
+      () => unsupported(),
+    respondToUserInput:
+      /**
+       * Unused ingestion stub. This harness never answers user input.
+       */
+      () => unsupported(),
+    stopSession:
+      /**
+       * Unused ingestion stub. This harness never stops a session.
+       */
+      () => unsupported(),
+    listSessions:
+      /**
+       * Return the sessions this ingestion harness has recorded.
+       */
+      () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     assertConversationRollbackSupported: () => unsupported(),
     getInstanceInfo: (instanceId) => {

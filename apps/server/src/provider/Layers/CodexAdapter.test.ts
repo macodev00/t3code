@@ -398,6 +398,9 @@ sessionErrorLayer(
     }),
   );
 
+  /**
+   * The Codex adapter forwards goal clear to the session runtime.
+   */
   it.effect(
     "clears the persisted goal through the Codex app-server",
     /**

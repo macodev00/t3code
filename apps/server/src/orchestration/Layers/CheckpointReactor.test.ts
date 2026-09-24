@@ -103,8 +103,12 @@ function createProviderServiceHarness(
     ProviderServiceShape["assertConversationRollbackSupported"]
   >(() => Effect.void);
 
-  const unsupported = <A>() =>
-    Effect.die(new Error("Unsupported provider call in test")) as Effect.Effect<A, never>;
+  const unsupported =
+    /**
+     * Fail any provider call this checkpoint harness does not implement.
+     */
+    <A>() =>
+      Effect.die(new Error("Unsupported provider call in test")) as Effect.Effect<A, never>;
   const listSessions = () =>
     hasSession
       ? Effect.succeed([
@@ -120,18 +124,46 @@ function createProviderServiceHarness(
         ] satisfies ReadonlyArray<ProviderSession>)
       : Effect.succeed([] as ReadonlyArray<ProviderSession>);
   const service: ProviderServiceShape = {
-    startSession: () => unsupported(),
-    sendTurn: () => unsupported(),
-    compactThread: () => unsupported(),
+    startSession:
+      /**
+       * Unused checkpoint stub. This harness never starts a provider session.
+       */
+      () => unsupported(),
+    sendTurn:
+      /**
+       * Unused checkpoint stub. This harness never sends a provider turn.
+       */
+      () => unsupported(),
+    compactThread:
+      /**
+       * Unused checkpoint stub. This harness never compacts a thread.
+       */
+      () => unsupported(),
     clearGoal:
       /**
        * Goal clear is not exercised by the checkpoint harness.
        */
       () => unsupported(),
-    interruptTurn: () => unsupported(),
-    respondToRequest: () => unsupported(),
-    respondToUserInput: () => unsupported(),
-    stopSession: () => unsupported(),
+    interruptTurn:
+      /**
+       * Unused checkpoint stub. This harness never interrupts a turn.
+       */
+      () => unsupported(),
+    respondToRequest:
+      /**
+       * Unused checkpoint stub. This harness never answers an approval.
+       */
+      () => unsupported(),
+    respondToUserInput:
+      /**
+       * Unused checkpoint stub. This harness never answers user input.
+       */
+      () => unsupported(),
+    stopSession:
+      /**
+       * Unused checkpoint stub. This harness never stops a session.
+       */
+      () => unsupported(),
     listSessions,
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     assertConversationRollbackSupported,

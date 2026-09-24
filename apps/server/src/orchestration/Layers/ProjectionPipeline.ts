@@ -1496,6 +1496,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               (turn) =>
                 turn.turnId !== null && turn.turnId !== turnId && turn.state === "running",
             ),
+            /**
+             * Settle each other running turn now that a new turn is active.
+             */
             (turn) =>
               turn.turnId === null
                 ? Effect.void
@@ -1784,7 +1787,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyThreadTurnsProjection",
     )(applyThreadTurnsProjectionBody);
 
-    const applyCheckpointsProjection: ProjectorDefinition["apply"] = () => Effect.void;
+    const applyCheckpointsProjection: ProjectorDefinition["apply"] =
+      /**
+       * Checkpoint rows are not part of this orchestration read model.
+       */
+      () => Effect.void;
 
     const applyPendingApprovalsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyPendingApprovalsProjection",

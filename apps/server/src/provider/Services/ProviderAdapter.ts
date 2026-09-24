@@ -88,11 +88,12 @@ export interface ProviderAdapterShape<TError> {
   /** Omitted when this adapter does not support manual context compaction. */
   readonly compaction?: ProviderCompaction<TError>;
 
-  /**
-   * Clear a persisted provider goal without starting a model turn.
-   * Omitted when this adapter has no goal control channel.
-   */
-  readonly clearGoal?: (threadId: ThreadId) => Effect.Effect<{ readonly cleared: boolean }, TError>;
+  readonly clearGoal?:
+    /**
+     * Clear a persisted provider goal without starting a model turn.
+     * Omitted when this adapter has no goal control channel.
+     */
+    (threadId: ThreadId) => Effect.Effect<{ readonly cleared: boolean }, TError>;
 
   /**
    * Interrupt an active turn.

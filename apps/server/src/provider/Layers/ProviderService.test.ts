@@ -2087,6 +2087,9 @@ routing.layer(
     }),
   );
 
+  /**
+   * ProviderService sends goal clear to the Codex adapter bound to the thread.
+   */
   it.effect(
     "routes goal clear to the Codex adapter",
     /**
@@ -2116,6 +2119,9 @@ routing.layer(
       ),
   );
 
+  /**
+   * Providers without a goal channel fail validation instead of starting a turn.
+   */
   it.effect(
     "rejects goal clear for providers without a goal channel",
     /**

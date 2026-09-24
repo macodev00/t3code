@@ -208,9 +208,17 @@ export interface CodexThreadSnapshot {
 export interface CodexSessionRuntimeShape {
   readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
-  readonly sendTurn: (
-    input: CodexSessionRuntimeSendTurnInput,
-  ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly sendTurn:
+    /**
+     * Start a turn on the live Codex thread.
+     */
+    (
+      input: CodexSessionRuntimeSendTurnInput,
+    )
+    /**
+     * Start a turn on the live Codex thread.
+     */
+    => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
   readonly compactThread: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly clearGoal: Effect.Effect<{ readonly cleared: boolean }, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
@@ -1298,7 +1306,11 @@ export const makeCodexSessionRuntime =
     CodexSessionRuntimeShape,
     CodexErrors.CodexAppServerError,
     ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
-  > =>
+  >
+  /**
+   * Open one app-server connection and return its session runtime.
+   */
+  =>
     Effect.gen(
       /**
        * Open the app-server session and implement runtime methods on that connection.
@@ -2511,12 +2523,20 @@ export const makeCodexSessionRuntime =
     return {
       start,
       getSession: Ref.get(sessionRef),
-      compactThread: Effect.gen(function* () {
+      compactThread: Effect.gen(
+        /**
+         * Ask Codex to compact the live thread.
+         */
+        function* () {
         const providerThreadId = yield* readProviderThreadId;
         yield* client.request("thread/compact/start", { threadId: providerThreadId });
       }),
       clearGoal: clearCodexSessionGoal,
-      sendTurn: (input) =>
+      sendTurn:
+        /**
+         * Start a Codex turn on the live app-server thread.
+         */
+        (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
           if (hasConfiguredMcpServer(options.appServerArgs)) {

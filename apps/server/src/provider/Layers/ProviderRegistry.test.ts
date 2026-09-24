@@ -381,6 +381,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
        * Codex status probe cases.
        */
       () => {
+      /**
+       * A reachable app-server lists `goal clear` among slash commands.
+       */
       it.effect(
         "uses the app-server account and model list for provider status",
         /**
