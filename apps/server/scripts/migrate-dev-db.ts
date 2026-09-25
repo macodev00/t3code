@@ -483,6 +483,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     // WAL does not survive VACUUM INTO; set it so first `vp run dev` finds
     // the database exactly as server boot would have left it.
     yield* sql.unsafe("PRAGMA journal_mode = WAL").unprepared;
+    yield* sql.unsafe("PRAGMA checkpoint_fullfsync = ON").unprepared;
   }).pipe(
     Effect.provide(NodeSqliteClient.layer({ filename: databasePath })),
     wrapPhase("compact", databasePath),
