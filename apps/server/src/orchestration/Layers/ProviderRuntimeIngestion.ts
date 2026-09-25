@@ -200,6 +200,35 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
 }
 
+/**
+ * `detail` on item completion is a full snapshot. When it strictly extends
+ * text already accumulated (projected plus still buffered), only the part
+ * not yet projected is safe to persist. Equal, empty, and divergent
+ * snapshots keep the streamed text.
+ */
+function assistantCompletionDelta(input: {
+  readonly projectedText: string;
+  readonly bufferedText: string;
+  readonly detail: string | undefined;
+}): string {
+  const accumulated = `${input.projectedText}${input.bufferedText}`;
+  const detail = input.detail;
+  if (
+    detail !== undefined &&
+    detail.startsWith(accumulated) &&
+    detail.length > accumulated.length
+  ) {
+    return detail.slice(input.projectedText.length);
+  }
+  if (input.bufferedText.length > 0) {
+    return input.bufferedText;
+  }
+  if (input.projectedText.length === 0 && (detail?.trim().length ?? 0) > 0) {
+    return detail;
+  }
+  return "";
+}
+
 // An opening fence may sit at any indentation, since fences inside list
 // items are indented past the marker. A closing fence may be indented at most
 // three spaces more than its opener. Deeper lines are content in the block.
@@ -1502,16 +1531,16 @@ const make = Effect.gen(function* () {
     commandTag: string;
     finalDeltaCommandTag: string;
     fallbackText?: string;
+    projectedText?: string;
     hasProjectedMessage?: boolean;
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
-      const text =
-        bufferedText.length > 0
-          ? bufferedText
-          : (input.fallbackText?.trim().length ?? 0) > 0
-            ? input.fallbackText!
-            : "";
+      const text = assistantCompletionDelta({
+        projectedText: input.projectedText ?? "",
+        bufferedText,
+        detail: input.fallbackText,
+      });
       const hasRenderableText = hasRenderableAssistantText(text);
 
       const isReasoning = messageStreamRoleOf(input.messageId) === "reasoning";
@@ -2297,9 +2326,6 @@ const make = Effect.gen(function* () {
                 streamingOnly: false,
               }),
         ]);
-        const shouldApplyFallbackCompletionText =
-          !existingAssistantMessage || existingAssistantMessage.text.length === 0;
-
         const shouldSkipRedundantCompletion =
           Option.isNone(activeAssistantMessageId) &&
           turnId !== undefined &&
@@ -2320,7 +2346,10 @@ const make = Effect.gen(function* () {
             commandTag: "assistant-complete",
             finalDeltaCommandTag: "assistant-delta-finalize",
             hasProjectedMessage: existingAssistantMessage !== undefined,
-            ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText
+            ...(existingAssistantMessage !== undefined
+              ? { projectedText: existingAssistantMessage.text }
+              : {}),
+            ...(assistantCompletion.fallbackText !== undefined
               ? { fallbackText: assistantCompletion.fallbackText }
               : {}),
           });
