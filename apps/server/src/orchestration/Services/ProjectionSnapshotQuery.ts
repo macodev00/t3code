@@ -38,6 +38,13 @@ export interface ProjectionSnapshotCounts {
   readonly threadCount: number;
 }
 
+/** One background task still running when its provider process died. */
+export interface UnterminatedProviderTask {
+  readonly threadId: ThreadId;
+  readonly taskId: string;
+  readonly label: string;
+}
+
 export interface ProjectionSnapshotSequence {
   readonly snapshotSequence: number;
 }
@@ -91,6 +98,16 @@ export interface ProjectionSnapshotQueryShape {
   readonly listActivitiesByKind: (
     kind: string,
   ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Background work that outlived its turn: the latest decisive task row is
+   * still non-terminal. Idle tasks and plan/dream bookkeeping are omitted.
+   * Used at startup, where in-memory `liveTaskIds` are already gone.
+   */
+  readonly listUnterminatedTasks: () => Effect.Effect<
+    ReadonlyArray<UnterminatedProviderTask>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read the lightweight command snapshot used to bootstrap the in-memory
