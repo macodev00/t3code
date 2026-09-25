@@ -15,6 +15,9 @@ const setup = Layer.effectDiscard(
     yield* sql`PRAGMA busy_timeout = 5000;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
+    // Checkpoint syncs use F_FULLFSYNC where the platform provides it. Ordinary
+    // commit sync stays on fsync(); PRAGMA fullfsync is left off.
+    yield* sql`PRAGMA checkpoint_fullfsync = ON;`;
     yield* runMigrations();
   }),
 );
