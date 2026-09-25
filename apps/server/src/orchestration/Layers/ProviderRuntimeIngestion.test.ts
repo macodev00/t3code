@@ -1797,6 +1797,10 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  /**
+   * A completion snapshot that extends text still sitting in the buffer
+   * appends only the missing suffix, once, when the message is finalized.
+   */
   it("appends the missing suffix when assistant completion extends a buffered prefix", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -1858,6 +1862,10 @@ describe("ProviderRuntimeIngestion", () => {
     expect(matches[0]?.text).toBe(full);
   });
 
+  /**
+   * A completion snapshot that extends an already projected prefix appends
+   * only the missing suffix and leaves a single finalized message.
+   */
   it("appends the missing suffix when assistant completion extends an already projected prefix", async () => {
     const harness = await createHarness({ serverSettings: { responseStreamingMode: "token" } });
     const now = "2026-01-01T00:00:00.000Z";

@@ -201,10 +201,18 @@ function hasRenderableAssistantText(text: string | undefined): boolean {
 }
 
 /**
- * `detail` on item completion is a full snapshot. When it strictly extends
- * text already accumulated (projected plus still buffered), only the part
- * not yet projected is safe to persist. Equal, empty, and divergent
- * snapshots keep the streamed text.
+ * Text still safe to persist when an assistant item completes.
+ *
+ * `detail` is a full snapshot. When it strictly extends text already
+ * accumulated (projected plus still buffered), return only the part not yet
+ * projected. Equal, empty, and divergent snapshots keep the streamed text:
+ * buffered text if any remains, otherwise the snapshot only when nothing
+ * has been projected yet.
+ *
+ * @param input.projectedText - Assistant text already written to the message.
+ * @param input.bufferedText - Assistant text held back from projection.
+ * @param input.detail - Completion snapshot, when the provider sent one.
+ * @returns The suffix to append, or `""` when streamed text should stand.
  */
 function assistantCompletionDelta(input: {
   readonly projectedText: string;
@@ -1068,6 +1076,11 @@ export function runtimeEventToActivities(
   return [];
 }
 
+/**
+ * Build provider-runtime ingestion. Provider events become orchestration
+ * commands; assistant completion persists only text that is not already
+ * projected or still buffered.
+ */
 const make = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const threadPlanProgress = yield* ThreadPlanProgressService;
@@ -1522,6 +1535,18 @@ const make = Effect.gen(function* () {
       return flushedMessageIds;
     });
 
+  /**
+   * Flush one assistant or reasoning message and mark it complete.
+   *
+   * Persists only the suffix from {@link assistantCompletionDelta}, so a
+   * completion snapshot that extends projected or buffered text does not
+   * rewrite the stream. Skips the complete event when the message was never
+   * projected and the suffix has no renderable text.
+   *
+   * @param input.fallbackText - Completion snapshot used as `detail`.
+   * @param input.projectedText - Text already on the projected message.
+   * @param input.hasProjectedMessage - Whether a message row already exists.
+   */
   const finalizeAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
@@ -1807,6 +1832,11 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * Project one provider runtime event. When an assistant item completes,
+   * the snapshot is reconciled with projected and buffered text before the
+   * message is finalized.
+   */
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       if (
