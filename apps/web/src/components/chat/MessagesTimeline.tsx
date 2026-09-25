@@ -179,7 +179,9 @@ import {
   deriveMessagesTimelineRowsWithState,
   deriveUnsettledTurnId,
   type MessagesTimelineRowsProjection,
+  getFixedMessagesTimelineItemSize,
   liveWorkEntryLabel,
+  messagesTimelineListExtraData,
   workEntryIsActiveTurnActivity,
   resolveAssistantMessageCopyState,
   resolveTimelineIsAtEnd,
@@ -199,6 +201,7 @@ import {
   worktreeSetupAgentStarted,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
+  TIMELINE_ESTIMATED_ITEM_SIZE,
   TIMELINE_MINIMAP_MIN_ITEMS,
   type TimelineLatestTurn,
   type WorkGroupScrollAnchor,
@@ -471,6 +474,7 @@ interface MessagesTimelineProps {
 // MessagesTimeline — list owner
 // ---------------------------------------------------------------------------
 
+/** Virtualized chat transcript; pins chrome row sizes and extraData height signatures. */
 export const MessagesTimeline = memo(function MessagesTimeline({
   citationRequest = null,
   citationHistoryLoading = false,
@@ -808,6 +812,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     queuedMessages,
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
+  const listExtraData = useMemo(
+    () => messagesTimelineListExtraData(listIdentityKey, rows, paintedExpandedSpawnEntryIds),
+    [listIdentityKey, rows, paintedExpandedSpawnEntryIds],
+  );
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
@@ -1277,11 +1285,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           <LegendList<MessagesTimelineRow>
             ref={listRef}
             data={rows}
-            extraData={`${listIdentityKey}:${rows.length}`}
+            extraData={listExtraData}
             keyExtractor={keyExtractor}
             getItemType={getItemType}
             renderItem={renderItem}
-            estimatedItemSize={90}
+            estimatedItemSize={TIMELINE_ESTIMATED_ITEM_SIZE}
+            getFixedItemSize={getFixedMessagesTimelineItemSize}
             initialScrollAtEnd={citationRequest === null && rememberedPosition?.atEnd !== false}
             // Legend needs a data refresh to mount new pins without a scroll event.
             dataVersion={readyCitationRequest?.key ?? listIdentityKey}

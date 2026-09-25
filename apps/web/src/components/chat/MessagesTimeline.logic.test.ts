@@ -24,7 +24,13 @@ import {
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
   deriveMessagesTimelineRowsWithState,
+  estimateMessagesTimelineItemSize,
+  getFixedMessagesTimelineItemSize,
+  layoutMessagesTimelineRows,
   liveWorkEntryLabel,
+  messagesTimelineHeightSignature,
+  messagesTimelineListExtraData,
+  messagesTimelineRowRectsOverlap,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveWorkGroupScrollIndex,
@@ -32,6 +38,11 @@ import {
   shouldPreserveAssistantLineBreaks,
   type MessagesTimelineRow,
   type MessagesTimelineRowsProjection,
+  LIVE_ACTIVITY_ROW_ID,
+  TIMELINE_CHROME_ROW_HEIGHT,
+  TIMELINE_ESTIMATED_ITEM_SIZE,
+  TIMELINE_EXPANDED_WORK_GROUP_MAX_HEIGHT,
+  TIMELINE_WORKING_ROW_HEIGHT,
   WORKTREE_SETUP_ROW_ID,
   workEntryDisplayLabel,
 } from "./MessagesTimeline.logic";
@@ -3888,5 +3899,233 @@ describe("computeStableMessagesTimelineRows", () => {
 
     expect(reordered).not.toBe(initial);
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
+  });
+});
+
+describe("live tool group placement across a steer", () => {
+  const turnId = TurnId.make("turn-steer-overlap");
+  const startedAt = "2026-01-01T00:00:00Z";
+
+  /** Timeline user-message entry for steer-overlap layout tests. */
+  function userEntry(id: string, at: string, text: string) {
+    return {
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt: at,
+      message: {
+        id: id as never,
+        role: "user" as const,
+        text,
+        turnId: null,
+        createdAt: at,
+        updatedAt: at,
+        streaming: false,
+      },
+    };
+  }
+
+  /** Sequential command work entries; the last one stays in progress. */
+  function commandEntries(count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+      id: `tool-entry-${index}`,
+      kind: "work" as const,
+      createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}Z`,
+      entry: {
+        id: `tool-${index}`,
+        toolCallId: `call-${index}`,
+        createdAt: `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}Z`,
+        turnId,
+        label: "Ran command",
+        command: index === count - 1 ? "ssh host" : `cmd-${index}`,
+        tone: "tool" as const,
+        itemType: "command_execution" as const,
+        toolLifecycleStatus: index === count - 1 ? ("inProgress" as const) : ("completed" as const),
+      },
+    }));
+  }
+
+  /** Running-turn timeline input with `toolCount` expanded live command rows. */
+  function liveInput(toolCount: number) {
+    const tools = commandEntries(toolCount);
+    const groupId = `work-group:tool:${turnId}:call-0`;
+    return {
+      input: {
+        timelineEntries: [userEntry("user-1", startedAt, "inspect the repo"), ...tools],
+        latestTurn: {
+          turnId,
+          state: "running" as const,
+          startedAt,
+          completedAt: null,
+        },
+        runningTurnId: turnId,
+        isWorking: true,
+        expandedWorkGroupIds: new Set([groupId]),
+        activeTurnStartedAt: startedAt,
+        turnDiffSummaries: [] as TurnDiffSummary[],
+        supportsConversationRollback: false,
+      },
+    };
+  }
+
+  it("keeps the live tool header identity when a mid-turn user message lands", () => {
+    const { input } = liveInput(10);
+    const before = deriveMessagesTimelineRows(input);
+    expect(before.find((row) => row.kind === "work-live")?.id).toBe(LIVE_ACTIVITY_ROW_ID);
+
+    const after = deriveMessagesTimelineRows({
+      ...input,
+      timelineEntries: [
+        ...input.timelineEntries,
+        userEntry("user-steer", "2026-01-01T00:01:00Z", "ca7d62b5 is not snake right?"),
+      ],
+    });
+
+    expect(after.filter((row) => row.id === LIVE_ACTIVITY_ROW_ID)).toHaveLength(1);
+    expect(after.find((row) => row.kind === "work-live")?.id).toBe(LIVE_ACTIVITY_ROW_ID);
+    expect(after.find((row) => row.kind === "work" && row.isExpandedToolGroup)?.id).toBe(
+      before.find((row) => row.kind === "work" && row.isExpandedToolGroup)?.id,
+    );
+  });
+
+  it("bumps the height signature when an expanded live group grows without adding rows", () => {
+    const small = deriveMessagesTimelineRows(liveInput(2).input);
+    const large = deriveMessagesTimelineRows(liveInput(10).input);
+    expect(small).toHaveLength(large.length);
+    expect(messagesTimelineHeightSignature(small)).not.toBe(messagesTimelineHeightSignature(large));
+    expect(messagesTimelineListExtraData("thread-1", small)).not.toBe(
+      messagesTimelineListExtraData("thread-1", large),
+    );
+  });
+
+  it("pins chrome row sizes and leaves expanded details measured", () => {
+    const rows = deriveMessagesTimelineRows(liveInput(10).input);
+    const working = rows.find((row) => row.kind === "working");
+    const live = rows.find((row) => row.kind === "work-live");
+    const details = rows.find((row) => row.kind === "work" && row.isExpandedToolGroup);
+    const user = rows.find((row) => row.kind === "message");
+    expect(working && getFixedMessagesTimelineItemSize(working)).toBe(TIMELINE_WORKING_ROW_HEIGHT);
+    expect(live && getFixedMessagesTimelineItemSize(live)).toBeDefined();
+    expect(details && getFixedMessagesTimelineItemSize(details)).toBeUndefined();
+    expect(user && getFixedMessagesTimelineItemSize(user)).toBeUndefined();
+    expect(details && estimateMessagesTimelineItemSize(details)).toBeGreaterThan(
+      TIMELINE_ESTIMATED_ITEM_SIZE,
+    );
+    expect(details && estimateMessagesTimelineItemSize(details)).toBeLessThanOrEqual(
+      TIMELINE_EXPANDED_WORK_GROUP_MAX_HEIGHT + 4,
+    );
+    expect(
+      getFixedMessagesTimelineItemSize({
+        kind: "thinking",
+        id: LIVE_ACTIVITY_ROW_ID,
+        createdAt: startedAt,
+      }),
+    ).toBe(TIMELINE_CHROME_ROW_HEIGHT);
+  });
+
+  it("does not pin expandable agent-spawn work-live rows to chrome height", () => {
+    const spawnLiveInput = {
+      timelineEntries: [
+        userEntry("user-1", startedAt, "inspect the repo"),
+        {
+          id: "spawn-entry",
+          kind: "work" as const,
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "spawn-entry",
+            createdAt: "2026-01-01T00:00:01Z",
+            turnId,
+            label: "Ran 2 subagents",
+            tone: "tool" as const,
+            agentSpawn: { workflowId: null, agentTaskIds: ["agent-a", "agent-b"] },
+            toolLifecycleStatus: "inProgress" as const,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId,
+        state: "running" as const,
+        startedAt,
+        completedAt: null,
+      },
+      runningTurnId: turnId,
+      isWorking: true,
+      activeTurnStartedAt: startedAt,
+      turnDiffSummaries: [] as TurnDiffSummary[],
+      supportsConversationRollback: false,
+      liveAgentTaskIds: new Set(["agent-a", "agent-b"]),
+    };
+    const rows = deriveMessagesTimelineRows(spawnLiveInput);
+    const spawnLive = rows.find((row) => row.kind === "work-live");
+    expect(spawnLive).toMatchObject({
+      kind: "work-live",
+      id: LIVE_ACTIVITY_ROW_ID,
+      entry: { agentSpawn: { agentTaskIds: ["agent-a", "agent-b"] } },
+    });
+    expect(spawnLive && getFixedMessagesTimelineItemSize(spawnLive)).toBeUndefined();
+    expect(
+      spawnLive && getFixedMessagesTimelineItemSize({ ...spawnLive, expanded: true }),
+    ).toBeUndefined();
+    expect(messagesTimelineListExtraData("thread-1", rows)).not.toBe(
+      messagesTimelineListExtraData("thread-1", rows, new Set(["spawn-entry"])),
+    );
+
+    const commandLive = deriveMessagesTimelineRows(liveInput(2).input).find(
+      (row) => row.kind === "work-live",
+    );
+    expect(commandLive && getFixedMessagesTimelineItemSize(commandLive)).toBeDefined();
+
+    const following: MessagesTimelineRow = {
+      kind: "working",
+      id: "working-indicator-row",
+      createdAt: startedAt,
+    };
+    const expandedSpawnHeight = 160;
+    expect(TIMELINE_CHROME_ROW_HEIGHT).toBeLessThan(expandedSpawnHeight);
+
+    const layout = layoutMessagesTimelineRows(
+      [spawnLive!, following],
+      new Map([[LIVE_ACTIVITY_ROW_ID, expandedSpawnHeight]]),
+    );
+    const spawnRect = layout[0]!;
+    const followingRect = layout[1]!;
+    expect(spawnRect.height).toBe(expandedSpawnHeight);
+    expect(messagesTimelineRowRectsOverlap(spawnRect, followingRect)).toBe(false);
+    expect(followingRect.top).toBeGreaterThanOrEqual(spawnRect.top + spawnRect.height);
+  });
+
+  it("does not overlap a steer user row or Working pill with a remasured expanded tool group", () => {
+    const { input } = liveInput(10);
+    const liveRows = deriveMessagesTimelineRows(input);
+    const details = liveRows.find((row) => row.kind === "work" && row.isExpandedToolGroup);
+    expect(details).toBeDefined();
+    const detailsHeight = estimateMessagesTimelineItemSize(details!);
+    expect(detailsHeight).toBeGreaterThan(TIMELINE_ESTIMATED_ITEM_SIZE);
+
+    const steer = userEntry("user-steer", "2026-01-01T00:01:00Z", "ca7d62b5 is not snake right?");
+    const steered = deriveMessagesTimelineRows({
+      ...input,
+      timelineEntries: [...input.timelineEntries, steer],
+    });
+    const measured = new Map<string, number>();
+    for (const row of liveRows) {
+      measured.set(row.id, estimateMessagesTimelineItemSize(row));
+    }
+
+    const stale = layoutMessagesTimelineRows(steered);
+    const staleDetails = stale.find((row) => row.id === details!.id);
+    const staleUser = stale.find((row) => row.id === steer.id);
+    expect(staleDetails?.height).toBe(TIMELINE_ESTIMATED_ITEM_SIZE);
+    expect(staleUser && staleDetails).toBeDefined();
+    expect(staleUser!.top).toBeLessThan(staleDetails!.top + detailsHeight);
+
+    const layout = layoutMessagesTimelineRows(steered, measured);
+    const detailsRect = layout.find((row) => row.id === details!.id);
+    const userRect = layout.find((row) => row.id === steer.id);
+    const workingRect = layout.find((row) => row.id === "working-indicator-row");
+    expect(detailsRect && userRect && workingRect).toBeTruthy();
+    expect(messagesTimelineRowRectsOverlap(detailsRect!, userRect!)).toBe(false);
+    expect(messagesTimelineRowRectsOverlap(detailsRect!, workingRect!)).toBe(false);
+    expect(userRect!.top).toBeGreaterThanOrEqual(detailsRect!.top + detailsRect!.height);
+    expect(workingRect!.top).toBeGreaterThanOrEqual(userRect!.top + userRect!.height);
   });
 });
