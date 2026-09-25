@@ -3549,4 +3549,155 @@ projectionSnapshotLayer("ProjectionSnapshotQuery activities by kind", (it) => {
       assert.deepEqual(yield* query.listActivitiesByKind("nope"), []);
     }),
   );
+
+  it.effect("lists background tasks that never reached a terminal status", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-03-02T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('project-tasks', 'Project', '/tmp/project-tasks', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          created_at, updated_at
+        ) VALUES
+          ('thread-open', 'project-tasks', 'Open', '{"instanceId":"claudeAgent","model":"claude"}',
+            'full-access', 'default', ${timestamp}, ${timestamp}),
+          ('thread-done', 'project-tasks', 'Done', '{"instanceId":"claudeAgent","model":"claude"}',
+            'full-access', 'default', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at, sequence
+        ) VALUES
+          ('open-started', 'thread-open', NULL, 'info', 'task.started', 'Task started',
+            '{"taskId":"task-explore","title":"Explore the repo","taskType":"local_agent"}',
+            ${timestamp}, 1),
+          ('open-progress', 'thread-open', NULL, 'info', 'task.progress', 'Still looking',
+            '{"taskId":"task-explore","summary":"reading"}', ${timestamp}, 2),
+          ('done-started', 'thread-done', NULL, 'info', 'task.started', 'Task started',
+            '{"taskId":"task-done","title":"Finished"}', ${timestamp}, 1),
+          ('done-completed', 'thread-done', NULL, 'info', 'task.completed', 'Task completed',
+            '{"taskId":"task-done","status":"completed"}', ${timestamp}, 2),
+          ('idle-updated', 'thread-open', NULL, 'info', 'task.updated', 'Task idle',
+            '{"taskId":"task-idle","status":"idle","title":"Resting"}', ${timestamp}, 1),
+          ('plan-started', 'thread-open', NULL, 'info', 'task.started', 'Plan',
+            '{"taskId":"task-plan","taskType":"plan","title":"Plan"}', ${timestamp}, 1)
+      `;
+
+      assert.deepEqual(
+        (yield* query.listUnterminatedTasks()).filter(
+          (task) => task.threadId === ThreadId.make("thread-open"),
+        ),
+        [
+          {
+            threadId: ThreadId.make("thread-open"),
+            taskId: "task-explore",
+            label: "Explore the repo",
+          },
+        ],
+      );
+    }),
+  );
+
+  it.effect("skips a malformed activity payload without dropping other open tasks", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-03-02T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('project-malformed', 'Project', '/tmp/project-malformed', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          created_at, updated_at
+        ) VALUES (
+          'thread-malformed', 'project-malformed', 'Open', '{"instanceId":"claudeAgent","model":"claude"}',
+          'full-access', 'default', ${timestamp}, ${timestamp}
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at, sequence
+        ) VALUES
+          ('bad-payload', 'thread-malformed', NULL, 'info', 'task.started', 'Broken',
+            '{not-json', ${timestamp}, 1),
+          ('good-started', 'thread-malformed', NULL, 'info', 'task.started', 'Task started',
+            '{"taskId":"task-good","title":"Keep going","taskType":"local_bash"}',
+            ${timestamp}, 2)
+      `;
+
+      assert.deepEqual(
+        (yield* query.listUnterminatedTasks()).filter(
+          (task) => task.threadId === ThreadId.make("thread-malformed"),
+        ),
+        [
+          {
+            threadId: ThreadId.make("thread-malformed"),
+            taskId: "task-good",
+            label: "Keep going",
+          },
+        ],
+      );
+    }),
+  );
+
+  it.effect("keeps plan and dream tasks excluded when a later status row omits taskType", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-03-02T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('project-plan', 'Project', '/tmp/project-plan', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          created_at, updated_at
+        ) VALUES (
+          'thread-plan', 'project-plan', 'Open', '{"instanceId":"claudeAgent","model":"claude"}',
+          'full-access', 'default', ${timestamp}, ${timestamp}
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at, sequence
+        ) VALUES
+          ('plan-later-started', 'thread-plan', NULL, 'info', 'task.started', 'Plan',
+            '{"taskId":"task-plan-later","taskType":"plan","title":"Draft the plan"}',
+            ${timestamp}, 1),
+          ('plan-later-updated', 'thread-plan', NULL, 'info', 'task.updated', 'Still planning',
+            '{"taskId":"task-plan-later","status":"running"}', ${timestamp}, 2),
+          ('dream-later-started', 'thread-plan', NULL, 'info', 'task.started', 'Dream',
+            '{"taskId":"task-dream-later","taskType":"dream","title":"Dream"}', ${timestamp}, 1),
+          ('dream-later-updated', 'thread-plan', NULL, 'info', 'task.updated', 'Still dreaming',
+            '{"taskId":"task-dream-later","status":"running"}', ${timestamp}, 2),
+          ('agent-later-started', 'thread-plan', NULL, 'info', 'task.started', 'Agent',
+            '{"taskId":"task-agent-later","taskType":"local_agent","title":"Review the diff"}',
+            ${timestamp}, 1)
+      `;
+
+      assert.deepEqual(
+        (yield* query.listUnterminatedTasks()).filter(
+          (task) => task.threadId === ThreadId.make("thread-plan"),
+        ),
+        [
+          {
+            threadId: ThreadId.make("thread-plan"),
+            taskId: "task-agent-later",
+            label: "Review the diff",
+          },
+        ],
+      );
+    }),
+  );
 });
