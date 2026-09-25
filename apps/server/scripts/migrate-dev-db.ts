@@ -210,6 +210,7 @@ const ensureNotInUse = Effect.fn("ensureDevDbNotInUse")(function* (databasePath:
   const checkpoint = yield* Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql.unsafe("PRAGMA busy_timeout = 0").unprepared;
+    yield* sql.unsafe("PRAGMA checkpoint_fullfsync = ON").unprepared;
     yield* sql.unsafe("BEGIN IMMEDIATE").unprepared;
     yield* sql.unsafe("ROLLBACK").unprepared;
     return yield* sql.unsafe<{ busy: number }>("PRAGMA wal_checkpoint(TRUNCATE)").unprepared;
@@ -483,6 +484,7 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     // WAL does not survive VACUUM INTO; set it so first `vp run dev` finds
     // the database exactly as server boot would have left it.
     yield* sql.unsafe("PRAGMA journal_mode = WAL").unprepared;
+    yield* sql.unsafe("PRAGMA checkpoint_fullfsync = ON").unprepared;
   }).pipe(
     Effect.provide(NodeSqliteClient.layer({ filename: databasePath })),
     wrapPhase("compact", databasePath),

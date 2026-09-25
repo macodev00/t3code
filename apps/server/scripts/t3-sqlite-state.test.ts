@@ -72,6 +72,26 @@ it.layer(NodeServices.layer)("t3-sqlite-state", (it) => {
       if (result.operation === "query") {
         assert.deepStrictEqual(result.rows, [{ id: 1, label: "existing" }]);
       }
+
+      const checkpoint = yield* runSqliteState({
+        operation: "query",
+        baseDir,
+        sql: "PRAGMA checkpoint_fullfsync",
+      });
+      assert.equal(checkpoint.operation, "query");
+      if (checkpoint.operation === "query") {
+        assert.deepStrictEqual(checkpoint.rows, [{ checkpoint_fullfsync: 1 }]);
+      }
+
+      const fullfsync = yield* runSqliteState({
+        operation: "query",
+        baseDir,
+        sql: "PRAGMA fullfsync",
+      });
+      assert.equal(fullfsync.operation, "query");
+      if (fullfsync.operation === "query") {
+        assert.deepStrictEqual(fullfsync.rows, [{ fullfsync: 0 }]);
+      }
     }),
   );
 
