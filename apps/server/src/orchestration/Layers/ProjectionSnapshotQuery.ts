@@ -1527,6 +1527,117 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  // Latest decisive task row per task. Status-free progress is not decisive:
+  // a late heartbeat must not resurrect a task that already finished. `stopped`
+  // is included because task.completed uses it for an interrupted task.
+  const listUnterminatedTaskRows = SqlSchema.findAll({
+    Request: Schema.Struct({}),
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      taskId: Schema.String,
+      label: Schema.String,
+    }),
+    execute: () => sql`
+      WITH decisive AS (
+        SELECT
+          a.thread_id AS threadId,
+          trim(json_extract(a.payload_json, '$.taskId')) AS taskId,
+          a.kind AS kind,
+          json_extract(a.payload_json, '$.status') AS status,
+          json_extract(a.payload_json, '$.taskType') AS taskType,
+          CASE
+            WHEN json_type(a.payload_json, '$.title') = 'text'
+              AND length(trim(json_extract(a.payload_json, '$.title'))) > 0
+              THEN trim(json_extract(a.payload_json, '$.title'))
+            WHEN a.kind = 'task.started'
+              AND json_type(a.payload_json, '$.detail') = 'text'
+              AND length(trim(json_extract(a.payload_json, '$.detail'))) > 0
+              THEN trim(json_extract(a.payload_json, '$.detail'))
+            ELSE NULL
+          END AS label,
+          COALESCE(a.sequence, -1) AS sequence,
+          a.created_at AS createdAt,
+          a.activity_id AS activityId
+        FROM projection_thread_activities a
+        JOIN projection_threads t ON t.thread_id = a.thread_id
+        WHERE t.deleted_at IS NULL
+          AND t.archived_at IS NULL
+          AND json_valid(a.payload_json)
+          AND json_type(a.payload_json, '$.taskId') = 'text'
+          AND length(trim(json_extract(a.payload_json, '$.taskId'))) > 0
+          AND (
+            a.kind = 'task.completed'
+            OR a.kind = 'task.started'
+            OR (
+              a.kind IN ('task.progress', 'task.updated')
+              AND json_type(a.payload_json, '$.status') = 'text'
+            )
+          )
+      ),
+      latest AS (
+        SELECT
+          threadId,
+          taskId,
+          kind,
+          status,
+          taskType,
+          label,
+          ROW_NUMBER() OVER (
+            PARTITION BY threadId, taskId
+            ORDER BY sequence DESC, createdAt DESC, activityId DESC
+          ) AS rn
+        FROM decisive
+      ),
+      open_tasks AS (
+        SELECT threadId, taskId, label
+        FROM latest
+        WHERE rn = 1
+          AND kind != 'task.completed'
+          AND COALESCE(status, '') NOT IN (
+            'completed', 'failed', 'stopped', 'cancelled', 'interrupted', 'idle'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM decisive d2
+            WHERE d2.threadId = latest.threadId
+              AND d2.taskId = latest.taskId
+              AND d2.taskType IN ('plan', 'dream')
+          )
+      ),
+      labels AS (
+        SELECT
+          d.threadId AS threadId,
+          d.taskId AS taskId,
+          d.label AS label,
+          ROW_NUMBER() OVER (
+            PARTITION BY d.threadId, d.taskId
+            ORDER BY d.sequence DESC, d.createdAt DESC, d.activityId DESC
+          ) AS labelRn
+        FROM decisive d
+        INNER JOIN open_tasks o
+          ON o.threadId = d.threadId AND o.taskId = d.taskId
+        WHERE d.label IS NOT NULL
+      )
+      SELECT
+        o.threadId AS "threadId",
+        o.taskId AS "taskId",
+        COALESCE(l.label, o.label, o.taskId) AS "label"
+      FROM open_tasks o
+      LEFT JOIN labels l
+        ON l.threadId = o.threadId AND l.taskId = o.taskId AND l.labelRn = 1
+    `,
+  });
+
+  /** Open background tasks whose latest decisive row is still non-terminal. */
+  const listUnterminatedTasks: ProjectionSnapshotQueryShape["listUnterminatedTasks"] = () =>
+    listUnterminatedTaskRows({}).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listUnterminatedTasks:query",
+          "ProjectionSnapshotQuery.listUnterminatedTasks:decodeRow",
+        ),
+      ),
+    );
+
   const listThreadActivityIdsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadActivityIdRowSchema,
@@ -3776,6 +3887,7 @@ pending_approval_requests AS (
     getCommandReadModel,
     getUserInputActivity,
     listActivitiesByKind,
+    listUnterminatedTasks,
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,
