@@ -343,7 +343,16 @@ const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>)
 const ORPHANED_PROVIDER_SESSION_ERROR =
   "Provider session did not survive a server restart. Send a new message to continue.";
 const SERVER_UPDATE_CONTINUATION_KEY = "continueAfterServerUpdate";
+const SERVER_UPDATE_CONTINUATION_TASKS_KEY = "continueAfterServerUpdateTasks";
 const SERVER_UPDATE_CONTINUATION_PROMPT = "Continue where you left off.";
+const MAX_NAMED_STOPPED_TASKS = 12;
+/** Marker turn used when background tasks outlived the turn that started them. */
+const BACKGROUND_RESTART_TURN_ID = TurnId.make("restart-background-tasks");
+
+interface StoppedBackgroundTask {
+  readonly taskId: string;
+  readonly label: string;
+}
 
 class ProviderSessionContinuationError extends Schema.TaggedError<ProviderSessionContinuationError>()(
   "ProviderSessionContinuationError",
@@ -386,6 +395,73 @@ function readRuntimePayload(runtimePayload: unknown): Record<string, unknown> {
     : {};
 }
 
+function readStoppedBackgroundTasks(runtimePayload: unknown): ReadonlyArray<StoppedBackgroundTask> {
+  const value = readRuntimePayload(runtimePayload)[SERVER_UPDATE_CONTINUATION_TASKS_KEY];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const tasks: StoppedBackgroundTask[] = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const taskId = "taskId" in entry && typeof entry.taskId === "string" ? entry.taskId.trim() : "";
+    const label = "label" in entry && typeof entry.label === "string" ? entry.label.trim() : "";
+    if (taskId.length === 0) {
+      continue;
+    }
+    tasks.push({ taskId, label: label.length > 0 ? label : taskId });
+  }
+  return tasks;
+}
+
+function continuationPromptForTasks(tasks: ReadonlyArray<StoppedBackgroundTask>): string {
+  if (tasks.length === 0) {
+    return SERVER_UPDATE_CONTINUATION_PROMPT;
+  }
+  const lines = tasks.slice(0, MAX_NAMED_STOPPED_TASKS).map((task) => `- ${task.label}`);
+  if (tasks.length > MAX_NAMED_STOPPED_TASKS) {
+    lines.push(`- and ${tasks.length - MAX_NAMED_STOPPED_TASKS} more`);
+  }
+  return `${SERVER_UPDATE_CONTINUATION_PROMPT}\n\nThese background tasks were stopped by the server restart and did not finish:\n${lines.join("\n")}`;
+}
+
+function clearedContinuationPayload(runtimePayload: unknown): Record<string, unknown> {
+  const payload = readRuntimePayload(runtimePayload);
+  return {
+    ...payload,
+    [SERVER_UPDATE_CONTINUATION_KEY]: null,
+    continueAfterServerUpdatePrepared: null,
+    ...(SERVER_UPDATE_CONTINUATION_TASKS_KEY in payload
+      ? { [SERVER_UPDATE_CONTINUATION_TASKS_KEY]: null }
+      : {}),
+  };
+}
+
+const loadUnterminatedTasksByThread = Effect.gen(function* () {
+  const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const tasks = yield* query
+    .listUnterminatedTasks()
+    .pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("failed to read unterminated provider tasks", { cause }).pipe(
+          Effect.as([]),
+        ),
+      ),
+    );
+  const tasksByThread = new Map<ThreadId, StoppedBackgroundTask[]>();
+  for (const task of tasks) {
+    const label = task.label.trim();
+    const existing = tasksByThread.get(task.threadId) ?? [];
+    existing.push({
+      taskId: task.taskId,
+      label: label.length > 0 ? label : task.taskId,
+    });
+    tasksByThread.set(task.threadId, existing);
+  }
+  return tasksByThread;
+});
+
 const isServerUpdateThreadContinuationError = Schema.is(ServerUpdateThreadContinuationError);
 
 function readServerUpdateContinuationTurnId(runtimePayload: unknown): TurnId | null {
@@ -405,19 +481,24 @@ export const markRunningProviderSessionsForContinuation = Effect.gen(function* (
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const { threads } = yield* query.getCommandReadModel();
-  const running = threads.filter(
-    (thread) =>
-      thread.archivedAt === null &&
-      thread.deletedAt === null &&
-      thread.session?.status === "running" &&
-      thread.session.activeTurnId !== null,
-  );
+  const tasksByThread = yield* loadUnterminatedTasksByThread;
+  const running = threads.filter((thread) => {
+    if (thread.archivedAt !== null || thread.deletedAt !== null || thread.session === null) {
+      return false;
+    }
+    const openTasks = tasksByThread.get(thread.id) ?? [];
+    return (
+      (thread.session.status === "running" && thread.session.activeTurnId !== null) ||
+      openTasks.length > 0
+    );
+  });
 
   const marked: ThreadId[] = [];
   return yield* Effect.gen(function* () {
     for (const thread of running) {
-      const activeTurnId = thread.session?.activeTurnId;
-      if (activeTurnId === null || activeTurnId === undefined) {
+      const activeTurnId = thread.session?.activeTurnId ?? null;
+      const openTasks = tasksByThread.get(thread.id) ?? [];
+      if (activeTurnId === null && openTasks.length === 0) {
         continue;
       }
       const binding = yield* directory.getBinding(thread.id);
@@ -431,8 +512,9 @@ export const markRunningProviderSessionsForContinuation = Effect.gen(function* (
         ...binding.value,
         runtimePayload: {
           ...readRuntimePayload(binding.value.runtimePayload),
-          [SERVER_UPDATE_CONTINUATION_KEY]: activeTurnId,
+          [SERVER_UPDATE_CONTINUATION_KEY]: activeTurnId ?? BACKGROUND_RESTART_TURN_ID,
           continueAfterServerUpdatePrepared: null,
+          ...(openTasks.length > 0 ? { [SERVER_UPDATE_CONTINUATION_TASKS_KEY]: openTasks } : {}),
         },
       });
       marked.push(thread.id);
@@ -459,11 +541,7 @@ const clearContinuationMarkers = (
             onSome: (binding) =>
               directory.upsert({
                 ...binding,
-                runtimePayload: {
-                  ...readRuntimePayload(binding.runtimePayload),
-                  [SERVER_UPDATE_CONTINUATION_KEY]: null,
-                  continueAfterServerUpdatePrepared: null,
-                },
+                runtimePayload: clearedContinuationPayload(binding.runtimePayload),
               }),
           }),
         ),
@@ -502,6 +580,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
     (yield* providerService.listSessions()).map((session) => session.threadId),
   );
   const { threads } = yield* query.getCommandReadModel();
+  const tasksByThread = yield* loadUnterminatedTasksByThread;
   // Provider startup can report ready before the continuation is submitted.
   // Find those markers in one read rather than querying every idle thread.
   const preparedThreadIds = new Set(
@@ -537,7 +616,8 @@ export const reconcileProviderSessions = Effect.gen(function* () {
       (thread.session.status === "starting" ||
         thread.session.status === "running" ||
         thread.session.activeTurnId !== null ||
-        (thread.session.status === "ready" && preparedThreadIds.has(thread.id))) &&
+        (thread.session.status === "ready" &&
+          (preparedThreadIds.has(thread.id) || (tasksByThread.get(thread.id)?.length ?? 0) > 0))) &&
       !liveThreadIds.has(thread.id),
   );
 
@@ -584,22 +664,76 @@ export const reconcileProviderSessions = Effect.gen(function* () {
       Option.isSome(binding) &&
       binding.value.status === "running" &&
       binding.value.resumeCursor != null;
+    const openTasks = tasksByThread.get(thread.id) ?? [];
+    const recordedTasks = Option.isSome(binding)
+      ? readStoppedBackgroundTasks(binding.value.runtimePayload)
+      : [];
+    // Projection rows are the crash signal. A prepared marker keeps the names
+    // when this process already settled those rows and then exited again.
+    const stoppedTasks = openTasks.length > 0 ? openTasks : preparedWhileReady ? recordedTasks : [];
+    const continueBackgroundTasks =
+      continueAfterRestartFor(thread.projectId) &&
+      stoppedTasks.length > 0 &&
+      session.activeTurnId === null;
+    const settleStoppedTasks = Effect.gen(function* () {
+      if (stoppedTasks.length === 0) {
+        return;
+      }
+      const settledAt = DateTime.formatIso(yield* DateTime.now);
+      yield* Effect.forEach(
+        stoppedTasks,
+        (task) =>
+          Effect.gen(function* () {
+            yield* orchestrationEngine
+              .dispatch({
+                type: "thread.activity.append",
+                commandId: CommandId.make(yield* crypto.randomUUIDv4),
+                threadId: thread.id,
+                activity: {
+                  id: EventId.make(`task-restart:${thread.id}:${task.taskId}`),
+                  tone: "info",
+                  kind: "task.completed",
+                  summary: "Task stopped",
+                  payload: {
+                    taskId: task.taskId,
+                    status: "stopped",
+                    title: task.label,
+                    summary: "Stopped because the server restarted.",
+                    detail: "Stopped because the server restarted.",
+                  },
+                  turnId: null,
+                  createdAt: settledAt,
+                },
+                createdAt: settledAt,
+              })
+              .pipe(
+                Effect.catchCauseIf(
+                  (cause) => !Cause.hasInterrupts(cause),
+                  (cause) =>
+                    Effect.logWarning("failed to settle interrupted background task", {
+                      threadId: thread.id,
+                      taskId: task.taskId,
+                      cause,
+                    }),
+                ),
+              );
+          }),
+        { discard: true },
+      );
+    });
     const settleAsError = (lastError: string) =>
       Effect.gen(function* () {
+        yield* settleStoppedTasks;
         yield* Effect.gen(function* () {
           if (Option.isSome(binding)) {
             yield* directory.upsert({
               ...binding.value,
               status: "stopped",
               runtimePayload: {
-                ...readRuntimePayload(binding.value.runtimePayload),
+                ...(continuationMarkerPresent || interruptedByRestart || continueBackgroundTasks
+                  ? clearedContinuationPayload(binding.value.runtimePayload)
+                  : readRuntimePayload(binding.value.runtimePayload)),
                 activeTurnId: null,
-                ...(continuationMarkerPresent || interruptedByRestart
-                  ? {
-                      [SERVER_UPDATE_CONTINUATION_KEY]: null,
-                      continueAfterServerUpdatePrepared: null,
-                    }
-                  : {}),
               },
             });
           }
@@ -644,8 +778,11 @@ export const reconcileProviderSessions = Effect.gen(function* () {
 
     if (
       Option.isSome(binding) &&
-      (continuationMarked || interruptedByRestart) &&
-      (session.status === "running" || session.status === "starting" || preparedWhileReady) &&
+      (continuationMarked || interruptedByRestart || continueBackgroundTasks) &&
+      (session.status === "running" ||
+        session.status === "starting" ||
+        preparedWhileReady ||
+        (session.status === "ready" && continueBackgroundTasks)) &&
       binding.value.resumeCursor != null &&
       thread.archivedAt === null &&
       thread.deletedAt === null
@@ -657,9 +794,15 @@ export const reconcileProviderSessions = Effect.gen(function* () {
           runtimePayload: {
             ...readRuntimePayload(binding.value.runtimePayload),
             // Keep recovery durable if this process also exits before sending.
-            [SERVER_UPDATE_CONTINUATION_KEY]: session.activeTurnId ?? continuationTurnId,
+            [SERVER_UPDATE_CONTINUATION_KEY]:
+              session.activeTurnId ??
+              continuationTurnId ??
+              (stoppedTasks.length > 0 ? BACKGROUND_RESTART_TURN_ID : null),
             continueAfterServerUpdatePrepared: true,
             activeTurnId: null,
+            ...(stoppedTasks.length > 0
+              ? { [SERVER_UPDATE_CONTINUATION_TASKS_KEY]: stoppedTasks }
+              : {}),
           },
         });
         const resumedAt = DateTime.formatIso(yield* DateTime.now);
@@ -699,11 +842,12 @@ export const reconcileProviderSessions = Effect.gen(function* () {
               });
             }
             const capabilities = yield* providerService.getCapabilities(providerInstanceId);
+            yield* settleStoppedTasks;
             yield* providerService.sendTurn({
               threadId: thread.id,
-              ...(capabilities.promptlessTurnContinuation === true
+              ...(capabilities.promptlessTurnContinuation === true && stoppedTasks.length === 0
                 ? { continuation: true }
-                : { input: SERVER_UPDATE_CONTINUATION_PROMPT }),
+                : { input: continuationPromptForTasks(stoppedTasks) }),
               interactionMode: thread.interactionMode,
             });
           });
