@@ -1076,11 +1076,6 @@ export function runtimeEventToActivities(
   return [];
 }
 
-/**
- * Build provider-runtime ingestion. Provider events become orchestration
- * commands; assistant completion persists only text that is not already
- * projected or still buffered.
- */
 const make = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const threadPlanProgress = yield* ThreadPlanProgressService;
@@ -1535,69 +1530,88 @@ const make = Effect.gen(function* () {
       return flushedMessageIds;
     });
 
-  /**
-   * Flush one assistant or reasoning message and mark it complete.
-   *
-   * Persists only the suffix from {@link assistantCompletionDelta}, so a
-   * completion snapshot that extends projected or buffered text does not
-   * rewrite the stream. Skips the complete event when the message was never
-   * projected and the suffix has no renderable text.
-   *
-   * @param input.fallbackText - Completion snapshot used as `detail`.
-   * @param input.projectedText - Text already on the projected message.
-   * @param input.hasProjectedMessage - Whether a message row already exists.
-   */
-  const finalizeAssistantMessage = (input: {
-    event: ProviderRuntimeEvent;
-    threadId: ThreadId;
-    messageId: MessageId;
-    turnId?: TurnId;
-    createdAt: string;
-    commandTag: string;
-    finalDeltaCommandTag: string;
-    fallbackText?: string;
-    projectedText?: string;
-    hasProjectedMessage?: boolean;
-  }) =>
-    Effect.gen(function* () {
-      const bufferedText = yield* takeBufferedAssistantText(input.messageId);
-      const text = assistantCompletionDelta({
-        projectedText: input.projectedText ?? "",
-        bufferedText,
-        detail: input.fallbackText,
-      });
-      const hasRenderableText = hasRenderableAssistantText(text);
+  const finalizeAssistantMessage =
+    /**
+     * Flush one assistant or reasoning message and mark it complete.
+     *
+     * Persists only the suffix from {@link assistantCompletionDelta}, so a
+     * completion snapshot that extends projected or buffered text does not
+     * rewrite the stream. Skips the complete event when the message was never
+     * projected and the suffix has no renderable text.
+     *
+     * @param input - Finalization context for one assistant or reasoning message.
+     * @param input.event - Provider runtime event being finalized.
+     * @param input.threadId - Thread that owns the message.
+     * @param input.messageId - Assistant or reasoning message to complete.
+     * @param input.turnId - Turn the message belongs to, when one is known.
+     * @param input.createdAt - Timestamp applied to the completion commands.
+     * @param input.commandTag - Command id tag for the complete event.
+     * @param input.finalDeltaCommandTag - Command id tag for the final text delta.
+     * @param input.fallbackText - Completion snapshot used as `detail`.
+     * @param input.projectedText - Text already on the projected message.
+     * @param input.hasProjectedMessage - Whether a message row already exists.
+     * @returns Effect that flushes the missing suffix and marks the message complete.
+     */
+    (input: {
+      event: ProviderRuntimeEvent;
+      threadId: ThreadId;
+      messageId: MessageId;
+      turnId?: TurnId;
+      createdAt: string;
+      commandTag: string;
+      finalDeltaCommandTag: string;
+      fallbackText?: string;
+      projectedText?: string;
+      hasProjectedMessage?: boolean;
+    }) =>
+      Effect.gen(
+        /**
+         * Apply the completion suffix and mark the assistant message complete.
+         *
+         * @returns Effect that dispatches the final delta and completion.
+         */
+        function* () {
+          const bufferedText = yield* takeBufferedAssistantText(input.messageId);
+          const text = assistantCompletionDelta({
+            projectedText: input.projectedText ?? "",
+            bufferedText,
+            detail: input.fallbackText,
+          });
+          const hasRenderableText = hasRenderableAssistantText(text);
 
-      const isReasoning = messageStreamRoleOf(input.messageId) === "reasoning";
+          const isReasoning = messageStreamRoleOf(input.messageId) === "reasoning";
 
-      if (hasRenderableText) {
-        yield* orchestrationEngine.dispatch({
-          type: isReasoning ? "thread.message.reasoning.delta" : "thread.message.assistant.delta",
-          commandId: yield* providerCommandId(input.event, input.finalDeltaCommandTag),
-          threadId: input.threadId,
-          messageId: input.messageId,
-          delta: text,
-          ...(input.turnId ? { turnId: input.turnId } : {}),
-          createdAt: isReasoning
-            ? yield* reasoningStartedAt(input.messageId, input.createdAt)
-            : input.createdAt,
-        });
-      }
+          if (hasRenderableText) {
+            yield* orchestrationEngine.dispatch({
+              type: isReasoning
+                ? "thread.message.reasoning.delta"
+                : "thread.message.assistant.delta",
+              commandId: yield* providerCommandId(input.event, input.finalDeltaCommandTag),
+              threadId: input.threadId,
+              messageId: input.messageId,
+              delta: text,
+              ...(input.turnId ? { turnId: input.turnId } : {}),
+              createdAt: isReasoning
+                ? yield* reasoningStartedAt(input.messageId, input.createdAt)
+                : input.createdAt,
+            });
+          }
 
-      if (input.hasProjectedMessage || hasRenderableText) {
-        yield* orchestrationEngine.dispatch({
-          type: isReasoning
-            ? "thread.message.reasoning.complete"
-            : "thread.message.assistant.complete",
-          commandId: yield* providerCommandId(input.event, input.commandTag),
-          threadId: input.threadId,
-          messageId: input.messageId,
-          ...(input.turnId ? { turnId: input.turnId } : {}),
-          createdAt: input.createdAt,
-        });
-      }
-      yield* clearAssistantMessageState(input.messageId);
-    });
+          if (input.hasProjectedMessage || hasRenderableText) {
+            yield* orchestrationEngine.dispatch({
+              type: isReasoning
+                ? "thread.message.reasoning.complete"
+                : "thread.message.assistant.complete",
+              commandId: yield* providerCommandId(input.event, input.commandTag),
+              threadId: input.threadId,
+              messageId: input.messageId,
+              ...(input.turnId ? { turnId: input.turnId } : {}),
+              createdAt: input.createdAt,
+            });
+          }
+          yield* clearAssistantMessageState(input.messageId);
+        },
+      );
 
   const finalizeActiveSegmentForTurn = (input: {
     event: ProviderRuntimeEvent;
@@ -1832,12 +1846,14 @@ const make = Effect.gen(function* () {
     },
   );
 
-  /**
+  const processRuntimeEvent = /**
    * Project one provider runtime event. When an assistant item completes,
    * the snapshot is reconciled with projected and buffered text before the
    * message is finalized.
-   */
-  const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
+   *
+   * @param event - Provider runtime event to project into orchestration commands.
+   * @returns Effect that ingests the event, including assistant completion text.
+   */ (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       if (
         event.type === "content.delta" &&
