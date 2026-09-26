@@ -260,6 +260,21 @@ export function deriveToolActivityPresentation(
   };
 }
 
+/**
+ * Projects an AskUserQuestion-style tool call down to the question text clients
+ * match against the native user-input activity.
+ *
+ * `data` is the activity payload. `title` is used only when the payload has no
+ * tool name. Header, options, and answers stay off this payload; they already
+ * live on that activity. Each entry's text comes from its `question`,
+ * `question_text`, `prompt`, or `title` field. An entry with no text yet (a
+ * streamed `{}`, or header and options that arrived first) is projected as
+ * `{}`. `{ question: undefined }` is not valid JSON, and `Schema.Unknown`
+ * rejects the whole thread snapshot.
+ *
+ * Returns `{}` when the tool name is missing, the tool is not a recognized
+ * question tool, or `questions` is not an array.
+ */
 export function projectQuestionToolInput(data: Record<string, unknown>, title: unknown) {
   const item = asRecord(data.item);
   const toolName = data.toolName ?? data.tool ?? item?.tool ?? title;
@@ -283,11 +298,13 @@ export function projectQuestionToolInput(data: Record<string, unknown>, title: u
     input: {
       questions: questions.map((value) => {
         const question = asRecord(value);
-        return {
-          question: asTrimmedString(
-            question?.question ?? question?.question_text ?? question?.prompt ?? question?.title,
-          ),
-        };
+        const text = asTrimmedString(
+          question?.question ?? question?.question_text ?? question?.prompt ?? question?.title,
+        );
+        // An entry can arrive with header/options (or as `{}` mid-stream) before
+        // any question text. Emitting `{ question: undefined }` is not JSON and
+        // Schema.Unknown rejects the whole thread snapshot.
+        return text === undefined ? {} : { question: text };
       }),
     },
   };
