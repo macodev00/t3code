@@ -894,15 +894,17 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("title");
   });
 
-  it("forwards only a user-renamed title when starting a provider session", async () => {
-    const harness = await createHarness({ initialTitle: "Add a progressive blur as you scroll" });
-    const now = "2026-01-01T00:00:00.000Z";
-    const modelSelection = {
-      instanceId: ProviderInstanceId.make("codex"),
-      model: "gpt-5-codex",
-    };
-    const startTurn = (threadId: string, text: string, titleSeed: string) =>
-      Effect.runPromise(
+  effectIt.effect("forwards only a user-renamed title when starting a provider session", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() =>
+        createHarness({ initialTitle: "Add a progressive blur as you scroll" }),
+      );
+      const now = "2026-01-01T00:00:00.000Z";
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      };
+      const startTurn = (threadId: string, text: string, titleSeed: string) =>
         harness.engine.dispatch({
           type: "thread.turn.start",
           commandId: CommandId.make(`cmd-title-${threadId}`),
@@ -917,19 +919,17 @@ describe("ProviderCommandReactor", () => {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
           createdAt: now,
-        }),
+        });
+
+      yield* startTurn(
+        "thread-1",
+        "Add a progressive blur as you scroll",
+        "Add a progressive blur as you scroll",
       );
+      yield* Effect.promise(() => waitFor(() => harness.startSession.mock.calls.length === 1));
+      expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("title");
 
-    await startTurn(
-      "thread-1",
-      "Add a progressive blur as you scroll",
-      "Add a progressive blur as you scroll",
-    );
-    await waitFor(() => harness.startSession.mock.calls.length === 1);
-    expect(harness.startSession.mock.calls[0]?.[1]).not.toHaveProperty("title");
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      yield* harness.engine.dispatch({
         type: "thread.create",
         commandId: CommandId.make("cmd-thread-create-renamed"),
         threadId: ThreadId.make("thread-renamed"),
@@ -941,22 +941,18 @@ describe("ProviderCommandReactor", () => {
         branch: null,
         worktreePath: null,
         createdAt: now,
-      }),
-    );
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      });
+      yield* harness.engine.dispatch({
         type: "thread.meta.update",
         commandId: CommandId.make("cmd-thread-rename"),
         threadId: ThreadId.make("thread-renamed"),
         title: "Keep this name",
-      }),
-    );
-    await startTurn("thread-renamed", "hello there", "hello there");
-    await waitFor(() => harness.startSession.mock.calls.length === 2);
-    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({ title: "Keep this name" });
+      });
+      yield* startTurn("thread-renamed", "hello there", "hello there");
+      yield* Effect.promise(() => waitFor(() => harness.startSession.mock.calls.length === 2));
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({ title: "Keep this name" });
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      yield* harness.engine.dispatch({
         type: "thread.create",
         commandId: CommandId.make("cmd-thread-create-seeded"),
         threadId: ThreadId.make("thread-seeded"),
@@ -968,20 +964,18 @@ describe("ProviderCommandReactor", () => {
         branch: null,
         worktreePath: null,
         createdAt: now,
-      }),
-    );
-    await Effect.runPromise(
-      harness.engine.dispatch({
+      });
+      yield* harness.engine.dispatch({
         type: "thread.meta.update",
         commandId: CommandId.make("cmd-thread-autotitle"),
         threadId: ThreadId.make("thread-seeded"),
         title: "hello there",
-      }),
-    );
-    await startTurn("thread-seeded", "hello there", "hello there");
-    await waitFor(() => harness.startSession.mock.calls.length === 3);
-    expect(harness.startSession.mock.calls[2]?.[1]).not.toHaveProperty("title");
-  });
+      });
+      yield* startTurn("thread-seeded", "hello there", "hello there");
+      yield* Effect.promise(() => waitFor(() => harness.startSession.mock.calls.length === 3));
+      expect(harness.startSession.mock.calls[2]?.[1]).not.toHaveProperty("title");
+    }),
+  );
 
   effectIt.effect("projects inline context before sending the provider turn", () =>
     Effect.gen(function* () {
