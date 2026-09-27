@@ -121,45 +121,43 @@ export function resolveTranscriptCommit(
   };
 }
 
-type VoiceInputSession = {
-  readonly token: symbol;
-  abandoned: boolean;
-  readonly released: Promise<void>;
-  readonly resolveReleased: () => void;
-};
-
-let activeSession: VoiceInputSession | null = null;
+let activeSession: symbol | null = null;
 let activeTranscriptionOperation: Promise<unknown> | null = null;
+let audioCleanup: Promise<void> = Promise.resolve();
 
 function acquireSession(): symbol | null {
   if (activeSession) return null;
-  const released = Promise.withResolvers<void>();
   const token = Symbol("voice-input-session");
-  activeSession = {
-    token,
-    abandoned: false,
-    released: released.promise,
-    resolveReleased: released.resolve,
-  };
+  activeSession = token;
   return token;
 }
 
-function abandonSession(token: symbol | null): void {
-  if (token && activeSession?.token === token) activeSession.abandoned = true;
+/**
+ * Forget an in-flight Apple prepare or transcribe. Those calls cannot be
+ * aborted, and the next thread must be able to record before they finish.
+ */
+function detachTranscriptionOperation(): void {
+  activeTranscriptionOperation = null;
 }
 
-// The replacement start waits on this. Apple prepare/transcribe cannot be
-// aborted, and releaseRecording() is process-wide, so dropping the lock before
-// that cleanup finishes would let the new recording get torn down.
-function abandonedSessionRelease(): Promise<void> | null {
-  return activeSession?.abandoned === true ? activeSession.released : null;
+/**
+ * Keep process-wide audio teardown ahead of the next recording. A late
+ * `releaseRecording()` deactivates the shared audio session.
+ */
+function trackAudioCleanup(cleanup: Promise<void>): void {
+  audioCleanup = audioCleanup.then(joinCleanup, joinCleanup);
+
+  /** Queue this teardown after whatever audio release is already running. */
+  function joinCleanup(): Promise<void> {
+    return cleanup.then(ignoreCleanupResult, ignoreCleanupResult);
+  }
 }
+
+/** Keep the audio queue moving when a teardown settles or fails. */
+function ignoreCleanupResult(): void {}
 
 function releaseSession(token: symbol | null): void {
-  if (!token || activeSession?.token !== token) return;
-  const session = activeSession;
-  activeSession = null;
-  session.resolveReleased();
+  if (token && activeSession === token) activeSession = null;
 }
 
 async function runTranscriptionOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -211,6 +209,8 @@ export class VoiceInputController {
   private recordingUri: string | null = null;
   private readonly ownedRecordingUris = new Set<string>();
   private recordingConfigured = false;
+  private audioRelease: Promise<void> | null = null;
+  private configureGate: Promise<void> = Promise.resolve();
   private finishing = false;
 
   constructor(dependencies: VoiceInputControllerDependencies) {
@@ -221,20 +221,17 @@ export class VoiceInputController {
     return this.state;
   }
 
+  /**
+   * Start dictation for this draft. A session released by cancel or dispose is
+   * not already active. This waits for process-wide audio teardown, not for
+   * the abandoned Apple transcription.
+   */
   async start(): Promise<void> {
     if (this.state.phase !== "idle" && this.state.phase !== "error") return;
     const initiatingDraft = this.dependencies.readDraft();
     if (!initiatingDraft) {
       this.setError("This draft is no longer available.", "retry");
       return;
-    }
-
-    const abandonedRelease = abandonedSessionRelease();
-    if (abandonedRelease) {
-      const waitToken = ++this.operationToken;
-      this.setState({ phase: "preparing", error: null, errorAction: null });
-      await abandonedRelease;
-      if (!this.isCurrent(waitToken)) return;
     }
 
     const sessionToken = acquireSession();
@@ -250,6 +247,10 @@ export class VoiceInputController {
     this.setState({ phase: "preparing", error: null, errorAction: null });
 
     try {
+      const pendingAudioCleanup = audioCleanup;
+      await pendingAudioCleanup;
+      if (!this.isCurrent(operationToken)) return;
+
       const transcriber = this.dependencies.getTranscriber();
       if (!transcriber) {
         this.setError("Voice transcription is not available.", null);
@@ -276,8 +277,7 @@ export class VoiceInputController {
       }
       if (!this.isCurrent(operationToken)) return;
 
-      await this.dependencies.configureRecording();
-      this.recordingConfigured = true;
+      await this.configureRecordingAudio();
       if (!this.isCurrent(operationToken)) return;
       await this.dependencies.recorder.prepareToRecordAsync();
       if (!this.isCurrent(operationToken)) return;
@@ -309,6 +309,10 @@ export class VoiceInputController {
     return this.finishRecording(false, null);
   }
 
+  /**
+   * Stop this attempt and release the shared session so another thread can
+   * record before the abandoned Apple call finishes.
+   */
   cancel(): void {
     switch (this.state.phase) {
       case "idle":
@@ -318,13 +322,10 @@ export class VoiceInputController {
         return;
       case "preparing":
       case "transcribing":
-        abandonSession(this.sessionToken);
-        this.invalidateOperation();
-        this.setState(IDLE_STATE);
+        this.releaseForReplacement(false);
         return;
       case "recording":
-        abandonSession(this.sessionToken);
-        this.discardRecording(null);
+        this.releaseForReplacement(true);
         return;
     }
   }
@@ -369,16 +370,14 @@ export class VoiceInputController {
     this.cancel();
   }
 
+  /** Release the shared session when this composer leaves the screen. */
   dispose(): void {
     if (this.state.phase === "recording") {
-      abandonSession(this.sessionToken);
-      this.discardRecording(null);
+      this.releaseForReplacement(true);
       return;
     }
     if (this.state.phase === "preparing" || this.state.phase === "transcribing") {
-      abandonSession(this.sessionToken);
-      this.invalidateOperation();
-      this.setState(IDLE_STATE);
+      this.releaseForReplacement(false);
     }
   }
 
@@ -495,14 +494,83 @@ export class VoiceInputController {
     if (uri) this.ownedRecordingUris.add(uri);
   }
 
-  private async releaseAudioSession(): Promise<void> {
-    if (!this.recordingConfigured) return;
+  /**
+   * Apply the recording audio mode. Cancellation waits for this gate, then
+   * tears the session down, so that release cannot hit the replacement.
+   */
+  private async configureRecordingAudio(): Promise<void> {
+    const gate = Promise.withResolvers<void>();
+    this.configureGate = gate.promise;
     try {
-      await this.dependencies.releaseRecording();
-      this.recordingConfigured = false;
-    } catch {
-      // Final cleanup retries if the prompt release before transcription fails.
+      await this.dependencies.configureRecording();
+      this.recordingConfigured = true;
+    } finally {
+      gate.resolve();
     }
+  }
+
+  /**
+   * Hand the shared session to the next thread. Audio teardown stays queued;
+   * an abandoned Apple prepare or transcribe does not.
+   */
+  private releaseForReplacement(discardRecording: boolean): void {
+    detachTranscriptionOperation();
+    releaseSession(this.sessionToken);
+    this.sessionToken = null;
+    if (discardRecording) {
+      trackAudioCleanup(this.discardRecording(null));
+      return;
+    }
+    trackAudioCleanup(this.finishReplacementTeardown());
+    this.invalidateOperation();
+    this.setState(IDLE_STATE);
+  }
+
+  /**
+   * Release audio after an in-flight configure finishes, then forget it so the
+   * abandoned attempt cannot deactivate the replacement recording.
+   */
+  private async finishReplacementTeardown(): Promise<void> {
+    await this.configureGate;
+    await this.scheduleAudioRelease();
+    this.recordingConfigured = false;
+    this.audioRelease = null;
+  }
+
+  /**
+   * Deactivate the shared audio session once. A failed attempt stays configured
+   * so a later cleanup can retry.
+   */
+  private scheduleAudioRelease(): Promise<void> {
+    if (this.audioRelease) return this.audioRelease;
+    if (!this.recordingConfigured) return Promise.resolve();
+    const cleanup = Promise.resolve()
+      .then(this.releaseConfiguredAudio.bind(this))
+      .then(this.markAudioReleased.bind(this), this.markAudioReleaseFailed.bind(this));
+    this.audioRelease = cleanup;
+    trackAudioCleanup(cleanup);
+    return cleanup;
+  }
+
+  /** Run the platform release for this controller's recording audio mode. */
+  private releaseConfiguredAudio(): Promise<void> {
+    return this.dependencies.releaseRecording();
+  }
+
+  /** Remember that the shared audio session is off. */
+  private markAudioReleased(): void {
+    this.recordingConfigured = false;
+    this.audioRelease = null;
+  }
+
+  /** Allow a later cleanup to retry a failed audio release. */
+  private markAudioReleaseFailed(): void {
+    this.audioRelease = null;
+  }
+
+  /** Release the recording audio mode, retrying on the next cleanup if this attempt fails. */
+  private async releaseAudioSession(): Promise<void> {
+    await this.scheduleAudioRelease();
   }
 
   private invalidateOperation(): void {
@@ -524,7 +592,9 @@ export class VoiceInputController {
   }
 }
 
+/** Clear module locks so controller tests do not leak a session or audio teardown. */
 export function resetVoiceInputGlobalsForTests(): void {
   activeSession = null;
   activeTranscriptionOperation = null;
+  audioCleanup = Promise.resolve();
 }
