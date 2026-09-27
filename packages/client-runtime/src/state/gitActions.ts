@@ -356,3 +356,17 @@ export function resolveDefaultBranchActionDialogCopy(input: {
     continueLabel: "Push & create PR",
   };
 }
+
+/**
+ * Returns the notice shown when background upstream refresh has stopped for
+ * the current remote, or null while that remote is still being polled.
+ *
+ * The notice tells the user to pull. Pull is not limited to the background
+ * fetch timeout, so a credential dialog can be approved and refresh can resume.
+ */
+export function upstreamStatusAttentionMessage(
+  gitStatus: Pick<VcsStatusResult, "upstreamNeedsAttention"> | null | undefined,
+): string | null {
+  if (gitStatus?.upstreamNeedsAttention !== true) return null;
+  return "Upstream status needs attention. Pull to refresh it.";
+}

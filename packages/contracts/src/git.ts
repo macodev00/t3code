@@ -235,6 +235,11 @@ const VcsStatusRemoteShape = {
   aheadCount: NonNegativeInt,
   behindCount: NonNegativeInt,
   aheadOfDefaultCount: Schema.optional(NonNegativeInt),
+  /**
+   * Background upstream refresh stopped after repeated timeouts.
+   * Absent while that remote is still being polled. Pull to try again.
+   */
+  upstreamNeedsAttention: Schema.optional(Schema.Boolean),
   pr: Schema.NullOr(VcsStatusChangeRequest),
 };
 

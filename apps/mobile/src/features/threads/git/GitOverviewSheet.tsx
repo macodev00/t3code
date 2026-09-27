@@ -3,6 +3,7 @@ import {
   buildMenuItems,
   getGitActionDisabledReason,
   requiresDefaultBranchConfirmation,
+  upstreamStatusAttentionMessage,
 } from "@t3tools/client-runtime/state/vcs";
 import {
   resolveThreadPullRequestChains,
@@ -217,6 +218,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
   );
 
   const behindCount = gitStatus.data?.behindCount ?? 0;
+  const upstreamAttention = upstreamStatusAttentionMessage(gitStatus.data);
 
   // Deterministic pull-to-refresh state. Tying RefreshControl to the query's
   // isPending flag left the spinner stuck (the status query reports pending
@@ -273,6 +275,17 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
               icon="arrow.down.circle"
               title="Pull latest"
               subtitle={`${behindCount} commit${behindCount === 1 ? "" : "s"} behind upstream`}
+              disabled={busy || !isRepo}
+              onPress={() => void gitActions.onPullSelectedThreadBranch()}
+            />
+          </>
+        ) : upstreamAttention ? (
+          <>
+            {Platform.OS !== "android" ? <View className="ml-12 h-px bg-border" /> : null}
+            <SheetListRow
+              icon="arrow.down.circle"
+              title="Pull latest"
+              subtitle={upstreamAttention}
               disabled={busy || !isRepo}
               onPress={() => void gitActions.onPullSelectedThreadBranch()}
             />

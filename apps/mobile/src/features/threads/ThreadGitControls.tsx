@@ -62,6 +62,9 @@ function compactMenuStatus(gitStatus: VcsStatusResult | null): string {
   if (gitStatus.pr?.state === "open") {
     parts.push(`PR #${gitStatus.pr.number}`);
   }
+  if (gitStatus.upstreamNeedsAttention) {
+    parts.push("upstream needs attention");
+  }
 
   return parts.join(" · ");
 }

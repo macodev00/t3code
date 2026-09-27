@@ -4,6 +4,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { upstreamStatusAttentionMessage } from "@t3tools/client-runtime/state/vcs";
 import type {
   GitActionProgressEvent,
   GitRunStackedActionResult,
@@ -1081,6 +1082,7 @@ export default function GitActionsControl({
   const isRepo = gitStatus?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
   const gitStatusForActions = gitStatus;
+  const upstreamAttention = upstreamStatusAttentionMessage(gitStatusForActions);
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
@@ -1731,6 +1733,9 @@ export default function GitActionsControl({
         gitStatusForActions.aheadCount === 0 && (
           <p className="px-2 py-1.5 text-xs text-warning">Behind upstream. Pull/rebase first.</p>
         )}
+      {upstreamAttention ? (
+        <p className="px-2 py-1.5 text-xs text-warning">{upstreamAttention}</p>
+      ) : null}
       {gitStatusError && <p className="px-2 py-1.5 text-xs text-destructive">{gitStatusError}</p>}
     </>
   );
@@ -1834,7 +1839,18 @@ export default function GitActionsControl({
             }}
           >
             <MenuTrigger
-              render={<Button aria-label="Git action options" size="icon-xs" variant="outline" />}
+              render={
+                <Button
+                  aria-label={
+                    upstreamAttention
+                      ? `Git action options. ${upstreamAttention}`
+                      : "Git action options"
+                  }
+                  size="icon-xs"
+                  title={upstreamAttention ?? undefined}
+                  variant="outline"
+                />
+              }
               disabled={isGitActionRunning}
             >
               <ChevronDownIcon aria-hidden="true" className="size-4" />

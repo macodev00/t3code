@@ -273,4 +273,67 @@ describe("applyGitStatusStreamEvent", () => {
       pr: null,
     });
   });
+
+  it("keeps an upstream attention flag when a local update arrives", () => {
+    const current: VcsStatusResult = {
+      isRepo: true,
+      hasPrimaryRemote: true,
+      isDefaultRef: false,
+      refName: "feature/demo",
+      hasWorkingTreeChanges: false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      upstreamNeedsAttention: true,
+      pr: null,
+    };
+
+    const updated = applyGitStatusStreamEvent(current, {
+      _tag: "localUpdated",
+      local: {
+        isRepo: true,
+        hasPrimaryRemote: true,
+        isDefaultRef: false,
+        refName: "feature/demo",
+        hasWorkingTreeChanges: true,
+        workingTree: {
+          files: [{ path: "src/demo.ts", insertions: 1, deletions: 0 }],
+          insertions: 1,
+          deletions: 0,
+        },
+      },
+    });
+
+    expect(updated.upstreamNeedsAttention).toBe(true);
+    expect(updated.hasWorkingTreeChanges).toBe(true);
+  });
+
+  it("applies an upstream attention flag from a remote update", () => {
+    const current: VcsStatusResult = {
+      isRepo: true,
+      hasPrimaryRemote: true,
+      isDefaultRef: true,
+      refName: "main",
+      hasWorkingTreeChanges: false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      pr: null,
+    };
+
+    const updated = applyGitStatusStreamEvent(current, {
+      _tag: "remoteUpdated",
+      remote: {
+        hasUpstream: true,
+        aheadCount: 0,
+        behindCount: 0,
+        upstreamNeedsAttention: true,
+        pr: null,
+      },
+    });
+
+    expect(updated.upstreamNeedsAttention).toBe(true);
+  });
 });

@@ -1303,6 +1303,8 @@ export const make = Effect.gen(function* () {
       aheadCount: details.aheadCount,
       behindCount: details.behindCount,
       aheadOfDefaultCount: details.aheadOfDefaultCount,
+      // Omit the flag while refresh is healthy so status payloads stay small.
+      ...(details.upstreamNeedsAttention ? { upstreamNeedsAttention: true } : {}),
       pr,
     } satisfies VcsStatusRemoteResult;
   });

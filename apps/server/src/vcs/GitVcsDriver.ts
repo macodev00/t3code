@@ -92,6 +92,12 @@ export interface GitRemoteStatusDetails {
   aheadCount: number;
   behindCount: number;
   aheadOfDefaultCount: number;
+  /**
+   * True after repeated background fetches for this upstream remote timed out.
+   * Polling that remote has stopped. A successful explicit pull, push, or fetch
+   * resumes it.
+   */
+  upstreamNeedsAttention: boolean;
 }
 
 export interface GitPreparedCommitContext {

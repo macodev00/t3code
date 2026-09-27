@@ -64,6 +64,11 @@ const REVIEW_DIFF_FILE_MAX_OUTPUT_BYTES = 1024 * 1024;
 export const PATCH_RENDER_PREFIX_ARGS = ["--src-prefix=a/", "--dst-prefix=b/"] as const;
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
+const GIT_COMMAND_TIMED_OUT_DETAIL = "Git command timed out.";
+// One slow fetch is not enough to stop. Three consecutive kills at the status
+// timeout match a credential helper blocked on a GUI prompt: each attempt can
+// raise a macOS keychain dialog and ends before Always Allow can be stored.
+const STATUS_UPSTREAM_REFRESH_TIMEOUT_STOP_AFTER = 3;
 
 const STATUS_UPSTREAM_REFRESH_FAILURE_BASE_COOLDOWN = Duration.seconds(30);
 const STATUS_UPSTREAM_REFRESH_FAILURE_MAX_COOLDOWN = Duration.minutes(15);
@@ -78,6 +83,10 @@ const LIST_REFS_REFRESH_COALESCE_TTL = Duration.seconds(5);
 const LIST_REFS_REFRESH_FAILURE_COOLDOWN = Duration.seconds(30);
 const STATUS_DEFAULT_BRANCH_CACHE_TTL = Duration.minutes(5);
 const STATUS_ORIGIN_EXISTS_CACHE_TTL = Duration.minutes(5);
+// Suppress Git Credential Manager, terminal prompts, and OpenSSH askpass.
+// credential.helper stays intact so a silent osxkeychain or `gh auth git-credential`
+// lookup can still succeed. A helper that blocks on a GUI is stopped after
+// repeated timeouts instead of being disabled on every fetch.
 const STATUS_UPSTREAM_REFRESH_ENV = Object.freeze({
   GCM_INTERACTIVE: "never",
   GIT_ASKPASS: "",
@@ -110,6 +119,7 @@ const NON_REPOSITORY_REMOTE_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitRemot
   aheadCount: 0,
   behindCount: 0,
   aheadOfDefaultCount: 0,
+  upstreamNeedsAttention: false,
 });
 
 type TraceTailState = {
@@ -127,6 +137,10 @@ function statusUpstreamRefreshFailureCooldown(consecutiveFailures: number): Dura
   const cooldownMs =
     Duration.toMillis(STATUS_UPSTREAM_REFRESH_FAILURE_BASE_COOLDOWN) * Math.pow(2, exponent);
   return Duration.min(Duration.millis(cooldownMs), STATUS_UPSTREAM_REFRESH_FAILURE_MAX_COOLDOWN);
+}
+
+function isStatusUpstreamRefreshTimeout(error: GitCommandError): boolean {
+  return error.detail === GIT_COMMAND_TIMED_OUT_DETAIL;
 }
 
 class GitRefsSnapshotCacheKey extends Data.Class<{
@@ -953,7 +967,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             () =>
               new GitCommandError({
                 ...gitCommandContext(commandInput),
-                detail: "Git command timed out.",
+                detail: GIT_COMMAND_TIMED_OUT_DETAIL,
               }),
           ),
         ),
@@ -1330,30 +1344,65 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     });
   });
 
-  const statusRemoteRefreshFailureCounts = new Map<string, number>();
+  interface StatusRemoteRefreshFailure {
+    readonly consecutiveFailures: number;
+    readonly consecutiveTimeouts: number;
+  }
+  const statusRemoteRefreshFailures = new Map<string, StatusRemoteRefreshFailure>();
   const statusRemoteRefreshFailureKey = (cacheKey: StatusRemoteRefreshCacheKey) =>
     `${cacheKey.gitCommonDir}\0${cacheKey.remoteName}`;
-  const recordStatusRemoteRefreshFailure = (cacheKey: StatusRemoteRefreshCacheKey) => {
-    const key = statusRemoteRefreshFailureKey(cacheKey);
-    const nextCount = (statusRemoteRefreshFailureCounts.get(key) ?? 0) + 1;
-    statusRemoteRefreshFailureCounts.delete(key);
-    statusRemoteRefreshFailureCounts.set(key, nextCount);
-    if (statusRemoteRefreshFailureCounts.size > STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY) {
-      const oldestKey = statusRemoteRefreshFailureCounts.keys().next().value;
+  const rememberStatusRemoteRefreshFailure = (key: string, failure: StatusRemoteRefreshFailure) => {
+    statusRemoteRefreshFailures.delete(key);
+    statusRemoteRefreshFailures.set(key, failure);
+    if (statusRemoteRefreshFailures.size > STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY) {
+      const oldestKey = statusRemoteRefreshFailures.keys().next().value;
       if (oldestKey !== undefined) {
-        statusRemoteRefreshFailureCounts.delete(oldestKey);
+        statusRemoteRefreshFailures.delete(oldestKey);
       }
     }
   };
-  const clearStatusRemoteRefreshFailures = (cacheKey: StatusRemoteRefreshCacheKey) => {
-    statusRemoteRefreshFailureCounts.delete(statusRemoteRefreshFailureKey(cacheKey));
+  const recordStatusRemoteRefreshFailure = (
+    cacheKey: StatusRemoteRefreshCacheKey,
+    error: GitCommandError,
+  ) => {
+    const key = statusRemoteRefreshFailureKey(cacheKey);
+    const previous = statusRemoteRefreshFailures.get(key);
+    const consecutiveTimeouts = isStatusUpstreamRefreshTimeout(error)
+      ? (previous?.consecutiveTimeouts ?? 0) + 1
+      : 0;
+    rememberStatusRemoteRefreshFailure(key, {
+      consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+      consecutiveTimeouts,
+    });
+    return consecutiveTimeouts;
   };
+  const clearStatusRemoteRefreshFailures = (cacheKey: StatusRemoteRefreshCacheKey) => {
+    statusRemoteRefreshFailures.delete(statusRemoteRefreshFailureKey(cacheKey));
+  };
+  const upstreamStatusNeedsAttention = (cacheKey: StatusRemoteRefreshCacheKey) =>
+    (statusRemoteRefreshFailures.get(statusRemoteRefreshFailureKey(cacheKey))
+      ?.consecutiveTimeouts ?? 0) >= STATUS_UPSTREAM_REFRESH_TIMEOUT_STOP_AFTER;
   const refreshStatusRemoteCacheEntry = Effect.fn("refreshStatusRemoteCacheEntry")(function* (
     cacheKey: StatusRemoteRefreshCacheKey,
   ) {
     return yield* fetchRemoteForStatus(cacheKey.gitCommonDir, cacheKey.remoteName).pipe(
       Effect.tap(() => Effect.sync(() => clearStatusRemoteRefreshFailures(cacheKey))),
-      Effect.tapError(() => Effect.sync(() => recordStatusRemoteRefreshFailure(cacheKey))),
+      Effect.tapError((error) =>
+        Effect.sync(() => recordStatusRemoteRefreshFailure(cacheKey, error)).pipe(
+          Effect.flatMap((consecutiveTimeouts) =>
+            consecutiveTimeouts === STATUS_UPSTREAM_REFRESH_TIMEOUT_STOP_AFTER
+              ? Effect.logWarning(
+                  "Stopped background Git fetch after repeated timeouts; upstream status needs attention",
+                ).pipe(
+                  Effect.annotateLogs({
+                    remoteName: cacheKey.remoteName,
+                    consecutiveTimeouts,
+                  }),
+                )
+              : Effect.void,
+          ),
+        ),
+      ),
       Effect.tapCause((cause) => Effect.logWarning("Background Git fetch failed", cause)),
       Effect.as(true as const),
     );
@@ -1361,17 +1410,43 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const statusRemoteRefreshCache = yield* Cache.makeWith(refreshStatusRemoteCacheEntry, {
     capacity: STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY,
-    // A failed background fetch is intentionally cached and exponentially
-    // backed off. Status reads swallow this failure and use the last fetched
-    // refs, so repeated thread mounts cannot turn a slow or unavailable remote
-    // into a repository-wide Git subprocess storm.
-    timeToLive: (exit, cacheKey) =>
-      Exit.isSuccess(exit)
-        ? STATUS_UPSTREAM_REFRESH_INTERVAL
-        : statusUpstreamRefreshFailureCooldown(
-            statusRemoteRefreshFailureCounts.get(statusRemoteRefreshFailureKey(cacheKey)) ?? 1,
-          ),
+    // A failed background fetch is cached and exponentially backed off. After
+    // repeated timeouts the entry does not expire, so a credential helper that
+    // blocks on a GUI prompt is not spawned again. Status reads keep the last
+    // fetched refs and report that the upstream needs attention. A successful
+    // explicit pull, push, or fetch clears that stop.
+    timeToLive: (exit, cacheKey) => {
+      if (Exit.isSuccess(exit)) return STATUS_UPSTREAM_REFRESH_INTERVAL;
+      const failure = statusRemoteRefreshFailures.get(statusRemoteRefreshFailureKey(cacheKey));
+      if ((failure?.consecutiveTimeouts ?? 0) >= STATUS_UPSTREAM_REFRESH_TIMEOUT_STOP_AFTER) {
+        return Duration.infinity;
+      }
+      return statusUpstreamRefreshFailureCooldown(failure?.consecutiveFailures ?? 1);
+    },
   });
+
+  const releaseStatusUpstreamRefresh = Effect.fn("releaseStatusUpstreamRefresh")(function* (
+    cwd: string,
+    remoteName: string,
+  ) {
+    const gitCommonDir = yield* resolveGitCommonDir(cwd).pipe(
+      Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
+    );
+    if (gitCommonDir === null) return;
+    const cacheKey = new StatusRemoteRefreshCacheKey({ gitCommonDir, remoteName });
+    clearStatusRemoteRefreshFailures(cacheKey);
+    yield* Cache.invalidate(statusRemoteRefreshCache, cacheKey);
+  });
+
+  const releaseTrackedUpstreamStatusRefresh = Effect.fn("releaseTrackedUpstreamStatusRefresh")(
+    function* (cwd: string) {
+      const upstream = yield* resolveCurrentUpstream(cwd).pipe(
+        Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
+      );
+      if (!upstream) return;
+      yield* releaseStatusUpstreamRefresh(cwd, upstream.remoteName);
+    },
+  );
 
   const refreshStatusUpstreamIfStale = Effect.fn("refreshStatusUpstreamIfStale")(function* (
     cwd: string,
@@ -1379,14 +1454,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const upstream = yield* resolveCurrentUpstream(cwd);
     if (!upstream) return;
     const gitCommonDir = yield* resolveGitCommonDir(cwd);
+    const cacheKey = new StatusRemoteRefreshCacheKey({
+      gitCommonDir,
+      remoteName: upstream.remoteName,
+    });
+    // Stopped remotes stay stopped until an explicit pull, push, or fetch succeeds.
+    if (upstreamStatusNeedsAttention(cacheKey)) return;
     // The cache loader logs failed attempts; cache hits keep using the last fetched refs.
-    yield* Cache.get(
-      statusRemoteRefreshCache,
-      new StatusRemoteRefreshCacheKey({
-        gitCommonDir,
-        remoteName: upstream.remoteName,
-      }),
-    ).pipe(Effect.ignore);
+    yield* Cache.get(statusRemoteRefreshCache, cacheKey).pipe(Effect.ignore);
   });
 
   const resolveDefaultBranchName = (
@@ -1679,6 +1754,20 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ? aheadCount
           : yield* computeAheadCountAgainstBase(cwd, branch).pipe(Effect.orElseSucceed(() => 0))
         : 0;
+    const upstreamNeedsAttention =
+      upstream === null
+        ? false
+        : yield* resolveGitCommonDir(cwd).pipe(
+            Effect.map((gitCommonDir) =>
+              upstreamStatusNeedsAttention(
+                new StatusRemoteRefreshCacheKey({
+                  gitCommonDir,
+                  remoteName: upstream.remoteName,
+                }),
+              ),
+            ),
+            Effect.catchTags({ GitCommandError: () => Effect.succeed(false) }),
+          );
 
     return {
       isRepo: true,
@@ -1690,6 +1779,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       aheadCount,
       behindCount,
       aheadOfDefaultCount,
+      upstreamNeedsAttention,
     };
   });
 
@@ -3675,8 +3765,19 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     commit: (cwd, subject, body, options) =>
       withListRefsInvalidation(cwd, commit(cwd, subject, body, options)),
     pushCurrentBranch: (cwd, fallbackBranch, options) =>
-      withListRefsInvalidation(cwd, pushCurrentBranch(cwd, fallbackBranch, options)),
-    pullCurrentBranch: (cwd) => withListRefsInvalidation(cwd, pullCurrentBranch(cwd)),
+      withListRefsInvalidation(
+        cwd,
+        pushCurrentBranch(cwd, fallbackBranch, options).pipe(
+          Effect.tap((result) =>
+            result.status === "pushed" ? releaseTrackedUpstreamStatusRefresh(cwd) : Effect.void,
+          ),
+        ),
+      ),
+    pullCurrentBranch: (cwd) =>
+      withListRefsInvalidation(
+        cwd,
+        pullCurrentBranch(cwd).pipe(Effect.tap(() => releaseTrackedUpstreamStatusRefresh(cwd))),
+      ),
     readRangeContext,
     getReviewDiffPreview,
     getReviewDiffFileContents,
@@ -3693,13 +3794,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     ensureRemote: (input) => withListRefsInvalidation(input.cwd, ensureRemote(input)),
     resolvePrimaryRemoteName,
     resolveDefaultBranchName,
-    fetchRemote: (input) => withListRefsInvalidation(input.cwd, fetchRemote(input)),
+    fetchRemote: (input) =>
+      withListRefsInvalidation(
+        input.cwd,
+        fetchRemote(input).pipe(
+          Effect.tap(() => releaseStatusUpstreamRefresh(input.cwd, input.remoteName)),
+        ),
+      ),
     remoteExists,
     remoteBranchExists,
     resolveRemoteTrackingCommit,
-    fetchRemoteBranch: (input) => withListRefsInvalidation(input.cwd, fetchRemoteBranch(input)),
+    fetchRemoteBranch: (input) =>
+      withListRefsInvalidation(
+        input.cwd,
+        fetchRemoteBranch(input).pipe(
+          Effect.tap(() => releaseStatusUpstreamRefresh(input.cwd, input.remoteName)),
+        ),
+      ),
     fetchRemoteTrackingBranch: (input) =>
-      withListRefsInvalidation(input.cwd, fetchRemoteTrackingBranch(input)),
+      withListRefsInvalidation(
+        input.cwd,
+        fetchRemoteTrackingBranch(input).pipe(
+          Effect.tap(() => releaseStatusUpstreamRefresh(input.cwd, input.remoteName)),
+        ),
+      ),
     setBranchUpstream: (input) => withListRefsInvalidation(input.cwd, setBranchUpstream(input)),
     removeWorktree: (input) => withListRefsInvalidation(input.cwd, removeWorktree(input)),
     pruneWorktrees: (input) => withListRefsInvalidation(input.cwd, pruneWorktrees(input)),
