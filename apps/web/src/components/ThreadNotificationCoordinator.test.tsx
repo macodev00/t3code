@@ -17,6 +17,8 @@ const state = vi.hoisted(() => ({
   approval: false,
   sessionError: false,
   turnError: false,
+  backgroundLiveness: null as "working" | "monitoring" | null,
+  sessionStatus: null as "running" | "starting" | "ready" | null,
   add: vi.fn(
     (_toast: { title: string; description: string; actionProps: { onClick: () => void } }) =>
       "toast-1",
@@ -40,7 +42,12 @@ vi.mock("@effect/atom-react", () => ({
           archivedAt: state.archivedAt,
           hasPendingUserInput: state.input,
           hasPendingApprovals: state.approval,
-          session: state.sessionError ? { status: "error" } : null,
+          backgroundLiveness: state.backgroundLiveness,
+          session: state.sessionError
+            ? { status: "error" }
+            : state.sessionStatus
+              ? { status: state.sessionStatus }
+              : null,
           latestTurn: {
             turnId: "turn-1",
             state: state.turnError ? "error" : state.completedAt ? "completed" : "running",
@@ -109,6 +116,8 @@ beforeEach(() => {
     approval: false,
     sessionError: false,
     turnError: false,
+    backgroundLiveness: null,
+    sessionStatus: null,
   });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", new EventTarget());
@@ -237,6 +246,65 @@ describe("thread notifications", () => {
     expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
     expect(state.add).toHaveBeenCalledTimes(1);
     expect(state.notification).not.toHaveBeenCalled();
+  });
+
+  it("alerts a failure immediately while background work is live", async () => {
+    state.mode = "notifications-and-sound";
+    state.backgroundLiveness = "working";
+    await render();
+    state.sessionError = true;
+    await render();
+    expect(state.add).toHaveBeenCalledTimes(1);
+    expect(state.add).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Thread failed" }));
+    expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
+  });
+
+  it("alerts an approval immediately while background work is live", async () => {
+    state.mode = "notifications-and-sound";
+    state.backgroundLiveness = "working";
+    await render();
+    state.approval = true;
+    await render();
+    expect(state.add).toHaveBeenCalledTimes(1);
+    expect(state.add).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: "Approval needed" }),
+    );
+    expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
+  });
+
+  it("alerts once when background work ends and the agent does not resume", async () => {
+    state.mode = "notifications-and-sound";
+    state.backgroundLiveness = "monitoring";
+    state.completedAt = "2026-09-13T10:00:00.000Z";
+    await render();
+    state.backgroundLiveness = null;
+    await render();
+    expect(state.sound).toHaveBeenCalledTimes(1);
+    expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
+    expect(state.add).toHaveBeenCalledTimes(1);
+    expect(state.add).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: "Thread completed" }),
+    );
+  });
+
+  it("alerts the follow-up once when background work hands off to a running turn", async () => {
+    state.mode = "notifications-and-sound";
+    state.backgroundLiveness = "working";
+    state.completedAt = "2026-09-13T10:00:00.000Z";
+    await render();
+    state.backgroundLiveness = null;
+    state.sessionStatus = "running";
+    state.completedAt = null;
+    await render();
+    expect(state.sound).not.toHaveBeenCalled();
+    expect(state.add).not.toHaveBeenCalled();
+
+    state.sessionStatus = null;
+    state.completedAt = "2026-09-13T10:05:00.000Z";
+    await render();
+    expect(state.sound).toHaveBeenCalledTimes(1);
+    expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
+    expect(state.add).toHaveBeenCalledTimes(1);
   });
 
   it("keeps system alerts when the app is in the background", async () => {

@@ -2064,6 +2064,16 @@ function sdkNativeItemId(message: SDKMessage): string | undefined {
   return undefined;
 }
 
+/**
+ * True when a task notification arrives with no turn open. The CLI delivers
+ * that result back to the model, and the next assistant message starts the
+ * follow-up. Callers mark the completion so sidebar liveness stays working
+ * until that turn starts.
+ */
+function claudeTaskNotificationResumesProvider(context: ClaudeSessionContext): boolean {
+  return context.turnState === undefined;
+}
+
 export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   claudeSettings: ClaudeSettings,
   options?: ClaudeAdapterLiveOptions,
@@ -3567,6 +3577,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   });
 
+  /**
+   * Map one Claude SDK system message onto provider runtime events.
+   * Task notifications that arrive with no turn open are marked as resuming
+   * the provider so the waiting turn is not announced done.
+   */
   const handleSystemMessage = Effect.fn("handleSystemMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -3835,6 +3850,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
       case "task_notification": {
         context.liveTaskIds.delete(message.task_id);
+        const resumesProvider = claudeTaskNotificationResumesProvider(context);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3854,6 +3870,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(message.usage ? { usage: message.usage } : {}),
             ...(typedUsage ? { typedUsage } : {}),
             ...(message.output_file ? { outputFile: message.output_file } : {}),
+            ...(resumesProvider ? { resumesProvider: true } : {}),
             ...taskLinkageFor(context.taskAgents, message.task_id),
           },
         });
