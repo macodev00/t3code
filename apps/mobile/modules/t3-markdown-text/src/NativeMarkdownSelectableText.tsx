@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import { decodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import {
   findNodeHandle,
@@ -7,11 +7,14 @@ import {
   Platform,
   StyleSheet,
   Text as RNText,
+  type AccessibilityActionEvent,
+  type GestureResponderEvent,
   type TextStyle,
   useColorScheme,
   View,
 } from "react-native";
 
+import { stepAndroidLinkPress, type AndroidLinkGesture } from "./androidLinkPress";
 import { MarkdownTextPrimitive } from "./MarkdownTextPrimitive";
 import { markdownFileIconSource } from "./markdownFileIcons";
 import { markdownLinkIconSource } from "./markdownLinkIcons";
@@ -192,6 +195,17 @@ function runStyle(run: NativeMarkdownTextRun, textStyle: NativeMarkdownTextStyle
   };
 }
 
+/** Opens a markdown link through the block callback, or the system URL handler. */
+function openMarkdownLink(href: string, onLinkPress: ((href: string) => void) | undefined) {
+  if (onLinkPress) onLinkPress(href);
+  else void Linking.openURL(href);
+}
+
+/**
+ * Renders one selectable markdown text block.
+ * On Android, a link still opens on tap, and a finger that has moved far enough
+ * to select text does not open it.
+ */
 export function NativeMarkdownSelectableText(props: {
   readonly runs: ReadonlyArray<NativeMarkdownTextRun>;
   readonly textStyle: NativeMarkdownTextStyle;
@@ -325,6 +339,45 @@ export function NativeMarkdownSelectableText(props: {
     props.textStyle.dividerColor,
     props.textStyle.contextChipBorderColor,
   ].join(":");
+  // One gesture for the block: a nested link is not a real view, so only one
+  // press is live. Read it from the handlers below, never while rendering.
+  const androidLinkGesture = useRef<AndroidLinkGesture | null>(null);
+
+  /** Records where an Android markdown link press started. */
+  function beginAndroidMarkdownLinkPress(event: GestureResponderEvent) {
+    androidLinkGesture.current = stepAndroidLinkPress(
+      androidLinkGesture.current,
+      "start",
+      event,
+    ).gesture;
+  }
+
+  /** Marks the press as a selection drag once the finger passes the slop. */
+  function trackAndroidMarkdownLinkPress(event: GestureResponderEvent) {
+    androidLinkGesture.current = stepAndroidLinkPress(
+      androidLinkGesture.current,
+      "move",
+      event,
+    ).gesture;
+  }
+
+  /** Drops a press the responder system cancelled before finger-up. */
+  function cancelAndroidMarkdownLinkPress() {
+    androidLinkGesture.current = stepAndroidLinkPress(androidLinkGesture.current, "cancel").gesture;
+  }
+
+  /**
+   * Opens a markdown link on finger-up.
+   * On Android, a selection drag leaves the native selection in place instead.
+   */
+  function pressMarkdownLink(href: string, event: GestureResponderEvent) {
+    if (Platform.OS === "android") {
+      const transition = stepAndroidLinkPress(androidLinkGesture.current, "end", event);
+      androidLinkGesture.current = transition.gesture;
+      if (!transition.open) return;
+    }
+    openMarkdownLink(href, props.onLinkPress);
+  }
 
   return (
     <MarkdownTextPrimitive
@@ -352,12 +405,17 @@ export function NativeMarkdownSelectableText(props: {
       {keyedRuns.map(({ key, run, text, linkIcon, chip, androidChip }) => {
         const href = run.href;
         const contextMenu = run.fileIcon && href ? menu?.fileContextMenu(href) : undefined;
-        const onPress = href
-          ? () => {
-              if (props.onLinkPress) props.onLinkPress(href);
-              else void Linking.openURL(href);
-            }
-          : undefined;
+        const androidLink = href != null && Platform.OS === "android";
+        /** Opens this link unless the Android gesture was a text-selection drag. */
+        function openPressedLink(event: GestureResponderEvent) {
+          if (href) pressMarkdownLink(href, event);
+        }
+        /** Accessibility activate opens the link even when a drag is in progress. */
+        function activateLink(event: AccessibilityActionEvent) {
+          if (event.nativeEvent.actionName === "activate" && href) {
+            openMarkdownLink(href, props.onLinkPress);
+          }
+        }
         return (
           <MarkdownTextPrimitive
             key={key}
@@ -380,7 +438,14 @@ export function NativeMarkdownSelectableText(props: {
               runStyle(run, props.textStyle),
               chip ? { backgroundColor: "transparent" } : undefined,
             ]}
-            onPress={onPress}
+            onPress={href ? openPressedLink : undefined}
+            {...(androidLink
+              ? {
+                  onPressIn: beginAndroidMarkdownLinkPress,
+                  onResponderMove: trackAndroidMarkdownLinkPress,
+                  onResponderTerminate: cancelAndroidMarkdownLinkPress,
+                }
+              : {})}
             onContextMenuAction={
               contextMenu && href && menu
                 ? (event) => menu.onFileContextMenuAction(href, event.nativeEvent.actionIdentifier)
@@ -394,15 +459,9 @@ export function NativeMarkdownSelectableText(props: {
               <View
                 accessible
                 accessibilityLabel={chip?.label}
-                accessibilityRole={onPress ? "button" : "image"}
-                accessibilityActions={onPress ? [{ name: "activate" }] : undefined}
-                onAccessibilityAction={
-                  onPress
-                    ? (event) => {
-                        if (event.nativeEvent.actionName === "activate") onPress();
-                      }
-                    : undefined
-                }
+                accessibilityRole={href ? "button" : "image"}
+                accessibilityActions={href ? [{ name: "activate" }] : undefined}
+                onAccessibilityAction={href ? activateLink : undefined}
                 style={{ width: androidChip.width, height: androidChip.boxHeight }}
               >
                 <Image
