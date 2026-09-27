@@ -4784,6 +4784,66 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe("# Plan title");
   });
 
+  it("treats OpenCode child task status as background liveness without moving the idle clock", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const provider = ProviderDriverKind.make("opencode");
+    const threadId = asThreadId("thread-1");
+
+    const childStatus = (
+      eventId: string,
+      taskId: string,
+      status: "running" | "idle",
+      createdAt: string,
+    ) => ({
+      type: "task.updated" as const,
+      eventId: asEventId(eventId),
+      provider,
+      createdAt,
+      threadId,
+      payload: {
+        taskId,
+        status,
+        taskType: "subagent",
+        description: taskId,
+        title: taskId,
+      },
+    });
+
+    await harness.emitAndDrain([
+      childStatus("evt-child-a-running", "ses_a", "running", now),
+      childStatus("evt-child-b-running", "ses_b", "running", now),
+    ]);
+    const live = await harness.readThreadShell();
+    expect(live.backgroundLiveness).toBe("working");
+    expect(live.session?.activeTurnId ?? null).toBeNull();
+    expect(live.session?.updatedAt).toBe(now);
+
+    await harness.emitAndDrain([childStatus("evt-child-a-idle", "ses_a", "idle", now)]);
+    expect((await harness.readThreadShell()).backgroundLiveness).toBe("working");
+
+    await harness.emitAndDrain([childStatus("evt-child-b-idle", "ses_b", "idle", now)]);
+    expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
+
+    await harness.emitAndDrain([
+      childStatus("evt-child-a-resumed", "ses_a", "running", "2026-01-01T00:00:01.000Z"),
+    ]);
+    expect((await harness.readThreadShell()).backgroundLiveness).toBe("working");
+    expect((await harness.readThreadShell()).session?.updatedAt).toBe(now);
+
+    await harness.emitAndDrain([
+      {
+        type: "session.exited",
+        eventId: asEventId("evt-opencode-child-session-exited"),
+        provider,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        threadId,
+        payload: {},
+      },
+    ]);
+    expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
+  });
+
   it("titles task activities with the task description, including on completion", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

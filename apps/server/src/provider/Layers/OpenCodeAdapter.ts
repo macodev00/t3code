@@ -8,6 +8,7 @@ import {
   type ProviderSession,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   ThreadId,
   type ToolLifecycleItemType,
   type TurnTokenUsage,
@@ -319,6 +320,94 @@ function isOpenCodeChildRequestEvent(event: OpenCodeSubscribedEvent): boolean {
   }
 }
 
+/**
+ * Liveness status a related OpenCode child session contributes to the
+ * thread's background-work registry.
+ *
+ * `running` keeps the provider session alive. `idle` drops that child.
+ */
+export type OpenCodeChildLiveness = "running" | "idle";
+
+/**
+ * Label used when a related child has no real session title.
+ *
+ * OpenCode's placeholder titles (`Child session - <timestamp>`) are not
+ * names, so the task row falls back to this instead of locking onto them.
+ */
+const OPENCODE_CHILD_SESSION_DESCRIPTION = "Background agent";
+
+/**
+ * Map an OpenCode child `session.status` type onto the task status the
+ * background-liveness registry already understands.
+ *
+ * `busy` and `retry` are in-flight provider work and count as `running`.
+ * `idle` clears that child. Any other type is ignored so a future OpenCode
+ * status cannot drop a child that is still running.
+ */
+export function openCodeChildSessionLivenessStatus(
+  statusType: string,
+): OpenCodeChildLiveness | undefined {
+  switch (statusType) {
+    case "busy":
+    case "retry":
+      return "running";
+    case "idle":
+      return "idle";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The next liveness status to forward, or `undefined` when this observation
+ * does not change the registry.
+ *
+ * Repeated `busy`/`retry` while a child is already live must not emit another
+ * task row. `idle` only clears a child that was live. A later `busy` or
+ * `retry` after `idle` starts it again.
+ */
+export function nextOpenCodeChildLivenessStatus(
+  previous: OpenCodeChildLiveness | undefined,
+  next: OpenCodeChildLiveness,
+): OpenCodeChildLiveness | undefined {
+  if (previous === next) {
+    return undefined;
+  }
+  if (next === "idle" && previous !== "running") {
+    return undefined;
+  }
+  return next;
+}
+
+/**
+ * `task.updated` payload for one related OpenCode child session.
+ *
+ * The task id is the child session id, so one child's idle does not clear
+ * its siblings. The registry treats `running` as live work and `idle` as
+ * not live, which is what keeps the session reaper from stopping a settled
+ * thread while background subagents are still streaming.
+ */
+export function openCodeChildSessionTaskUpdate(input: {
+  readonly sessionId: string;
+  readonly status: OpenCodeChildLiveness;
+  readonly title?: string | undefined;
+}): {
+  readonly taskId: RuntimeTaskId;
+  readonly status: OpenCodeChildLiveness;
+  readonly taskType: "subagent";
+  readonly description: string;
+  readonly title: string;
+} {
+  const label = input.title?.trim() || OPENCODE_CHILD_SESSION_DESCRIPTION;
+  return {
+    taskId: RuntimeTaskId.make(input.sessionId),
+    status: input.status,
+    taskType: "subagent",
+    description: label,
+    title: label,
+  };
+}
+
 const OPENCODE_DEFAULT_TITLE_PATTERN =
   /^(New session - |Child session - )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -343,6 +432,13 @@ interface OpenCodeSessionContext {
   readonly directory: string;
   openCodeSessionId: string;
   readonly relatedSessionIds: Set<string>;
+  /**
+   * Last liveness status forwarded for a related child. Repeated busy/retry
+   * while a child is already live does not emit another task row.
+   */
+  readonly childSessionLiveness: Map<string, OpenCodeChildLiveness>;
+  /** Real titles for related children. Placeholder OpenCode titles are omitted. */
+  readonly childSessionTitles: Map<string, string>;
   readonly resolvedRequestIds: Set<string>;
   readonly autoRepliedRequestIds: Set<string>;
   readonly emittedTerminalRequestIds: Set<string>;
@@ -1674,6 +1770,78 @@ export function makeOpenCodeAdapter(
       }
     };
 
+    /**
+     * Remember a related child's display title when OpenCode assigned a real
+     * one. Placeholder titles are ignored so a later liveness row does not
+     * lock onto `Child session - <timestamp>`.
+     */
+    const rememberOpenCodeChildSessionTitle = (
+      context: OpenCodeSessionContext,
+      sessionId: string,
+      title: string,
+    ) => {
+      const trimmed = trimText(title);
+      if (!trimmed || isOpenCodeDefaultTitle(trimmed)) {
+        return;
+      }
+      context.childSessionTitles.set(sessionId, trimmed);
+    };
+
+    /**
+     * Forward one child-session liveness transition as `task.updated`.
+     *
+     * OpenCode background subagents keep the provider process busy after the
+     * parent turn settles, but they never emit `task.*`. The reaper already
+     * skips a thread while `backgroundLiveness` is set; this is the signal
+     * that fills it. Child status does not touch the parent turn.
+     */
+    const recordOpenCodeChildSessionLiveness = Effect.fn("recordOpenCodeChildSessionLiveness")(
+      function* (
+        context: OpenCodeSessionContext,
+        sessionId: string,
+        next: OpenCodeChildLiveness,
+        raw: unknown,
+      ) {
+        const status = nextOpenCodeChildLivenessStatus(
+          context.childSessionLiveness.get(sessionId),
+          next,
+        );
+        if (status === undefined) {
+          return;
+        }
+        yield* emit({
+          ...(yield* buildEventBase({
+            threadId: context.session.threadId,
+            raw,
+          })),
+          type: "task.updated",
+          payload: openCodeChildSessionTaskUpdate({
+            sessionId,
+            status,
+            title: context.childSessionTitles.get(sessionId),
+          }),
+        });
+        context.childSessionLiveness.set(sessionId, status);
+      },
+    );
+
+    /**
+     * Drop every tracked child from the liveness registry.
+     *
+     * Used when the parent session is replaced (rewind/fork) and the previous
+     * children no longer belong to this thread. Only children that were live
+     * emit `idle`; the rest were already clear.
+     */
+    const clearOpenCodeChildSessionLiveness = Effect.fn("clearOpenCodeChildSessionLiveness")(
+      function* (context: OpenCodeSessionContext, raw: unknown) {
+        for (const sessionId of context.childSessionLiveness.keys()) {
+          yield* recordOpenCodeChildSessionLiveness(context, sessionId, "idle", raw);
+        }
+        context.childSessionLiveness.clear();
+        context.childSessionTitles.clear();
+      },
+    );
+
     const isRelatedOpenCodeSession = Effect.fn("isRelatedOpenCodeSession")(function* (
       context: OpenCodeSessionContext,
       candidateSessionId: string,
@@ -2175,6 +2343,13 @@ export function makeOpenCodeAdapter(
       yield* run.pipe(Effect.forkIn(context.sessionScope));
     });
 
+    /**
+     * Route one OpenCode subscription event into runtime events.
+     *
+     * Parent `session.status` still owns turn admission and completion.
+     * Related child `session.status` is forwarded as background-task liveness
+     * and does not settle the parent turn.
+     */
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
@@ -2225,9 +2400,16 @@ export function makeOpenCodeAdapter(
         const session = event.properties.info;
         if (session.parentID && context.relatedSessionIds.has(session.parentID)) {
           addRelatedOpenCodeSession(context, session.id);
+          rememberOpenCodeChildSessionTitle(context, session.id, session.title);
         }
       } else if (event.type === "session.deleted") {
-        context.relatedSessionIds.delete(event.properties.info.id);
+        const deletedId = event.properties.info.id;
+        if (deletedId !== context.openCodeSessionId && context.relatedSessionIds.has(deletedId)) {
+          yield* recordOpenCodeChildSessionLiveness(context, deletedId, "idle", event);
+        }
+        context.relatedSessionIds.delete(deletedId);
+        context.childSessionLiveness.delete(deletedId);
+        context.childSessionTitles.delete(deletedId);
       }
 
       const payloadSessionId = openCodeEventSessionId(event);
@@ -2260,7 +2442,14 @@ export function makeOpenCodeAdapter(
         payloadSessionId !== undefined &&
         isOpenCodeChildRequestEvent(event) &&
         (context.relatedSessionIds.has(payloadSessionId) || isKnownPendingTerminalEvent);
-      if (!isParentEvent && !isChildRequestEvent) {
+      // Related child `session.status` is the liveness signal for OpenCode
+      // background subagents. Permission/question events are not.
+      const isRelatedChildStatusEvent =
+        event.type === "session.status" &&
+        payloadSessionId !== undefined &&
+        !isParentEvent &&
+        context.relatedSessionIds.has(payloadSessionId);
+      if (!isParentEvent && !isChildRequestEvent && !isRelatedChildStatusEvent) {
         return;
       }
 
@@ -2587,6 +2776,13 @@ export function makeOpenCodeAdapter(
         }
 
         case "session.status": {
+          if (!isParentEvent && payloadSessionId !== undefined) {
+            const liveness = openCodeChildSessionLivenessStatus(event.properties.status.type);
+            if (liveness !== undefined) {
+              yield* recordOpenCodeChildSessionLiveness(context, payloadSessionId, liveness, event);
+            }
+            break;
+          }
           if (event.properties.status.type === "busy" || event.properties.status.type === "retry") {
             if (turnId === undefined) {
               break;
@@ -3010,6 +3206,8 @@ export function makeOpenCodeAdapter(
           directory,
           openCodeSessionId: started.openCodeSession.id,
           relatedSessionIds: new Set([started.openCodeSession.id]),
+          childSessionLiveness: new Map(),
+          childSessionTitles: new Map(),
           resolvedRequestIds: new Set(),
           autoRepliedRequestIds: new Set(),
           emittedTerminalRequestIds: new Set(),
@@ -3912,6 +4110,11 @@ export function makeOpenCodeAdapter(
       },
     );
 
+    /**
+     * Rewind the thread by forking a new OpenCode session at the retained
+     * boundary. Children of the session being replaced are cleared from
+     * background liveness because they no longer belong to this thread.
+     */
     const rollbackThread: OpenCodeAdapterShape["rollbackThread"] = Effect.fn("rollbackThread")(
       function* (threadId, numTurns) {
         const context = yield* ensureSessionContext(sessions, threadId);
@@ -3972,6 +4175,7 @@ export function makeOpenCodeAdapter(
             }),
           ).pipe(Effect.mapError(toRequestError));
           yield* clearPendingOpenCodeRequests(context, { type: "session.fork" });
+          yield* clearOpenCodeChildSessionLiveness(context, { type: "session.fork" });
           context.openCodeSessionId = forkedSessionId;
           context.relatedSessionIds.clear();
           context.relatedSessionIds.add(forkedSessionId);

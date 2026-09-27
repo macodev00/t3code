@@ -47,6 +47,9 @@ import {
   isSameOpenCodeDirectory,
   makeOpenCodeAdapter,
   mergeOpenCodeAssistantText,
+  nextOpenCodeChildLivenessStatus,
+  openCodeChildSessionLivenessStatus,
+  openCodeChildSessionTaskUpdate,
 } from "./OpenCodeAdapter.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
@@ -665,6 +668,41 @@ const questionRequest = (id: string, sessionID: string): QuestionRequest => ({
     },
   ],
 });
+
+it.effect("maps related OpenCode child session status onto background liveness", () =>
+  Effect.sync(() => {
+    NodeAssert.equal(openCodeChildSessionLivenessStatus("busy"), "running");
+    NodeAssert.equal(openCodeChildSessionLivenessStatus("retry"), "running");
+    NodeAssert.equal(openCodeChildSessionLivenessStatus("idle"), "idle");
+    NodeAssert.equal(openCodeChildSessionLivenessStatus("paused"), undefined);
+
+    NodeAssert.equal(nextOpenCodeChildLivenessStatus(undefined, "running"), "running");
+    NodeAssert.equal(nextOpenCodeChildLivenessStatus("running", "running"), undefined);
+    NodeAssert.equal(nextOpenCodeChildLivenessStatus("running", "idle"), "idle");
+    NodeAssert.equal(nextOpenCodeChildLivenessStatus(undefined, "idle"), undefined);
+    NodeAssert.equal(nextOpenCodeChildLivenessStatus("idle", "idle"), undefined);
+    NodeAssert.equal(nextOpenCodeChildLivenessStatus("idle", "running"), "running");
+
+    NodeAssert.deepEqual(
+      openCodeChildSessionTaskUpdate({
+        sessionId: "ses_child",
+        status: "running",
+        title: " Research agent ",
+      }),
+      {
+        taskId: "ses_child",
+        status: "running",
+        taskType: "subagent",
+        description: "Research agent",
+        title: "Research agent",
+      },
+    );
+    NodeAssert.equal(
+      openCodeChildSessionTaskUpdate({ sessionId: "ses_child", status: "idle" }).description,
+      "Background agent",
+    );
+  }),
+);
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
@@ -4214,6 +4252,275 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
       const resolved = yield* Fiber.join(resolvedEventFiber).pipe(Effect.timeout("1 second"));
       NodeAssert.equal(Option.getOrUndefined(resolved)?.type, "request.resolved");
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect(
+    "records related child session status as background liveness without touching the parent turn",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-child-liveness");
+        const parentSessionId = "http://127.0.0.1:9999/session";
+        const enqueue = makeOpenCodeEventQueue();
+        const updatesFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "task.updated"),
+          Stream.take(5),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        const completedFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "busy" } },
+        });
+        enqueue({
+          type: "session.created",
+          properties: {
+            info: {
+              id: "ses_research",
+              parentID: parentSessionId,
+              title: "Research agent",
+            },
+          },
+        });
+        enqueue({
+          type: "session.created",
+          properties: {
+            info: {
+              id: "ses_unrelated",
+              parentID: "ses_other_parent",
+              title: "Someone else",
+            },
+          },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_unrelated", status: { type: "busy" } },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "busy" } },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "busy" } },
+        });
+        enqueue({
+          type: "session.status",
+          properties: {
+            sessionID: "ses_research",
+            status: { type: "retry", attempt: 2, message: "rate limit", next: 10 },
+          },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "paused" } },
+        });
+        enqueue({
+          type: "session.created",
+          properties: {
+            info: {
+              id: "ses_nested",
+              parentID: "ses_research",
+              title: "Child session - 2026-09-24T21:48:38.700Z",
+            },
+          },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_nested", status: { type: "busy" } },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "idle" } },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "idle" } },
+        });
+        enqueue({
+          type: "session.deleted",
+          properties: { info: { id: "ses_nested" } },
+        });
+        enqueue({
+          type: "session.status",
+          properties: {
+            sessionID: "ses_research",
+            status: { type: "retry", attempt: 3, message: "again", next: 20 },
+          },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: parentSessionId, status: { type: "idle" } },
+        });
+
+        const updates = Array.from(
+          yield* Fiber.join(updatesFiber).pipe(Effect.timeout("1 second")),
+        );
+        NodeAssert.deepEqual(
+          updates.map((event) =>
+            event.type === "task.updated"
+              ? {
+                  taskId: event.payload.taskId,
+                  status: event.payload.status,
+                  description: event.payload.description,
+                  title: event.payload.title,
+                  taskType: event.payload.taskType,
+                  turnId: event.turnId,
+                }
+              : null,
+          ),
+          [
+            {
+              taskId: "ses_research",
+              status: "running",
+              description: "Research agent",
+              title: "Research agent",
+              taskType: "subagent",
+              turnId: undefined,
+            },
+            {
+              taskId: "ses_nested",
+              status: "running",
+              description: "Background agent",
+              title: "Background agent",
+              taskType: "subagent",
+              turnId: undefined,
+            },
+            {
+              taskId: "ses_research",
+              status: "idle",
+              description: "Research agent",
+              title: "Research agent",
+              taskType: "subagent",
+              turnId: undefined,
+            },
+            {
+              taskId: "ses_nested",
+              status: "idle",
+              description: "Background agent",
+              title: "Background agent",
+              taskType: "subagent",
+              turnId: undefined,
+            },
+            {
+              taskId: "ses_research",
+              status: "running",
+              description: "Research agent",
+              title: "Research agent",
+              taskType: "subagent",
+              turnId: undefined,
+            },
+          ],
+        );
+        NodeAssert.equal(completedFiber.pollUnsafe(), undefined);
+        const session = (yield* adapter.listSessions()).find(
+          (candidate) => candidate.threadId === threadId,
+        );
+        NodeAssert.equal(session?.activeTurnId, undefined);
+        NodeAssert.notEqual(session?.status, "running");
+
+        yield* Fiber.interrupt(completedFiber);
+        yield* adapter.stopSession(threadId);
+      }),
+  );
+
+  it.effect("keeps the parent turn running when a related child session goes idle", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-opencode-child-liveness-turn");
+      const parentSessionId = "http://127.0.0.1:9999/session";
+      runtimeMock.state.sessionStatus = "busy";
+      const enqueue = makeOpenCodeEventQueue();
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const childUpdatesFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "task.updated"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Run the suite in the background",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+      enqueue({
+        type: "session.created",
+        properties: {
+          info: {
+            id: "ses_live",
+            parentID: parentSessionId,
+            title: "Browser run",
+          },
+        },
+      });
+      enqueue({
+        type: "session.status",
+        properties: { sessionID: "ses_live", status: { type: "busy" } },
+      });
+      enqueue({
+        type: "session.status",
+        properties: { sessionID: "ses_live", status: { type: "idle" } },
+      });
+
+      const childUpdates = Array.from(
+        yield* Fiber.join(childUpdatesFiber).pipe(Effect.timeout("1 second")),
+      );
+      NodeAssert.deepEqual(
+        childUpdates.map((event) =>
+          event.type === "task.updated" ? event.payload.status : undefined,
+        ),
+        ["running", "idle"],
+      );
+      NodeAssert.equal(
+        childUpdates.every((event) => event.turnId === undefined),
+        true,
+      );
+      NodeAssert.equal(completedFiber.pollUnsafe(), undefined);
+      NodeAssert.equal(
+        (yield* adapter.listSessions()).find((candidate) => candidate.threadId === threadId)
+          ?.activeTurnId,
+        turn.turnId,
+      );
+
+      enqueue({
+        type: "session.status",
+        properties: { sessionID: parentSessionId, status: { type: "idle" } },
+      });
+      const completed = Option.getOrThrow(
+        yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
+      );
+      NodeAssert.equal(
+        completed.type === "turn.completed" ? completed.turnId : undefined,
+        turn.turnId,
+      );
 
       yield* adapter.stopSession(threadId);
     }),
