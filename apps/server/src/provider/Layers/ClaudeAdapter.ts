@@ -2070,6 +2070,30 @@ function sdkNativeItemId(message: SDKMessage): string | undefined {
   return undefined;
 }
 
+/**
+ * True when a task notification arrives with no turn open. The CLI delivers
+ * that result back to the model, and the next assistant message starts the
+ * follow-up. Callers mark the completion so sidebar liveness stays working
+ * until that turn starts.
+ *
+ * @param context - Live Claude session, including whether a turn is open.
+ * @returns Whether this notification should keep background liveness working.
+ */
+function claudeTaskNotificationResumesProvider(context: ClaudeSessionContext): boolean {
+  return context.turnState === undefined;
+}
+
+/**
+ * Build the Claude provider adapter for one settings payload.
+ *
+ * Task notifications that arrive with no turn open are marked
+ * `resumesProvider` so background liveness stays working until the
+ * follow-up turn starts.
+ *
+ * @param claudeSettings - Claude CLI settings captured for this instance.
+ * @param options - Optional instance id, model catalog, and query factory.
+ * @returns The adapter that maps the Claude SDK onto provider runtime events.
+ */
 export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   claudeSettings: ClaudeSettings,
   options?: ClaudeAdapterLiveOptions,
@@ -3576,6 +3600,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
   });
 
+  /**
+   * Map one Claude SDK system message onto provider runtime events.
+   * Task notifications that arrive with no turn open are marked as resuming
+   * the provider so the waiting turn is not announced done.
+   *
+   * @param context - Session that owns the open turn and live tasks.
+   * @param message - One SDK message. Non-system messages are ignored.
+   */
   const handleSystemMessage = Effect.fn("handleSystemMessage")(function* (
     context: ClaudeSessionContext,
     message: SDKMessage,
@@ -3844,6 +3876,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
       case "task_notification": {
         context.liveTaskIds.delete(message.task_id);
+        const resumesProvider = claudeTaskNotificationResumesProvider(context);
         yield* emitThreadTokenUsage(
           context,
           normalizeClaudeTaskProgressTokenUsage(message.usage, context),
@@ -3863,6 +3896,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ...(message.usage ? { usage: message.usage } : {}),
             ...(typedUsage ? { typedUsage } : {}),
             ...(message.output_file ? { outputFile: message.output_file } : {}),
+            ...(resumesProvider ? { resumesProvider: true } : {}),
             ...taskLinkageFor(context.taskAgents, message.task_id),
           },
         });

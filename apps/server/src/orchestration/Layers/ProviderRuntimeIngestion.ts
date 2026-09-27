@@ -1039,6 +1039,15 @@ export function runtimeEventToActivities(
   return [];
 }
 
+/**
+ * Subscribe to provider runtime events and fold them into thread commands,
+ * activities, and in-memory background liveness.
+ *
+ * A waking task completion keeps that liveness working until the follow-up
+ * turn starts, so the shell does not read as ready in the gap.
+ *
+ * @returns The ingestion service, with `start` and `drain`.
+ */
 const make = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const threadPlanProgress = yield* ThreadPlanProgressService;
@@ -1778,6 +1787,15 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * Fold one provider runtime event into the thread: session lifecycle,
+   * activities, and in-memory background liveness. A waking task completion
+   * keeps that liveness working until the follow-up turn starts, so the
+   * shell does not read as ready in the gap.
+   *
+   * @param event - Provider runtime event for the thread being ingested.
+   * @returns The effect that persists the event and updates liveness.
+   */
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       if (
@@ -2504,6 +2522,7 @@ const make = Effect.gen(function* () {
             taskType?: string;
             status?: string;
             agentId?: string;
+            resumesProvider?: boolean;
           };
           threadBackgroundLiveness.recordTaskLiveness({
             threadId: thread.id,
@@ -2519,9 +2538,30 @@ const make = Effect.gen(function* () {
                   : event.type === "task.updated"
                     ? "updated"
                     : "completed",
+            awaitsProviderResume:
+              event.type === "task.completed" && payload.resumesProvider === true,
           });
           break;
         }
+        case "turn.started":
+          // The follow-up turn is running. Session status keeps the thread
+          // working until that turn settles, so the resume hold can drop.
+          if (shouldApplyThreadLifecycle) {
+            threadBackgroundLiveness.releaseProviderResume(thread.id);
+          }
+          break;
+        case "turn.aborted":
+          if (shouldApplyThreadLifecycle) {
+            threadBackgroundLiveness.releaseProviderResume(thread.id);
+          }
+          break;
+        case "session.state.changed":
+          // Ready is the gap itself. Release only when the session can no
+          // longer resume, so a failure is not pinned on Working.
+          if (event.payload.state === "error" || event.payload.state === "stopped") {
+            threadBackgroundLiveness.releaseProviderResume(thread.id);
+          }
+          break;
         case "session.exited":
           threadBackgroundLiveness.clearThreadLiveness(thread.id);
           break;
