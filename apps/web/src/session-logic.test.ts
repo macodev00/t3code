@@ -1262,7 +1262,7 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.detail).toBeUndefined();
   });
 
-  it("uses grep raw output summaries instead of repeating the generic tool label", () => {
+  it("classifies legacy ACP grep as code search and uses raw output summaries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "grep-update",
@@ -1307,8 +1307,40 @@ describe("deriveWorkLogEntries", () => {
       id: "grep-complete",
       toolTitle: "grep",
       detail: "19 files",
-      itemType: "web_search",
+      itemType: "code_search",
     });
+  });
+
+  it("keeps ACP fetch and provider web search on web_search", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "fetch-complete",
+        kind: "tool.completed",
+        summary: "Web search",
+        payload: {
+          itemType: "web_search",
+          title: "Web search",
+          detail: "https://example.com",
+          data: { kind: "fetch", toolCallId: "tool-fetch-1" },
+        },
+      }),
+      makeActivity({
+        id: "codex-web-search",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        summary: "Web search",
+        payload: {
+          itemType: "web_search",
+          title: "Web search",
+          detail: "effect schema",
+        },
+      }),
+    ];
+
+    expect(deriveWorkLogEntries(activities).map((entry) => entry.itemType)).toEqual([
+      "web_search",
+      "web_search",
+    ]);
   });
 
   it("uses completed read-file output previews and still collapses the same tool call", () => {

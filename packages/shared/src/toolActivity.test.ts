@@ -38,6 +38,42 @@ describe("toolActivity", () => {
     });
   });
 
+  it("labels ACP code search as file search and keeps the pattern", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "code_search",
+        title: "found 4 matches",
+        detail: "found 4 matches",
+        data: {
+          kind: "search",
+          rawInput: { variant: "Grep", pattern: "canonicalItemType" },
+        },
+        fallbackSummary: "found 4 matches",
+      }),
+    ).toEqual({
+      summary: "Searched files",
+      detail: "canonicalItemType",
+    });
+  });
+
+  it("does not rewrite network search as file search", () => {
+    expect(
+      deriveToolActivityPresentation({
+        itemType: "web_search",
+        title: "Web search",
+        detail: "https://example.com",
+        data: {
+          kind: "fetch",
+          rawInput: { url: "https://example.com" },
+        },
+        fallbackSummary: "Web search",
+      }),
+    ).toEqual({
+      summary: "Web search",
+      detail: "https://example.com",
+    });
+  });
+
   it("drops duplicated generic read-file detail when no path is available", () => {
     expect(
       deriveToolActivityPresentation({

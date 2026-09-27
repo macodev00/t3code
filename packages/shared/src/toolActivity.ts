@@ -154,11 +154,18 @@ function isEquivalent(left: string | undefined, right: string | undefined): bool
   return normalizedLeft !== undefined && normalizedLeft === normalizedRight;
 }
 
+/**
+ * Coarse action used to pick a stable label.
+ *
+ * `code_search` is repo grep (ACP `search`, or a title that is exactly find/grep).
+ * `web_search` is intentionally absent: ACP `fetch` and provider web search must
+ * keep their own titles instead of being rewritten as file search.
+ */
 function classifyToolAction(input: {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | undefined;
   readonly data?: Record<string, unknown> | undefined;
-}): "command" | "read" | "file_change" | "search" | "other" {
+}): "command" | "read" | "file_change" | "code_search" | "other" {
   const itemType = input.itemType ?? undefined;
   const kind = asTrimmedString(input.data?.kind)?.toLowerCase();
   const title = asTrimmedString(input.title)?.toLowerCase();
@@ -177,8 +184,8 @@ function classifyToolAction(input: {
   ) {
     return "file_change";
   }
-  if (itemType === "web_search" || kind === "search" || title === "find" || title === "grep") {
-    return "search";
+  if (itemType === "code_search" || kind === "search" || title === "find" || title === "grep") {
+    return "code_search";
   }
   return "other";
 }
@@ -196,6 +203,12 @@ export interface ToolActivityPresentation {
   readonly detail?: string | undefined;
 }
 
+/**
+ * Stable work-log title and detail for a provider tool call.
+ *
+ * Local search becomes "Searched files". Network search is left on the
+ * provider title so a globe row is not labeled like a repo grep.
+ */
 export function deriveToolActivityPresentation(
   input: ToolActivityPresentationInput,
 ): ToolActivityPresentation {
@@ -237,7 +250,7 @@ export function deriveToolActivityPresentation(
     };
   }
 
-  if (action === "search") {
+  if (action === "code_search") {
     const query =
       asTrimmedString(asRecord(data?.rawInput)?.query) ??
       asTrimmedString(asRecord(data?.rawInput)?.pattern) ??

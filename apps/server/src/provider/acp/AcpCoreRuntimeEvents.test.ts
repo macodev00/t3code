@@ -223,6 +223,44 @@ describe("AcpCoreRuntimeEvents", () => {
     });
   });
 
+  it("emits code_search for ACP search and web_search for fetch", () => {
+    const stamp = { eventId: "event-search" as never, createdAt: "2026-03-27T00:00:00.000Z" };
+    const turnId = TurnId.make("turn-1");
+    const base = {
+      stamp,
+      provider: ProviderDriverKind.make("cursor"),
+      threadId: "thread-1" as never,
+      turnId,
+      rawPayload: { sessionId: "session-1" },
+    };
+
+    expect(
+      makeAcpToolCallEvent({
+        ...base,
+        toolCall: {
+          toolCallId: "grep-1",
+          kind: "search",
+          status: "completed",
+          title: "found 4 matches",
+          data: { kind: "search", toolCallId: "grep-1" },
+        },
+      }).payload,
+    ).toMatchObject({ itemType: "code_search", title: "found 4 matches" });
+
+    expect(
+      makeAcpToolCallEvent({
+        ...base,
+        toolCall: {
+          toolCallId: "fetch-1",
+          kind: "fetch",
+          status: "completed",
+          title: "Web search",
+          data: { kind: "fetch", toolCallId: "fetch-1" },
+        },
+      }).payload,
+    ).toMatchObject({ itemType: "web_search", title: "Web search" });
+  });
+
   it("maps thoughts to the reasoning stream", () => {
     expect(
       makeAcpContentDeltaEvent({

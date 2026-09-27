@@ -14,6 +14,7 @@ import {
   extractCommandOutputText,
   extractWorkLogToolLifecycleStatus,
   isWorktreeSetupActivity,
+  resolveWorkLogToolItemType,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolSuccess,
   workLogEntryIsToolLike,
@@ -21,7 +22,6 @@ import {
 } from "@t3tools/client-runtime/work-log/presentation";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
 import {
-  isToolLifecycleItemType,
   type AssetResource,
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
@@ -1301,13 +1301,11 @@ function stripTrailingExitCode(value: string): {
   };
 }
 
+/** Item type for the work log, with legacy ACP search promoted to code search. */
 function extractWorkLogItemType(
   payload: Record<string, unknown> | null,
 ): WorkLogEntry["itemType"] | undefined {
-  if (typeof payload?.itemType === "string" && isToolLifecycleItemType(payload.itemType)) {
-    return payload.itemType;
-  }
-  return undefined;
+  return resolveWorkLogToolItemType(payload?.itemType, payload?.data);
 }
 
 function extractWorkLogRequestKind(

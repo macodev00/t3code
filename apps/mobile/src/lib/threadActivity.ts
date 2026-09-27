@@ -5,7 +5,7 @@ import {
   requestKindFromRequestType,
   type PendingApproval,
 } from "@t3tools/client-runtime/pending-requests";
-import { UserInputAttachmentAnswerPayload, isToolLifecycleItemType } from "@t3tools/contracts";
+import { UserInputAttachmentAnswerPayload } from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -24,6 +24,7 @@ import {
   normalizeCompactToolLabel,
   omitSupersededLifecycleMarkers,
   resolveWorkEntryToolPresentation,
+  resolveWorkLogToolItemType,
   summarizeToolGroup,
   toolGroupAction,
   toolGroupSummaryKind,
@@ -70,6 +71,7 @@ export interface ThreadFeedActivity {
     | "hammer"
     | "lock"
     | "message"
+    | "search"
     | "warning"
     | "wrench"
     | "zap";
@@ -958,6 +960,10 @@ function workEntryStatus(entry: WorkLogEntry): ThreadFeedActivity["status"] {
   return "neutral";
 }
 
+/**
+ * Row icon. Local code search uses the same `toolGroupAction` as web
+ * (magnifying glass). Network search, including ACP fetch, stays a globe.
+ */
 function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
   if (entry.agentSpawn) return "agent";
   if (
@@ -975,7 +981,9 @@ function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
   if (entry.requestKind === "permission") return "lock";
   if (entry.itemType === "command_execution" || entry.command) return "command";
   if (entry.itemType === "file_change" || (entry.changedFiles?.length ?? 0) > 0) return "edit";
-  if (entry.itemType === "web_search") return "globe";
+  const groupAction = toolGroupAction(entry);
+  if (groupAction === "code-search") return "search";
+  if (groupAction === "search") return "globe";
   if (entry.itemType === "image_view") return "eye";
   if (entry.itemType === "mcp_tool_call") return "wrench";
   if (entry.itemType === "dynamic_tool_call" || entry.itemType === "collab_agent_tool_call") {
@@ -1426,13 +1434,11 @@ function stripTrailingExitCode(value: string): {
   };
 }
 
+/** Item type for the work log, with legacy ACP search promoted to code search. */
 function extractWorkLogItemType(
   payload: Record<string, unknown> | null,
 ): WorkLogEntry["itemType"] | undefined {
-  if (typeof payload?.itemType === "string" && isToolLifecycleItemType(payload.itemType)) {
-    return payload.itemType;
-  }
-  return undefined;
+  return resolveWorkLogToolItemType(payload?.itemType, payload?.data);
 }
 
 function extractWorkLogRequestKind(

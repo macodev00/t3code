@@ -454,7 +454,30 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogPresentationEntry): 
   );
 }
 
+function readAcpToolKind(data: unknown): string | undefined {
+  const kind = asRecord(data)?.kind;
+  return typeof kind === "string" && kind.trim().length > 0 ? kind.trim() : undefined;
+}
+
+/**
+ * Item type the work log should classify.
+ *
+ * ACP `search` is local code search. Rows saved before that split still say
+ * `web_search` but keep `data.kind`, so those are promoted here. `fetch` and
+ * other network searches stay `web_search`.
+ */
+export function resolveWorkLogToolItemType(
+  itemType: unknown,
+  data: unknown,
+): ToolLifecycleItemType | undefined {
+  if (typeof itemType !== "string" || !isToolLifecycleItemType(itemType)) return undefined;
+  if (itemType === "web_search" && readAcpToolKind(data) === "search") return "code_search";
+  return itemType;
+}
+
+/** Repo grep, including older `web_search` rows whose title still says grep. */
 function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean {
+  if (entry.itemType === "code_search") return true;
   return (
     entry.itemType === "web_search" &&
     /\bgrep\b/i.test(normalizeCompactToolLabel(entry.toolTitle ?? entry.label))

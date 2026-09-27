@@ -367,6 +367,8 @@ function workRowSymbolName(icon: ThreadFeedActivity["icon"]): AppSymbolName {
       return { ios: "lock", android: "lock" };
     case "message":
       return { ios: "bubble.left", android: "chat_bubble" };
+    case "search":
+      return "magnifyingglass";
     case "warning":
       return { ios: "xmark", android: "close" };
     case "wrench":

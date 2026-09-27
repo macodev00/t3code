@@ -110,6 +110,8 @@ const TOOL_LIFECYCLE_ITEM_TYPES = [
   "dynamic_tool_call",
   "collab_agent_tool_call",
   "web_search",
+  // ACP `search` (repo grep). Network search stays `web_search` (`fetch`, WebSearch).
+  "code_search",
   "image_view",
 ] as const;
 

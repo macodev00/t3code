@@ -7,6 +7,7 @@ import {
   extractCommandOutputText,
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
+  resolveWorkLogToolItemType,
   summarizeToolGroup,
   toolGroupAction,
   toolGroupSummaryKind,
@@ -708,5 +709,54 @@ describe("device group summaries", () => {
         },
       ]),
     ).toBe("Used 1 tool");
+  });
+});
+
+describe("code search versus web search", () => {
+  const codeSearch: WorkLogPresentationEntry = {
+    label: "found 4 matches",
+    toolTitle: "found 4 matches",
+    tone: "tool",
+    itemType: "code_search",
+  };
+  const legacyGrep: WorkLogPresentationEntry = {
+    label: "grep",
+    tone: "tool",
+    itemType: "web_search",
+  };
+  const webSearch: WorkLogPresentationEntry = {
+    label: "Web search",
+    tone: "tool",
+    itemType: "web_search",
+  };
+  const rewrittenFileLabel: WorkLogPresentationEntry = {
+    label: "Searched files",
+    tone: "tool",
+    itemType: "web_search",
+  };
+
+  it("groups repo grep as code search and network search as the web", () => {
+    expect(toolGroupAction(codeSearch)).toBe("code-search");
+    expect(toolGroupAction(legacyGrep)).toBe("code-search");
+    expect(toolGroupAction(webSearch)).toBe("search");
+    // "Searched files" is also the label ACP fetch used to get. Without a
+    // grep title or `code_search` item type it stays network search.
+    expect(toolGroupAction(rewrittenFileLabel)).toBe("search");
+    expect(
+      toolGroupAction({ label: "found 4 matches", tone: "tool", itemType: "web_search" }),
+    ).toBe("search");
+
+    expect(summarizeToolGroup([codeSearch, codeSearch, legacyGrep])).toBe("Searched code 3 times");
+    expect(summarizeToolGroup([webSearch, rewrittenFileLabel])).toBe("Searched the web 2 times");
+    expect(toolGroupSummaryKind([codeSearch])).toBe("code-search");
+    expect(toolGroupSummaryKind([webSearch])).toBe("search");
+  });
+
+  it("promotes legacy ACP search payloads and leaves fetch on web search", () => {
+    expect(resolveWorkLogToolItemType("web_search", { kind: " search " })).toBe("code_search");
+    expect(resolveWorkLogToolItemType("web_search", { kind: "fetch" })).toBe("web_search");
+    expect(resolveWorkLogToolItemType("code_search", { kind: "search" })).toBe("code_search");
+    expect(resolveWorkLogToolItemType("web_search", {})).toBe("web_search");
+    expect(resolveWorkLogToolItemType("not-a-type", { kind: "search" })).toBeUndefined();
   });
 });

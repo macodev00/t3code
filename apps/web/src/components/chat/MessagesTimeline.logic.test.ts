@@ -3521,6 +3521,51 @@ describe("deriveMessagesTimelineRows", () => {
     });
   });
 
+  it("groups local code search apart from network search", () => {
+    const rowsFor = (
+      itemType: "code_search" | "web_search",
+      label: string,
+    ): MessagesTimelineRow | undefined => {
+      const timelineEntries = [0, 1].map((index) => ({
+        id: `search-${itemType}-${index}`,
+        kind: "work" as const,
+        createdAt: `2026-01-01T00:00:0${index}Z`,
+        entry: {
+          id: `search-${itemType}-${index}`,
+          createdAt: `2026-01-01T00:00:0${index}Z`,
+          label,
+          toolTitle: label,
+          tone: "tool" as const,
+          itemType,
+          toolLifecycleStatus: "completed" as const,
+        },
+      }));
+      return deriveMessagesTimelineRows({
+        timelineEntries,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      })[0];
+    };
+
+    expect(rowsFor("code_search", "found 4 matches")).toMatchObject({
+      kind: "work-toggle",
+      summary: "Searched code 2 times",
+      summaryKind: "code-search",
+    });
+    expect(rowsFor("web_search", "Web search")).toMatchObject({
+      kind: "work-toggle",
+      summary: "Searched the web 2 times",
+      summaryKind: "search",
+    });
+    expect(rowsFor("web_search", "Searched files")).toMatchObject({
+      kind: "work-toggle",
+      summary: "Searched the web 2 times",
+      summaryKind: "search",
+    });
+  });
+
   it.each([true, false])(
     "keeps a large expanded tool run inside one timeline item, live=%s",
     (isWorking) => {

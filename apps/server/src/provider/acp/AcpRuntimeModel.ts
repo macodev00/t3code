@@ -446,8 +446,11 @@ function normalizeToolKind(kind: unknown): string | undefined {
 }
 
 /**
- * Map an ACP tool kind onto the canonical runtime item type used by the
- * thread activity model. Unknown kinds fall back to a generic tool call.
+ * Map an ACP tool kind onto the canonical runtime item type.
+ *
+ * `search` is local codebase search and must not be sent as `web_search`.
+ * `fetch` is network retrieval and stays `web_search`. Unknown kinds fall
+ * back to a generic tool call.
  */
 export function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
   switch (kind) {
@@ -458,6 +461,7 @@ export function canonicalItemTypeFromAcpToolKind(kind: string | undefined): Tool
     case "move":
       return "file_change";
     case "search":
+      return "code_search";
     case "fetch":
       return "web_search";
     default:

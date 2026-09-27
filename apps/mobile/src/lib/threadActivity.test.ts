@@ -731,6 +731,107 @@ describe("buildThreadFeed", () => {
     expect(group.activities[0]?.canExpand).toBe(Boolean(input.expected));
   });
 
+  it("uses a magnifying glass for code search and a globe for web search", () => {
+    const turnId = TurnId.make("turn-search-icons");
+    const searchActivity = (
+      id: string,
+      createdAt: string,
+      summary: string,
+      itemType: "code_search" | "web_search",
+      data?: Record<string, unknown>,
+    ) =>
+      makeActivity({
+        id: EventId.make(id),
+        kind: "tool.completed",
+        tone: "tool",
+        summary,
+        createdAt,
+        turnId,
+        payload: {
+          title: summary,
+          itemType,
+          status: "completed",
+          toolCallId: id,
+          ...(data ? { data } : {}),
+        },
+      });
+
+    const iconFor = (activity: OrchestrationThreadActivity) => {
+      const [group] = buildThreadFeed(
+        makeThread({
+          id: ThreadId.make(`thread-${activity.id}`),
+          projectId: ProjectId.make("project-1"),
+          title: "Search icons",
+          activities: [activity],
+        }),
+      );
+      expect(group?.type).toBe("activity-group");
+      if (group?.type !== "activity-group") return undefined;
+      return group.activities[0]?.icon;
+    };
+
+    expect(
+      iconFor(
+        searchActivity("code-search", "2026-09-01T00:00:01.000Z", "found 4 matches", "code_search"),
+      ),
+    ).toBe("search");
+    expect(
+      iconFor(
+        searchActivity("legacy-grep", "2026-09-01T00:00:02.000Z", "found 4 matches", "web_search", {
+          kind: "search",
+        }),
+      ),
+    ).toBe("search");
+    expect(
+      iconFor(
+        searchActivity("web-search", "2026-09-01T00:00:03.000Z", "Web search", "web_search", {
+          kind: "fetch",
+        }),
+      ),
+    ).toBe("globe");
+    expect(
+      iconFor(
+        searchActivity(
+          "rewritten-fetch",
+          "2026-09-01T00:00:04.000Z",
+          "Searched files",
+          "web_search",
+        ),
+      ),
+    ).toBe("globe");
+
+    const grouped = (itemType: "code_search" | "web_search", summary: string) =>
+      deriveThreadFeedPresentation(
+        buildThreadFeed(
+          makeThread({
+            id: ThreadId.make(`thread-group-${itemType}`),
+            projectId: ProjectId.make("project-1"),
+            title: "Search group",
+            activities: [0, 1].map((index) => ({
+              ...searchActivity(
+                `${itemType}-${index}`,
+                `2026-09-01T00:00:0${index}.000Z`,
+                summary,
+                itemType,
+              ),
+              // No turn id, so the settled feed shows the tool group instead of folding the turn.
+              turnId: null,
+            })),
+          }),
+        ),
+        null,
+        new Set(),
+        new Set(),
+      );
+
+    expect(grouped("code_search", "found 4 matches")).toMatchObject([
+      { type: "work-toggle", summary: "Searched code 2 times", summaryKind: "code-search" },
+    ]);
+    expect(grouped("web_search", "Web search")).toMatchObject([
+      { type: "work-toggle", summary: "Searched the web 2 times", summaryKind: "search" },
+    ]);
+  });
+
   it.each([
     {
       summary: "Runtime error",

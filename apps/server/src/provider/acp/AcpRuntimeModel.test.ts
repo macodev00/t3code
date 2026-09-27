@@ -2,7 +2,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { ProviderDriverKind, TurnId } from "@t3tools/contracts";
+
+import { makeAcpToolCallEvent } from "./AcpCoreRuntimeEvents.ts";
 import {
+  canonicalItemTypeFromAcpToolKind,
   decideToolCallUpdateEmission,
   extractModelConfigId,
   mergeToolCallState,
@@ -16,6 +20,76 @@ import {
 } from "./AcpRuntimeModel.ts";
 
 describe("AcpRuntimeModel", () => {
+  it("classifies ACP search as code search and fetch as web search", () => {
+    expect(canonicalItemTypeFromAcpToolKind("search")).toBe("code_search");
+    expect(canonicalItemTypeFromAcpToolKind("fetch")).toBe("web_search");
+    expect(canonicalItemTypeFromAcpToolKind(undefined)).toBe("dynamic_tool_call");
+
+    const searched = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "grep-1",
+        title: "found 4 matches",
+        kind: "search",
+        status: "completed",
+        rawInput: { variant: "Grep", pattern: "itemType" },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+    const searchEvent = searched.events[0];
+    expect(searchEvent).toMatchObject({
+      _tag: "ToolCallUpdated",
+      toolCall: {
+        kind: "search",
+        title: "Searched files",
+        detail: "itemType",
+      },
+    });
+    if (searchEvent?._tag !== "ToolCallUpdated") return;
+    expect(
+      makeAcpToolCallEvent({
+        stamp: { eventId: "event-search" as never, createdAt: "2026-03-27T00:00:00.000Z" },
+        provider: ProviderDriverKind.make("cursor"),
+        threadId: "thread-1" as never,
+        turnId: TurnId.make("turn-1"),
+        toolCall: searchEvent.toolCall,
+        rawPayload: { sessionId: "session-1" },
+      }).payload,
+    ).toMatchObject({ itemType: "code_search" });
+
+    const fetched = parseSessionUpdateEvent({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "fetch-1",
+        title: "Web search",
+        kind: "fetch",
+        status: "completed",
+        rawInput: { url: "https://example.com" },
+      },
+    } satisfies EffectAcpSchema.SessionNotification);
+    const fetchEvent = fetched.events[0];
+    expect(fetchEvent).toMatchObject({
+      _tag: "ToolCallUpdated",
+      toolCall: {
+        kind: "fetch",
+        title: "Web search",
+      },
+    });
+    if (fetchEvent?._tag !== "ToolCallUpdated") return;
+    expect(fetchEvent.toolCall.title).not.toBe("Searched files");
+    expect(
+      makeAcpToolCallEvent({
+        stamp: { eventId: "event-fetch" as never, createdAt: "2026-03-27T00:00:00.000Z" },
+        provider: ProviderDriverKind.make("cursor"),
+        threadId: "thread-1" as never,
+        turnId: TurnId.make("turn-1"),
+        toolCall: fetchEvent.toolCall,
+        rawPayload: { sessionId: "session-1" },
+      }).payload,
+    ).toMatchObject({ itemType: "web_search" });
+  });
+
   it("parses session mode state from typed ACP session setup responses", () => {
     const modeState = parseSessionModeState({
       sessionId: "session-1",
