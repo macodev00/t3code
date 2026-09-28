@@ -39,6 +39,8 @@ import {
   buildLoadingThreadFromShell,
   buildRunningThreadTurnInterruptInput,
   buildThreadTurnInterruptInput,
+  canInterruptThreadSession,
+  composerPrimaryActionIsStop,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
   deriveLockedProvider,
@@ -2428,5 +2430,84 @@ describe("worktree setup visibility", () => {
       ...settledDone,
       sequence: 9,
     });
+  });
+});
+describe("canInterruptThreadSession", () => {
+  it("offers Stop while the session is still starting", () => {
+    const session = { ...readySession, status: "starting" as const };
+    expect(canInterruptThreadSession("connecting", session)).toBe(true);
+    expect(buildRunningThreadTurnInterruptInput(makeThread({ session }), "connecting")).toEqual({
+      threadId,
+    });
+  });
+
+  it("does not offer Stop for a ready session, including one with only a queued message", () => {
+    expect(canInterruptThreadSession("ready", readySession)).toBe(false);
+    expect(canInterruptThreadSession("connecting", readySession)).toBe(false);
+    expect(canInterruptThreadSession("disconnected", null)).toBe(false);
+    expect(
+      buildRunningThreadTurnInterruptInput(makeThread({ session: readySession }), "ready"),
+    ).toBeNull();
+  });
+
+  it("keeps Stop for a running turn", () => {
+    const activeTurnId = TurnId.make("turn-running");
+    const session = { ...readySession, status: "running" as const, activeTurnId };
+    expect(canInterruptThreadSession("running", session)).toBe(true);
+    expect(buildRunningThreadTurnInterruptInput(makeThread({ session }), "running")).toEqual({
+      threadId,
+      turnId: activeTurnId,
+    });
+  });
+});
+
+describe("composerPrimaryActionIsStop", () => {
+  it("replaces the connecting composer with Stop before the provider turn starts", () => {
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: false,
+        canInterrupt: true,
+        hasSendableContent: false,
+        isEditingQueuedMessage: false,
+      }),
+    ).toBe(true);
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: false,
+        canInterrupt: true,
+        hasSendableContent: true,
+        isEditingQueuedMessage: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the send button beside Stop once a running turn has a draft", () => {
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: true,
+        canInterrupt: true,
+        hasSendableContent: true,
+        isEditingQueuedMessage: false,
+      }),
+    ).toBe(false);
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: true,
+        canInterrupt: true,
+        hasSendableContent: false,
+        isEditingQueuedMessage: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not replace an in-progress queued-message edit", () => {
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: false,
+        canInterrupt: true,
+        hasSendableContent: false,
+        isEditingQueuedMessage: true,
+      }),
+    ).toBe(false);
   });
 });

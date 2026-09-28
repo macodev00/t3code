@@ -7,6 +7,7 @@ import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Spinner } from "../ui/spinner";
 import { composerFloatingLayerProps } from "./composerEventScope";
+import { composerPrimaryActionIsStop } from "../ChatView.logic";
 
 interface PendingActionState {
   questionIndex: number;
@@ -20,6 +21,11 @@ interface ComposerPrimaryActionsProps {
   compact: boolean;
   pendingAction: PendingActionState | null;
   isRunning: boolean;
+  /**
+   * A session that is still starting stays in the connecting phase, but Stop
+   * must still be offered. Defaults to `isRunning` for callers that only know that.
+   */
+  canInterrupt?: boolean;
   showPlanFollowUpPrompt: boolean;
   promptHasText: boolean;
   isSendBusy: boolean;
@@ -65,6 +71,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   pendingAction,
   isRunning,
+  canInterrupt,
   showPlanFollowUpPrompt,
   promptHasText,
   isSendBusy,
@@ -82,6 +89,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     ? { onPointerDown: preventPointerFocus }
     : undefined;
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
+  const stopAvailable = canInterrupt ?? isRunning;
   const isSendDisabled = sendDisabledReason !== null;
   const stageBackdropVariant = useSidebarStageBackdropVariant(
     environmentIdentificationMode === "artwork",
@@ -111,7 +119,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   if (pendingAction) {
     return (
       <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
-        {isRunning ? renderStopGenerationButton(true) : null}
+        {stopAvailable ? renderStopGenerationButton(true) : null}
         {pendingAction.questionIndex > 0 ? (
           compact ? (
             <Button
@@ -264,6 +272,17 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       )}
     </button>
   );
+
+  if (
+    composerPrimaryActionIsStop({
+      isRunning,
+      canInterrupt: stopAvailable,
+      hasSendableContent,
+      isEditingQueuedMessage: false,
+    })
+  ) {
+    return renderStopGenerationButton(false);
+  }
 
   if (!isRunning) {
     return sendButton;

@@ -646,11 +646,43 @@ export function getAntigravitySendBlockReason(
   return null;
 }
 
+/**
+ * Stop is offered for a running turn, and while the session is still starting.
+ * Starting stays in the connecting phase, but `thread.turn.interrupt` already
+ * accepts that session. A ready or idle session is not interruptible, including
+ * one that only has a queued message.
+ */
+export function canInterruptThreadSession(
+  phase: SessionPhase,
+  session: Thread["session"] | null | undefined,
+): boolean {
+  if (phase === "running" && session?.status === "running") return true;
+  return phase === "connecting" && session?.status === "starting";
+}
+
+/**
+ * Stop is the only primary control while a session can be interrupted and has
+ * not started provider work, including when the draft already has text. A
+ * running turn keeps the send button beside Stop once there is something to
+ * send. Editing a queued message is left alone.
+ */
+export function composerPrimaryActionIsStop(input: {
+  readonly isRunning: boolean;
+  readonly canInterrupt: boolean;
+  readonly hasSendableContent: boolean;
+  readonly isEditingQueuedMessage: boolean;
+}): boolean {
+  if (input.isEditingQueuedMessage) return false;
+  if (input.isRunning) return !input.hasSendableContent;
+  return input.canInterrupt;
+}
+
+/** Interrupt target for a running turn or a session that is still starting. */
 export function buildRunningThreadTurnInterruptInput(
   thread: Pick<Thread, "id" | "session"> | null | undefined,
   phase: SessionPhase,
 ): { threadId: ThreadId; turnId?: TurnId } | null {
-  if (phase !== "running" || thread?.session?.status !== "running") {
+  if (thread == null || !canInterruptThreadSession(phase, thread.session)) {
     return null;
   }
   return buildThreadTurnInterruptInput(thread);
