@@ -476,7 +476,8 @@ describe("workEntryIndicatesToolNeutralStatus", () => {
   );
 });
 
-describe("deriveWorkLogEntries", () => {
+/** Work-log entries derived from thread activities. */
+function describeDeriveWorkLogEntries() {
   it("keeps the latest task progress without emitting plan-update log entries", () => {
     const activities = [
       makeActivity({ id: "before", kind: "tool.completed", summary: "Read files", sequence: 0 }),
@@ -1262,7 +1263,8 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.detail).toBeUndefined();
   });
 
-  it("classifies legacy ACP grep as code search and uses raw output summaries", () => {
+  /** Older ACP search rows stored as web_search still present as code search. */
+  function classifiesLegacyAcpGrepAsCodeSearch() {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "grep-update",
@@ -1309,9 +1311,15 @@ describe("deriveWorkLogEntries", () => {
       detail: "19 files",
       itemType: "code_search",
     });
-  });
+  }
 
-  it("keeps ACP fetch and provider web search on web_search", () => {
+  it(
+    "classifies legacy ACP grep as code search and uses raw output summaries",
+    classifiesLegacyAcpGrepAsCodeSearch,
+  );
+
+  /** ACP fetch and provider web search stay network search. */
+  function keepsAcpFetchAndProviderWebSearch() {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
         id: "fetch-complete",
@@ -1337,11 +1345,15 @@ describe("deriveWorkLogEntries", () => {
       }),
     ];
 
-    expect(deriveWorkLogEntries(activities).map((entry) => entry.itemType)).toEqual([
-      "web_search",
-      "web_search",
-    ]);
-  });
+    const entries = deriveWorkLogEntries(activities);
+    /** Item type after legacy ACP search promotion. */
+    function itemType(entry: (typeof entries)[number]) {
+      return entry.itemType;
+    }
+    expect(entries.map(itemType)).toEqual(["web_search", "web_search"]);
+  }
+
+  it("keeps ACP fetch and provider web search on web_search", keepsAcpFetchAndProviderWebSearch);
 
   it("uses completed read-file output previews and still collapses the same tool call", () => {
     const activities: OrchestrationThreadActivity[] = [
@@ -1657,7 +1669,9 @@ describe("deriveWorkLogEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]?.id).toBe("a-complete-same-timestamp");
   });
-});
+}
+
+describe("deriveWorkLogEntries", describeDeriveWorkLogEntries);
 
 describe("image asset requests", () => {
   const image = {

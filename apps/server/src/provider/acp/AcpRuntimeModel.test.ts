@@ -19,8 +19,10 @@ import {
   type AcpToolCallState,
 } from "./AcpRuntimeModel.ts";
 
-describe("AcpRuntimeModel", () => {
-  it("classifies ACP search as code search and fetch as web search", () => {
+/** Classification of ACP session updates into runtime tool events. */
+function describeAcpRuntimeModel() {
+  /** Local ACP search becomes code_search; ACP fetch stays web_search. */
+  function classifiesAcpSearchAndFetch() {
     expect(canonicalItemTypeFromAcpToolKind("search")).toBe("code_search");
     expect(canonicalItemTypeFromAcpToolKind("fetch")).toBe("web_search");
     expect(canonicalItemTypeFromAcpToolKind(undefined)).toBe("dynamic_tool_call");
@@ -88,7 +90,9 @@ describe("AcpRuntimeModel", () => {
         rawPayload: { sessionId: "session-1" },
       }).payload,
     ).toMatchObject({ itemType: "web_search" });
-  });
+  }
+
+  it("classifies ACP search as code search and fetch as web search", classifiesAcpSearchAndFetch);
 
   it("parses session mode state from typed ACP session setup responses", () => {
     const modeState = parseSessionModeState({
@@ -952,4 +956,6 @@ describe("AcpRuntimeModel", () => {
       ).toEqual({ emit: true, skippedSinceEmit: 0 });
     });
   });
-});
+}
+
+describe("AcpRuntimeModel", describeAcpRuntimeModel);

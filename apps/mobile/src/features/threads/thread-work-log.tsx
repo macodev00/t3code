@@ -341,6 +341,7 @@ export function ShimmeringWorkContent(props: {
   );
 }
 
+/** SF Symbol for a work-log row. Local code search uses a magnifying glass. */
 function workRowSymbolName(icon: ThreadFeedActivity["icon"]): AppSymbolName {
   switch (icon) {
     case "agent":

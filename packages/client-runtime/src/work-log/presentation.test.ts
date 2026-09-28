@@ -712,7 +712,8 @@ describe("device group summaries", () => {
   });
 });
 
-describe("code search versus web search", () => {
+/** Repo grep groups apart from network search, including legacy ACP rows. */
+function describeCodeSearchVersusWebSearch() {
   const codeSearch: WorkLogPresentationEntry = {
     label: "found 4 matches",
     toolTitle: "found 4 matches",
@@ -735,7 +736,8 @@ describe("code search versus web search", () => {
     itemType: "web_search",
   };
 
-  it("groups repo grep as code search and network search as the web", () => {
+  /** Code search, legacy grep, and network search get distinct group labels. */
+  function groupsRepoGrepAsCodeSearch() {
     expect(toolGroupAction(codeSearch)).toBe("code-search");
     expect(toolGroupAction(legacyGrep)).toBe("code-search");
     expect(toolGroupAction(webSearch)).toBe("search");
@@ -750,13 +752,23 @@ describe("code search versus web search", () => {
     expect(summarizeToolGroup([webSearch, rewrittenFileLabel])).toBe("Searched the web 2 times");
     expect(toolGroupSummaryKind([codeSearch])).toBe("code-search");
     expect(toolGroupSummaryKind([webSearch])).toBe("search");
-  });
+  }
 
-  it("promotes legacy ACP search payloads and leaves fetch on web search", () => {
+  it("groups repo grep as code search and network search as the web", groupsRepoGrepAsCodeSearch);
+
+  /** Legacy ACP search payloads become code_search; fetch stays web_search. */
+  function promotesLegacyAcpSearchPayloads() {
     expect(resolveWorkLogToolItemType("web_search", { kind: " search " })).toBe("code_search");
     expect(resolveWorkLogToolItemType("web_search", { kind: "fetch" })).toBe("web_search");
     expect(resolveWorkLogToolItemType("code_search", { kind: "search" })).toBe("code_search");
     expect(resolveWorkLogToolItemType("web_search", {})).toBe("web_search");
     expect(resolveWorkLogToolItemType("not-a-type", { kind: "search" })).toBeUndefined();
-  });
-});
+  }
+
+  it(
+    "promotes legacy ACP search payloads and leaves fetch on web search",
+    promotesLegacyAcpSearchPayloads,
+  );
+}
+
+describe("code search versus web search", describeCodeSearchVersusWebSearch);

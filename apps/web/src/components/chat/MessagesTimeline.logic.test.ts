@@ -1091,7 +1091,8 @@ describe("resolveAssistantMessageCopyState", () => {
   });
 });
 
-describe("deriveMessagesTimelineRows", () => {
+/** Timeline rows derived from work-log entries. */
+function describeDeriveMessagesTimelineRows() {
   const queuedMessage = (id: string, prompt: string) => ({
     id,
     prompt,
@@ -3521,25 +3522,31 @@ describe("deriveMessagesTimelineRows", () => {
     });
   });
 
-  it("groups local code search apart from network search", () => {
-    const rowsFor = (
+  /** Code search and web search collapse into separate timeline groups. */
+  function groupsCodeSearchApartFromNetworkSearch() {
+    /** First timeline row for two settled searches of one item type. */
+    function rowsFor(
       itemType: "code_search" | "web_search",
       label: string,
-    ): MessagesTimelineRow | undefined => {
-      const timelineEntries = [0, 1].map((index) => ({
-        id: `search-${itemType}-${index}`,
-        kind: "work" as const,
-        createdAt: `2026-01-01T00:00:0${index}Z`,
-        entry: {
+    ): MessagesTimelineRow | undefined {
+      /** Settled work entry included so the two searches form one group. */
+      function settledSearchEntry(index: number) {
+        return {
           id: `search-${itemType}-${index}`,
+          kind: "work" as const,
           createdAt: `2026-01-01T00:00:0${index}Z`,
-          label,
-          toolTitle: label,
-          tone: "tool" as const,
-          itemType,
-          toolLifecycleStatus: "completed" as const,
-        },
-      }));
+          entry: {
+            id: `search-${itemType}-${index}`,
+            createdAt: `2026-01-01T00:00:0${index}Z`,
+            label,
+            toolTitle: label,
+            tone: "tool" as const,
+            itemType,
+            toolLifecycleStatus: "completed" as const,
+          },
+        };
+      }
+      const timelineEntries = [0, 1].map(settledSearchEntry);
       return deriveMessagesTimelineRows({
         timelineEntries,
         isWorking: false,
@@ -3547,7 +3554,7 @@ describe("deriveMessagesTimelineRows", () => {
         turnDiffSummaries: [],
         supportsConversationRollback: false,
       })[0];
-    };
+    }
 
     expect(rowsFor("code_search", "found 4 matches")).toMatchObject({
       kind: "work-toggle",
@@ -3564,7 +3571,9 @@ describe("deriveMessagesTimelineRows", () => {
       summary: "Searched the web 2 times",
       summaryKind: "search",
     });
-  });
+  }
+
+  it("groups local code search apart from network search", groupsCodeSearchApartFromNetworkSearch);
 
   it.each([true, false])(
     "keeps a large expanded tool run inside one timeline item, live=%s",
@@ -3699,7 +3708,9 @@ describe("deriveMessagesTimelineRows", () => {
       }
     },
   );
-});
+}
+
+describe("deriveMessagesTimelineRows", describeDeriveMessagesTimelineRows);
 
 describe("computeStableMessagesTimelineRows", () => {
   it("replaces a cached work toggle when its icon presentation changes", () => {

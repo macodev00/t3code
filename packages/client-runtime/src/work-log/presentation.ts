@@ -454,6 +454,7 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogPresentationEntry): 
   );
 }
 
+/** ACP tool kind on an activity payload, when the provider stored one. */
 function readAcpToolKind(data: unknown): string | undefined {
   const kind = asRecord(data)?.kind;
   return typeof kind === "string" && kind.trim().length > 0 ? kind.trim() : undefined;

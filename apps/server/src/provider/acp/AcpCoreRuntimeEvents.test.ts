@@ -10,7 +10,8 @@ import {
   makeAcpToolCallEvent,
 } from "./AcpCoreRuntimeEvents.ts";
 
-describe("AcpCoreRuntimeEvents", () => {
+/** Runtime events projected from ACP tool and content updates. */
+function describeAcpCoreRuntimeEvents() {
   it("maps ACP permission requests to canonical runtime events", () => {
     const stamp = { eventId: "event-1" as never, createdAt: "2026-03-27T00:00:00.000Z" };
     const turnId = TurnId.make("turn-1");
@@ -223,7 +224,8 @@ describe("AcpCoreRuntimeEvents", () => {
     });
   });
 
-  it("emits code_search for ACP search and web_search for fetch", () => {
+  /** ACP search is stored as code_search; ACP fetch stays web_search. */
+  function emitsCodeSearchForSearchAndWebSearchForFetch() {
     const stamp = { eventId: "event-search" as never, createdAt: "2026-03-27T00:00:00.000Z" };
     const turnId = TurnId.make("turn-1");
     const base = {
@@ -259,7 +261,12 @@ describe("AcpCoreRuntimeEvents", () => {
         },
       }).payload,
     ).toMatchObject({ itemType: "web_search", title: "Web search" });
-  });
+  }
+
+  it(
+    "emits code_search for ACP search and web_search for fetch",
+    emitsCodeSearchForSearchAndWebSearchForFetch,
+  );
 
   it("maps thoughts to the reasoning stream", () => {
     expect(
@@ -280,4 +287,6 @@ describe("AcpCoreRuntimeEvents", () => {
       },
     });
   });
-});
+}
+
+describe("AcpCoreRuntimeEvents", describeAcpCoreRuntimeEvents);

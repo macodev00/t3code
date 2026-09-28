@@ -290,7 +290,8 @@ function makeThread(
   };
 }
 
-describe("buildThreadFeed", () => {
+/** Mobile thread feed assembled from orchestration activities. */
+function describeBuildThreadFeed() {
   it("reuses unchanged feed and presentation rows during an assistant text update", () => {
     const completedTurnId = TurnId.make("completed-turn");
     const activeTurnId = TurnId.make("active-turn");
@@ -731,16 +732,20 @@ describe("buildThreadFeed", () => {
     expect(group.activities[0]?.canExpand).toBe(Boolean(input.expected));
   });
 
-  it("uses a magnifying glass for code search and a globe for web search", () => {
+  /** Code search uses a magnifying glass; network search keeps the globe. */
+  function showsSearchIconAndGroupsSearches() {
     const turnId = TurnId.make("turn-search-icons");
-    const searchActivity = (
+    /**
+     * One tool activity stored as local code search or network search.
+     */
+    function searchActivity(
       id: string,
       createdAt: string,
       summary: string,
       itemType: "code_search" | "web_search",
       data?: Record<string, unknown>,
-    ) =>
-      makeActivity({
+    ) {
+      return makeActivity({
         id: EventId.make(id),
         kind: "tool.completed",
         tone: "tool",
@@ -755,8 +760,10 @@ describe("buildThreadFeed", () => {
           ...(data ? { data } : {}),
         },
       });
+    }
 
-    const iconFor = (activity: OrchestrationThreadActivity) => {
+    /** Icon the feed shows for a single search activity. */
+    function iconFor(activity: OrchestrationThreadActivity) {
       const [group] = buildThreadFeed(
         makeThread({
           id: ThreadId.make(`thread-${activity.id}`),
@@ -768,7 +775,7 @@ describe("buildThreadFeed", () => {
       expect(group?.type).toBe("activity-group");
       if (group?.type !== "activity-group") return undefined;
       return group.activities[0]?.icon;
-    };
+    }
 
     expect(
       iconFor(
@@ -800,29 +807,35 @@ describe("buildThreadFeed", () => {
       ),
     ).toBe("globe");
 
-    const grouped = (itemType: "code_search" | "web_search", summary: string) =>
-      deriveThreadFeedPresentation(
+    /** Collapsed summary for two settled searches of the same kind. */
+    function grouped(itemType: "code_search" | "web_search", summary: string) {
+      /** Settled row included so the two searches form one group. */
+      function settledSearchRow(index: number) {
+        return {
+          ...searchActivity(
+            `${itemType}-${index}`,
+            `2026-09-01T00:00:0${index}.000Z`,
+            summary,
+            itemType,
+          ),
+          // No turn id, so the settled feed shows the tool group instead of folding the turn.
+          turnId: null,
+        };
+      }
+      return deriveThreadFeedPresentation(
         buildThreadFeed(
           makeThread({
             id: ThreadId.make(`thread-group-${itemType}`),
             projectId: ProjectId.make("project-1"),
             title: "Search group",
-            activities: [0, 1].map((index) => ({
-              ...searchActivity(
-                `${itemType}-${index}`,
-                `2026-09-01T00:00:0${index}.000Z`,
-                summary,
-                itemType,
-              ),
-              // No turn id, so the settled feed shows the tool group instead of folding the turn.
-              turnId: null,
-            })),
+            activities: [0, 1].map(settledSearchRow),
           }),
         ),
         null,
         new Set(),
         new Set(),
       );
+    }
 
     expect(grouped("code_search", "found 4 matches")).toMatchObject([
       { type: "work-toggle", summary: "Searched code 2 times", summaryKind: "code-search" },
@@ -830,7 +843,12 @@ describe("buildThreadFeed", () => {
     expect(grouped("web_search", "Web search")).toMatchObject([
       { type: "work-toggle", summary: "Searched the web 2 times", summaryKind: "search" },
     ]);
-  });
+  }
+
+  it(
+    "uses a magnifying glass for code search and a globe for web search",
+    showsSearchIconAndGroupsSearches,
+  );
 
   it.each([
     {
@@ -3127,7 +3145,9 @@ describe("buildThreadFeed", () => {
       activities: [{ status: "failure", workEntry: { tone: "error" } }],
     });
   });
-});
+}
+
+describe("buildThreadFeed", describeBuildThreadFeed);
 
 describe("quiet timeline: nested agents", () => {
   it.each(["task.updated", "task.progress"] as const)(
