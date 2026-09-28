@@ -110,6 +110,7 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
+import * as VersionControlPolicy from "./vcs/VersionControlPolicy.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
@@ -196,6 +197,10 @@ const PtyAdapterLive = NodePtyAdapter.layer;
 const ServerSettingsLayerLive = ServerSettings.layer.pipe(
   Layer.provide(ServerSecretStore.layer),
   Layer.provideMerge(SqlitePersistenceLayerLive),
+);
+
+const VersionControlPolicyLive = VersionControlPolicy.layer.pipe(
+  Layer.provide(ServerSettingsLayerLive),
 );
 
 const NativeTelemetryLayerLive = NativeTelemetryClient.layer.pipe(
@@ -553,6 +558,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(Layer.mergeAll(NativeAppIconResolver.layer, ProjectFaviconResolverLayerLive)),
   Layer.provideMerge(RepositoryIdentityResolverLayerLive),
+  // Detection, status, and checkpoints require this. The service has no
+  // default, so a missing layer cannot silently leave Git on.
+  Layer.provideMerge(VersionControlPolicyLive),
   Layer.provideMerge(ServerEnvironmentLayerLive),
   Layer.provideMerge(AuthLayerLive),
   Layer.provideMerge(ServerSecretStore.layer),

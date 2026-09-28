@@ -28,6 +28,20 @@ import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as VersionControlPolicy from "./VersionControlPolicy.ts";
+
+const DISABLED_LOCAL_STATUS: VcsStatusLocalResult = {
+  isRepo: false,
+  hasPrimaryRemote: false,
+  isDefaultRef: false,
+  refName: null,
+  hasWorkingTreeChanges: false,
+  workingTree: {
+    files: [],
+    insertions: 0,
+    deletions: 0,
+  },
+};
 
 const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.seconds(30);
 const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.seconds(30);
@@ -220,6 +234,7 @@ const normalizeCwd = (cwd: string) =>
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const autoPullPolicy = yield* VcsAutoPullPolicy;
+  const versionControl = yield* VersionControlPolicy.VersionControlPolicy;
   const workflow = yield* GitWorkflowService.GitWorkflowService;
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
   const fs = yield* FileSystem.FileSystem;
@@ -360,9 +375,54 @@ export const make = Effect.gen(function* () {
     return yield* updateCachedLocalStatus(cwd, local);
   });
 
+  /** Reads the version-control switch for one working directory. */
+  const versionControlEnabled = (cwd: string) => versionControl.isEnabled(cwd);
+
+  const disabledStatus = mergeGitStatusParts(DISABLED_LOCAL_STATUS, null);
+
+  /**
+   * Drops a cached repository snapshot and tells open streams this directory
+   * is not a repository. Leaving `isRepo: false` cached would keep a later
+   * re-enable from loading Git.
+   */
+  const forgetCachedStatus = Effect.fn("VcsStatusBroadcaster.forgetCachedStatus")(function* (
+    cwd: string,
+  ) {
+    const removed = yield* Ref.modify(cacheRef, (cache) => {
+      if (!cache.has(cwd)) return [false, cache] as const;
+      const nextCache = new Map(cache);
+      nextCache.delete(cwd);
+      return [true, nextCache] as const;
+    });
+    if (!removed) return;
+    yield* PubSub.publish(changesPubSub, {
+      cwd,
+      event: {
+        _tag: "snapshot",
+        local: DISABLED_LOCAL_STATUS,
+        remote: null,
+      },
+    });
+  });
+
+  /**
+   * Stops Git for a disabled directory and publishes that snapshot.
+   * Callers re-check after acquiring the remote write lock so work queued
+   * while the switch was still on does not continue.
+   */
+  const stopWhenVersionControlDisabled = Effect.fn(
+    "VcsStatusBroadcaster.stopWhenVersionControlDisabled",
+  )(function* (cwd: string) {
+    if (yield* versionControlEnabled(cwd)) return false;
+    yield* forgetCachedStatus(cwd);
+    return true;
+  });
+
+  /** Loads local status, or a not-a-repository snapshot when version control is off. */
   const getOrLoadLocalStatus = Effect.fn("VcsStatusBroadcaster.getOrLoadLocalStatus")(function* (
     cwd: string,
   ) {
+    if (yield* stopWhenVersionControlDisabled(cwd)) return DISABLED_LOCAL_STATUS;
     const cached = yield* getCachedStatus(cwd);
     if (cached?.local) {
       return cached.local.value;
@@ -372,10 +432,12 @@ export const make = Effect.gen(function* () {
 
   const withFileSystem = Effect.provideService(FileSystem.FileSystem, fs);
 
+  /** Returns cached status, loading Git only while version control stays enabled. */
   const getStatus: VcsStatusBroadcaster["Service"]["getStatus"] = Effect.fn(
     "VcsStatusBroadcaster.getStatus",
   )(function* (input) {
     const cwd = yield* withFileSystem(normalizeCwd(input.cwd));
+    if (yield* stopWhenVersionControlDisabled(cwd)) return disabledStatus;
     const cached = yield* getCachedStatus(cwd);
     if (cached?.local && cached.remote) {
       return mergeGitStatusParts(cached.local.value, cached.remote.value);
@@ -383,6 +445,7 @@ export const make = Effect.gen(function* () {
     return yield* withRemoteWriteLock(
       cwd,
       Effect.gen(function* () {
+        if (yield* stopWhenVersionControlDisabled(cwd)) return disabledStatus;
         const latest = yield* getCachedStatus(cwd);
         const [local, remote] = yield* Effect.all(
           [
@@ -391,32 +454,44 @@ export const make = Effect.gen(function* () {
           ],
           { concurrency: "unbounded" },
         );
+        if (yield* stopWhenVersionControlDisabled(cwd)) return disabledStatus;
         return yield* updateCachedStatus(cwd, local, remote);
       }),
     );
   });
 
+  /** Reloads local Git status unless version control was turned off during the read. */
   const refreshLocalStatusCore = Effect.fn("VcsStatusBroadcaster.refreshLocalStatusCore")(
     function* (cwd: string) {
+      if (yield* stopWhenVersionControlDisabled(cwd)) return DISABLED_LOCAL_STATUS;
       yield* workflow.invalidateLocalStatus(cwd);
       const local = yield* workflow.localStatus({ cwd });
+      if (yield* stopWhenVersionControlDisabled(cwd)) return DISABLED_LOCAL_STATUS;
       return yield* updateCachedLocalStatus(cwd, local, { publish: true });
     },
   );
 
+  /** Refreshes local status, skipping Git when version control is off. */
   const refreshLocalStatus: VcsStatusBroadcaster["Service"]["refreshLocalStatus"] = Effect.fn(
     "VcsStatusBroadcaster.refreshLocalStatus",
   )(function* (rawCwd) {
     const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
+    if (yield* stopWhenVersionControlDisabled(cwd)) return DISABLED_LOCAL_STATUS;
     return yield* refreshLocalStatusCore(cwd);
   });
 
+  /**
+   * Pulls a clean default branch when policy allows it.
+   * Rechecks the version-control switch before Git so a disable that lands
+   * while this effect is queued does not pull.
+   */
   const maybeAutoPull = Effect.fn("VcsStatusBroadcaster.maybeAutoPull")(function* (
     cwd: string,
     remote: VcsStatusRemoteResult | null,
     policyCwds: ReadonlyArray<string>,
   ) {
     return yield* Effect.gen(function* () {
+      if (yield* stopWhenVersionControlDisabled(cwd)) return null;
       const autoPullEnabled = (yield* Effect.forEach(policyCwds, autoPullPolicy.isEnabled, {
         concurrency: "unbounded",
       })).some(Boolean);
@@ -440,6 +515,7 @@ export const make = Effect.gen(function* () {
         [workflow.localStatus({ cwd }), workflow.remoteStatus({ cwd }, { refreshUpstream: false })],
         { concurrency: "unbounded" },
       );
+      if (yield* stopWhenVersionControlDisabled(cwd)) return null;
       yield* updateCachedStatus(cwd, refreshedLocal, refreshedRemote, { publish: true });
       return { local: refreshedLocal, remote: refreshedRemote };
     }).pipe(
@@ -449,6 +525,11 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * Refreshes remote status. When the cache has no local entry, reloads local
+   * status too and publishes a full snapshot so a re-enable replaces the
+   * disabled `isRepo: false` stream state.
+   */
   const refreshRemoteStatus = Effect.fn("VcsStatusBroadcaster.refreshRemoteStatus")(function* (
     cwd: string,
     options?: {
@@ -459,10 +540,28 @@ export const make = Effect.gen(function* () {
     return yield* withRemoteWriteLock(
       cwd,
       Effect.gen(function* () {
+        if (yield* stopWhenVersionControlDisabled(cwd)) return null;
+        const cached = yield* getCachedStatus(cwd);
+        if (cached?.local == null) {
+          yield* workflow.invalidateLocalStatus(cwd);
+          if (options?.refreshUpstream !== false) {
+            yield* workflow.invalidateRemoteStatus(cwd);
+          }
+          const [local, remote] = yield* Effect.all(
+            [workflow.localStatus({ cwd }), workflow.remoteStatus({ cwd }, options)],
+            { concurrency: "unbounded" },
+          );
+          if (yield* stopWhenVersionControlDisabled(cwd)) return null;
+          const pulled = yield* maybeAutoPull(cwd, remote, options?.policyCwds ?? [cwd]);
+          if (pulled !== null) return pulled.remote;
+          yield* updateCachedStatus(cwd, local, remote, { publish: true });
+          return remote;
+        }
         if (options?.refreshUpstream !== false) {
           yield* workflow.invalidateRemoteStatus(cwd);
         }
         const remote = yield* workflow.remoteStatus({ cwd }, options);
+        if (yield* stopWhenVersionControlDisabled(cwd)) return null;
         const pulled = yield* maybeAutoPull(cwd, remote, options?.policyCwds ?? [cwd]);
         if (pulled !== null) return pulled.remote;
         return yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
@@ -470,20 +569,24 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  /** Reloads local and remote status, skipping Git queued before a disable. */
   const refreshStatus: VcsStatusBroadcaster["Service"]["refreshStatus"] = Effect.fn(
     "VcsStatusBroadcaster.refreshStatus",
   )(function* (rawCwd) {
     const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
+    if (yield* stopWhenVersionControlDisabled(cwd)) return disabledStatus;
     // invalidateStatus (not the two partial invalidations) so an explicit
     // refresh also bypasses GitManager's slow PR-lookup cache.
     return yield* withRemoteWriteLock(
       cwd,
       Effect.gen(function* () {
+        if (yield* stopWhenVersionControlDisabled(cwd)) return disabledStatus;
         yield* workflow.invalidateStatus(cwd);
         const [local, remote] = yield* Effect.all(
           [workflow.localStatus({ cwd }), workflow.remoteStatus({ cwd })],
           { concurrency: "unbounded" },
         );
+        if (yield* stopWhenVersionControlDisabled(cwd)) return disabledStatus;
         const pulled = yield* maybeAutoPull(cwd, remote, [rawCwd]);
         if (pulled !== null) return mergeGitStatusParts(pulled.local, pulled.remote);
         return yield* updateCachedStatus(cwd, local, remote, { publish: true });
@@ -491,12 +594,15 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  /** Refreshes a loaded pull request, skipping Git queued before a disable. */
   const refreshPullRequestStatus: VcsStatusBroadcaster["Service"]["refreshPullRequestStatus"] =
     Effect.fn("VcsStatusBroadcaster.refreshPullRequestStatus")(function* (rawCwd) {
       const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
+      if (yield* stopWhenVersionControlDisabled(cwd)) return null;
       return yield* withRemoteWriteLock(
         cwd,
         Effect.gen(function* () {
+          if (yield* stopWhenVersionControlDisabled(cwd)) return null;
           const cached = yield* getCachedStatus(cwd);
           if (cached?.remote?.value == null) return null;
           const poller = (yield* SynchronizedRef.get(pollersRef)).get(cwd);
@@ -514,6 +620,7 @@ export const make = Effect.gen(function* () {
             { cwd },
             { refreshUpstream: false, refreshMissingPullRequest: true },
           );
+          if (yield* stopWhenVersionControlDisabled(cwd)) return null;
           return yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
         }),
       );
@@ -528,13 +635,26 @@ export const make = Effect.gen(function* () {
     return Effect.gen(function* () {
       const consecutiveFailuresRef = yield* Ref.make(0);
       const needsInitialRefreshRef = yield* Ref.make(refreshImmediately);
+      /**
+       * Polls remote status for one cwd. A zero fetch interval still checks
+       * the version-control switch so an open stream publishes a disabled
+       * snapshot and, after re-enable, a full snapshot when local status was
+       * forgotten.
+       */
       const refreshRemoteStatusIfEnabled = Effect.gen(function* () {
         const configuredInterval = yield* automaticRemoteRefreshInterval;
         const activeInterval = Duration.isZero(configuredInterval)
           ? DEFAULT_VCS_STATUS_REFRESH_INTERVAL
           : configuredInterval;
+        if (yield* stopWhenVersionControlDisabled(cwd)) {
+          return activeInterval;
+        }
         const needsInitialRefresh = yield* Ref.get(needsInitialRefreshRef);
-        if (Duration.isZero(configuredInterval) && !needsInitialRefresh) {
+        const cached = yield* getCachedStatus(cwd);
+        // Interval 0 skips later fetches, but a missing local snapshot means
+        // version control was just turned back on and the stream still shows
+        // `isRepo: false`.
+        if (Duration.isZero(configuredInterval) && !needsInitialRefresh && cached?.local != null) {
           return activeInterval;
         }
 
@@ -694,14 +814,16 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  /** Streams status, starting from a not-a-repository snapshot when version control is off. */
   const streamStatus: VcsStatusBroadcaster["Service"]["streamStatus"] = (input, options) =>
     Stream.unwrap(
       Effect.gen(function* () {
         const cwd = yield* withFileSystem(normalizeCwd(input.cwd));
         const subscription = yield* PubSub.subscribe(changesPubSub);
-        const initialLocal = yield* getOrLoadLocalStatus(cwd);
+        const enabled = !(yield* stopWhenVersionControlDisabled(cwd));
+        const initialLocal = enabled ? yield* getOrLoadLocalStatus(cwd) : DISABLED_LOCAL_STATUS;
         const cachedStatus = yield* getCachedStatus(cwd);
-        const initialRemote = cachedStatus?.remote?.value ?? null;
+        const initialRemote = enabled ? (cachedStatus?.remote?.value ?? null) : null;
         yield* retainRemotePoller(
           cwd,
           input.cwd,

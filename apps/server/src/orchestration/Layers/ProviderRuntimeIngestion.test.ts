@@ -52,6 +52,7 @@ import {
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
+import * as VersionControlPolicy from "../../vcs/VersionControlPolicy.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
@@ -338,7 +339,14 @@ describe("ProviderRuntimeIngestion", () => {
             ...store,
             isGitRepository: options?.isGitRepository ?? store.isGitRepository,
           })),
-        ).pipe(Layer.provide(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer)))),
+        ).pipe(
+          Layer.provide(
+            CheckpointStore.layer.pipe(
+              Layer.provide(VcsDriverRegistry.layer),
+              Layer.provide(VersionControlPolicy.layerTest),
+            ),
+          ),
+        ),
       ),
       Layer.provideMerge(VcsProcess.layer),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),

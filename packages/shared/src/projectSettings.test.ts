@@ -20,6 +20,28 @@ const projectId = ProjectId.make("project-a");
 const otherProjectId = ProjectId.make("project-b");
 
 describe("resolveProjectSettings", () => {
+  it("lets a project turn version control off without affecting other projects", () => {
+    expect(DEFAULT_SERVER_SETTINGS.enableVersionControl).toBe(true);
+    const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      projectSettingsOverrides: {
+        [projectId]: { enableVersionControl: false },
+      },
+    });
+    expect(resolveProjectSettings(settings, projectId).settings.enableVersionControl).toBe(false);
+    expect(resolveProjectSettings(settings, projectId).sources.enableVersionControl).toBe(
+      "project",
+    );
+    expect(resolveProjectSettings(settings, otherProjectId).settings.enableVersionControl).toBe(
+      true,
+    );
+    const environmentOff = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      enableVersionControl: false,
+    });
+    expect(resolveProjectSettings(environmentOff, projectId).settings.enableVersionControl).toBe(
+      false,
+    );
+  });
+
   it("inherits every scopable key when the project has no overrides", () => {
     const resolved = resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId);
     expect(resolved.settings).toBe(DEFAULT_SERVER_SETTINGS);

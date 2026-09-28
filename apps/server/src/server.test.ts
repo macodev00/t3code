@@ -169,6 +169,7 @@ import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriver from "./vcs/VcsDriver.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
+import * as VersionControlPolicy from "./vcs/VersionControlPolicy.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
@@ -749,7 +750,10 @@ const buildAppUnderTest = (options?: {
       ? Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
           ...options.layers.vcsStatusBroadcaster,
         })
-      : VcsStatusBroadcaster.layer.pipe(Layer.provide(gitWorkflowLayer));
+      : VcsStatusBroadcaster.layer.pipe(
+          Layer.provide(gitWorkflowLayer),
+          Layer.provide(VersionControlPolicy.layerTest),
+        );
     const resourceTelemetryLayer = ResourceTelemetry.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -1241,7 +1245,12 @@ const buildAppUnderTest = (options?: {
           ? FetchHttpClient.layer
           : Layer.succeed(HttpClient.HttpClient, options.layers.httpClient),
       ),
-      Layer.provide(GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer))),
+      Layer.provide(
+        Layer.mergeAll(
+          GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer)),
+          VersionControlPolicy.layerTest,
+        ),
+      ),
       Layer.provide(layerConfig),
     );
 

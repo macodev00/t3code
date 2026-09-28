@@ -26,16 +26,20 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 it.effect("automatic pull only updates enabled, behind, clean default-branch checkouts", () =>
   Effect.gen(function* () {
     const pulled: string[] = [];
+    const statusCalls: string[] = [];
     const git = {
       statusDetails: (cwd: string) =>
-        Effect.succeed({
-          isRepo: true,
-          isDefaultBranch: cwd !== "/feature",
-          hasUpstream: true,
-          hasWorkingTreeChanges: cwd === "/dirty",
-          aheadCount: cwd === "/ahead" ? 1 : 0,
-          behindCount: cwd === "/current" ? 0 : 1,
-        } as never),
+        Effect.sync(() => {
+          statusCalls.push(cwd);
+          return {
+            isRepo: true,
+            isDefaultBranch: cwd !== "/feature",
+            hasUpstream: true,
+            hasWorkingTreeChanges: cwd === "/dirty",
+            aheadCount: cwd === "/ahead" ? 1 : 0,
+            behindCount: cwd === "/current" ? 0 : 1,
+          } as never;
+        }),
       pullCurrentBranch: (cwd: string) =>
         Effect.sync(() => {
           pulled.push(cwd);
@@ -58,6 +62,14 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
       ),
     });
 
+    const pullSettings = overrides({
+      "/clean": true,
+      "/current": true,
+      "/dirty": true,
+      "/ahead": true,
+      "/feature": true,
+      "/disabled": false,
+    });
     yield* ServerRuntimeStartup.autoPullProjects(
       [
         project("/clean"),
@@ -66,18 +78,19 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
         project("/ahead"),
         project("/feature"),
         project("/disabled"),
+        project("/vcs-off"),
       ],
-      overrides({
-        "/clean": true,
-        "/current": true,
-        "/dirty": true,
-        "/ahead": true,
-        "/feature": true,
-        "/disabled": false,
-      }),
+      {
+        ...pullSettings,
+        projectSettingsOverrides: {
+          ...pullSettings.projectSettingsOverrides,
+          [ProjectId.make("/vcs-off")]: { defaultAutoPull: true, enableVersionControl: false },
+        },
+      },
     ).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, git));
 
     assert.deepStrictEqual(pulled, ["/clean"]);
+    assert.equal(statusCalls.includes("/vcs-off"), false);
 
     pulled.length = 0;
     yield* ServerRuntimeStartup.autoPullProjects(

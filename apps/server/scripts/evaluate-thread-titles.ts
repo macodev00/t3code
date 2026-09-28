@@ -30,6 +30,7 @@ import * as AzureDevOpsCli from "../src/sourceControl/AzureDevOpsCli.ts";
 import * as BitbucketApi from "../src/sourceControl/BitbucketApi.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
 import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
+import * as VersionControlPolicy from "../src/vcs/VersionControlPolicy.ts";
 import * as VcsProjectConfig from "../src/vcs/VcsProjectConfig.ts";
 import * as GitVcsDriver from "../src/vcs/GitVcsDriver.ts";
 import * as ProcessRunner from "../src/processRunner.ts";
@@ -158,7 +159,12 @@ await Effect.runPromise(
               BitbucketApi.layer,
             ),
           ),
-          Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer))),
+          Layer.provide(
+            VcsDriverRegistry.layer.pipe(
+              Layer.provide(VcsProjectConfig.layer),
+              Layer.provide(VersionControlPolicy.layerTest),
+            ),
+          ),
           Layer.provide(GitVcsDriver.layer),
           Layer.provide(VcsProcess.layer),
           Layer.provide(FetchHttpClient.layer),

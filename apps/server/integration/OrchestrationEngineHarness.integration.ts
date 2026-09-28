@@ -84,6 +84,7 @@ import { deriveServerPaths, ServerConfig } from "../src/config.ts";
 import * as WorkspaceEntries from "../src/workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../src/workspace/WorkspacePaths.ts";
 import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
+import * as VersionControlPolicy from "../src/vcs/VersionControlPolicy.ts";
 import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
@@ -306,7 +307,10 @@ export const makeOrchestrationIntegrationHarness = (
         );
     const providerRegistryLayer = makeProviderRegistryLayer();
 
-    const checkpointStoreLayer = CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer));
+    const checkpointStoreLayer = CheckpointStore.layer.pipe(
+      Layer.provide(VcsDriverRegistry.layer),
+      Layer.provide(VersionControlPolicy.layerTest),
+    );
     const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive;
     const runtimeServicesLayer = Layer.mergeAll(
       projectionSnapshotQueryLayer,
@@ -375,7 +379,9 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(
         WorkspaceEntries.layer.pipe(
           Layer.provide(WorkspacePaths.layer),
-          Layer.provideMerge(VcsDriverRegistry.layer),
+          Layer.provideMerge(
+            VcsDriverRegistry.layer.pipe(Layer.provide(VersionControlPolicy.layerTest)),
+          ),
           Layer.provide(NodeServices.layer),
         ),
       ),
