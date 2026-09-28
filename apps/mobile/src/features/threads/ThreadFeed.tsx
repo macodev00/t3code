@@ -5,7 +5,12 @@ import {
 } from "./worktree-setup-card";
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
-import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
+import {
+  useRecyclingEffect,
+  useViewabilityAmount,
+  type LegendListRecyclingState,
+  type LegendListRef,
+} from "@legendapp/list/react-native";
 import type {
   ChatAttachment,
   ChatFileAttachment,
@@ -172,6 +177,14 @@ import {
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
 import { appendPendingThreadMessages, type PendingThreadFeedEntry } from "./pending-thread-feed";
+import { AndroidTranscriptCodeSlice } from "./AndroidTranscriptCodeSlice";
+import {
+  androidTranscriptItemType,
+  assistantSliceGap,
+  assistantSliceMarkdown,
+  expandAndroidAssistantTranscriptRows,
+  type AndroidAssistantSliceEntry,
+} from "./androidTranscriptSlices";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import {
@@ -235,13 +248,45 @@ const THREAD_FEED_DISCLOSURE_ENTER_TRANSITION = FadeIn.delay(
   THREAD_DISCLOSURE_TRANSITION_MS,
 ).duration(140);
 
-// Entering animations must only play for rows born just now — LegendList
-// remounts rows when they scroll back into view, and replaying an entrance for
-// old content would be its own kind of jank.
+// Entering animations must only play for rows born just now. Replaying one when
+// a settled row scrolls back into view is its own kind of jank.
 const FRESH_ENTRY_WINDOW_MS = 3_000;
+/** True when a row was created moments ago and may fade in as it mounts. */
 function isFreshTimestamp(input: string): boolean {
   const timestamp = Date.parse(input);
   return Number.isFinite(timestamp) && Date.now() - timestamp < FRESH_ENTRY_WINDOW_MS;
+}
+
+/**
+ * Row id LegendList last painted in this container, when the item has one.
+ * Streaming updates replace the object but keep the id; a recycle does not.
+ */
+function rowRecycleId(item: unknown): string | undefined {
+  if (typeof item !== "object" || item === null || !("id" in item)) {
+    return undefined;
+  }
+  const id = item.id;
+  return typeof id === "string" ? id : undefined;
+}
+
+/**
+ * Runs `reset` when this container is reused for a different feed row.
+ * Same-id updates, including a streaming append, do not count as a recycle.
+ * iOS remounts rows, so the effect never observes a previous item there.
+ */
+function useResetOnRowRecycle(reset: () => void) {
+  const resetRef = useRef(reset);
+  resetRef.current = reset;
+  useRecyclingEffect(
+    useCallback((info: LegendListRecyclingState<unknown>) => {
+      const previousId = rowRecycleId(info.prevItem);
+      const nextId = rowRecycleId(info.item);
+      if (previousId !== undefined && previousId === nextId) {
+        return;
+      }
+      resetRef.current();
+    }, []),
+  );
 }
 
 export interface ThreadFeedProps {
@@ -279,6 +324,7 @@ export interface ThreadFeedProps {
   } | null;
 }
 
+/** Image attachment row. A recycled container must retry the new attachment's URL. */
 function MessageAttachmentImage(props: {
   readonly environmentId: EnvironmentId;
   readonly attachmentId: string;
@@ -300,6 +346,9 @@ function MessageAttachmentImage(props: {
   const uri = useAssetUrl(props.environmentId, resource);
   const refreshAssetUrl = useRefreshAssetUrl(props.environmentId, resource);
   const retriedImage = useRef(false);
+  useResetOnRowRecycle(() => {
+    retriedImage.current = false;
+  });
 
   if (uri === null) {
     return (
@@ -362,6 +411,7 @@ function isFileAttachment(attachment: ChatAttachment): attachment is ChatFileAtt
   return attachment.type === "file";
 }
 
+/** File attachment row. Opening state belongs to the attachment in this container. */
 function MessageAttachmentFile(props: {
   readonly environmentId: EnvironmentId;
   readonly attachment: ChatFileAttachment;
@@ -399,6 +449,11 @@ function MessageAttachmentFile(props: {
     : null;
   const openingRef = useRef<AbortController | null>(null);
   const [opening, setOpening] = useState(false);
+  useResetOnRowRecycle(() => {
+    openingRef.current?.abort();
+    openingRef.current = null;
+    setOpening(false);
+  });
 
   useFocusEffect(
     useCallback(() => {
@@ -562,8 +617,13 @@ const ThreadMediaVisibleContext = createContext(false);
 // LegendList only computes hook visibility when the list has a viewability config.
 const THREAD_MEDIA_VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 0 };
 
+/**
+ * Gates video thumbnails on viewability. Visibility is per row, so a recycled
+ * container starts hidden until the new row reports itself.
+ */
 function ThreadMediaVisibility(props: { readonly children: ReactNode }) {
   const [visible, setVisible] = useState(false);
+  useResetOnRowRecycle(() => setVisible(false));
   useViewabilityAmount<ThreadFeedEntry>(
     useCallback((token) => setVisible(token.sizeVisible > 0), []),
   );
@@ -634,6 +694,7 @@ const markdownLinkStyles = StyleSheet.create({
   },
 });
 
+/** External link with a favicon. A failed host must not follow the container to the next link. */
 const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
   readonly children: ReactNode;
   readonly color: string;
@@ -642,6 +703,7 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
   readonly onPress: (href: string) => void;
 }) {
   const [failedHost, setFailedHost] = useState<string | null>(null);
+  useResetOnRowRecycle(() => setFailedHost(null));
   const linkIcon = resolveMarkdownLinkIcon(props.host);
   const faviconUrl = linkIcon ? null : faviconUrlForOrigin(`https://${props.host}`);
 
@@ -1350,8 +1412,117 @@ function useMarkdownStyles(
   ]);
 }
 
+type PresentedThreadFeedEntry =
+  | PendingThreadFeedEntry
+  | AndroidAssistantSliceEntry<Extract<PendingThreadFeedEntry, { type: "message" }>>;
+
+/**
+ * Draws one window of an assistant message that was split so Android can mount
+ * it across frames. Chrome (attachments, copy, timestamp) stays on the last
+ * window; the copy still covers the whole message.
+ */
+function renderAssistantTranscriptSlice(
+  entry: AndroidAssistantSliceEntry<Extract<PendingThreadFeedEntry, { type: "message" }>>,
+  props: Parameters<typeof renderFeedEntry>[1],
+) {
+  const { message } = entry.source;
+  const { markdownStyles, iconSubtleColor } = props;
+  const styles = markdownStyles.assistant;
+  const renderedFullText = renderAssistantCitationsAsText(message.text);
+  const sliceMarkdown = assistantSliceMarkdown(entry.slice);
+  const timestampLabel = formatMessageTime(message.updatedAt);
+  const attachments = message.attachments ?? [];
+  const assistantTurnStillInProgress =
+    props.unsettledTurnId !== null && message.turnId === props.unsettledTurnId;
+  const showAssistantMeta =
+    entry.isLast &&
+    props.terminalAssistantMessageIds.has(message.id) &&
+    !assistantTurnStillInProgress &&
+    !message.streaming;
+  const hasWideBlock =
+    entry.slice.kind === "code" ||
+    hasWideMarkdownBlock(sliceMarkdown ?? "", WIDE_MARKDOWN_BLOCK_OPTIONS);
+  const enterAnimated = entry.isFirst && isFreshTimestamp(message.createdAt);
+  const gap = assistantSliceGap(entry.slice, entry.isLast);
+
+  return (
+    <Animated.View
+      className={cn(
+        entry.isLast ? (showAssistantMeta ? "mb-5 px-1" : "mb-1 px-1") : "px-1",
+        hasWideBlock && "w-full",
+      )}
+      style={gap > 0 ? { marginBottom: gap } : undefined}
+      {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
+    >
+      {sliceMarkdown && sliceMarkdown.trim().length > 0 ? (
+        <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
+          <AssistantMarkdownContent
+            markdown={sliceMarkdown}
+            markdownStyles={styles}
+            linkHandlers={props.markdownLinkHandlers}
+            onUseArtifactTemplate={props.onUseArtifactTemplate}
+            renderImage={props.renderMarkdownImage}
+            skills={props.skills}
+          />
+        </MarkdownImageAvailableWidthContext>
+      ) : entry.slice.kind === "code" && entry.slice.codePart !== "only" ? (
+        <AndroidTranscriptCodeSlice
+          text={entry.slice.text}
+          language={entry.slice.language}
+          part={entry.slice.codePart}
+          fullCode={entry.slice.fullCode}
+          textStyle={styles.nativeTextStyle}
+        />
+      ) : null}
+      {entry.isLast
+        ? attachments.map((attachment) => {
+            return isImageAttachment(attachment) ? (
+              <MessageAttachmentImage
+                key={attachment.id}
+                environmentId={props.environmentId}
+                attachmentId={attachment.id}
+                name={attachment.name}
+                mimeType={attachment.mimeType}
+                className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-subtle-strong"
+                onPressPreview={props.onPressPreview}
+              />
+            ) : isFileAttachment(attachment) ? (
+              <MessageAttachmentFile
+                key={attachment.id}
+                environmentId={props.environmentId}
+                attachment={attachment}
+                onPressPreview={props.onPressPreview}
+                onPressVideo={props.onPressVideo}
+              />
+            ) : (
+              <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
+            );
+          })
+        : null}
+      {showAssistantMeta ? (
+        <View className="mt-1 flex-row items-center gap-1">
+          <CopyTextButton
+            accessibilityLabel="Copy message"
+            text={renderedFullText}
+            tintColor={iconSubtleColor}
+            buttonSize={28}
+            iconSize={13}
+          />
+          <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
+            {timestampLabel}
+          </Text>
+        </View>
+      ) : null}
+    </Animated.View>
+  );
+}
+
+/**
+ * Renders one transcript row. Long assistant messages arrive already sliced on
+ * Android; every other row is unchanged.
+ */
 function renderFeedEntry(
-  info: { item: PendingThreadFeedEntry; index: number },
+  info: { item: PresentedThreadFeedEntry; index: number },
   props: Pick<
     ThreadFeedProps,
     | "environmentId"
@@ -1391,6 +1562,9 @@ function renderFeedEntry(
   },
 ) {
   const entry = info.item;
+  if (entry.type === "assistant-slice") {
+    return renderAssistantTranscriptSlice(entry, props);
+  }
   const { markdownStyles, iconSubtleColor, userBubbleColor } = props;
 
   if (entry.type === "turn-fold") {
@@ -1781,8 +1955,10 @@ type UserMessageContentProps = {
   readonly renderImage: MarkdownImageRenderer;
 };
 
+/** User message body. The context sheet is closed when the container is reused. */
 function UserMessageContent(props: UserMessageContentProps) {
   const [selected, setSelected] = useState<{ contextId: string; label: string } | null>(null);
+  useResetOnRowRecycle(() => setSelected(null));
   const navigation = useNavigation();
   const { selectedThread } = useThreadSelection();
   const text = replaceComposerContextReferences(props.text, (ref) => {
@@ -1947,6 +2123,11 @@ function ThreadFeedPlaceholder(props: {
   );
 }
 
+/**
+ * Virtualized transcript. On Android, long assistant messages are sliced and
+ * their containers are recycled so scrolling a settled thread does not remount
+ * each message's text tree. Live-follow still pins the end while the tail grows.
+ */
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
@@ -2450,16 +2631,19 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }, [expandedWorkGroups]);
   const presentedFeed = useMemo(
     () =>
-      appendPendingThreadMessages(
-        deriveThreadFeedPresentation(
+      expandAndroidAssistantTranscriptRows(
+        appendPendingThreadMessages(
+          deriveThreadFeedPresentation(
+            props.feed,
+            props.latestTurn,
+            expandedTurnIds,
+            expandedWorkGroupIds,
+            props.activeWorkStartedAt,
+          ),
           props.feed,
-          props.latestTurn,
-          expandedTurnIds,
-          expandedWorkGroupIds,
-          props.activeWorkStartedAt,
+          props.queuedMessages,
         ),
-        props.feed,
-        props.queuedMessages,
+        Platform.OS,
       ),
     [
       props.queuedMessages,
@@ -2600,7 +2784,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }
   }, [settleDisclosureAfterLayout]);
 
-  const shouldRestoreVisibleContentPosition = useCallback((entry: ThreadFeedEntry) => {
+  const shouldRestoreVisibleContentPosition = useCallback((entry: PresentedThreadFeedEntry) => {
     const disclosureAnchorKey = disclosureAnchorKeyRef.current;
     return disclosureAnchorKey === null || entry.id === disclosureAnchorKey;
   }, []);
@@ -2713,11 +2897,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // exact; message rows stay undefined and use LegendList's per-type running
   // average once one of their type has been measured.
   const getFixedItemSize = useCallback(
-    (entry: ThreadFeedEntry) => {
+    (entry: PresentedThreadFeedEntry) => {
       if (workRowSizing.fixedRowHeight === undefined) {
         return undefined;
       }
       switch (entry.type) {
+        case "assistant-slice":
+          return undefined;
         case "message":
           // A collapsed reasoning row is the same chrome as a work toggle.
           return entry.message.role === "reasoning" && !expandedReasoningMessageIds.has(entry.id)
@@ -2747,9 +2933,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   // Disclosures can mount existing offscreen rows as well as new work rows.
   // Fade those in after movement; never retain removed rows over replacements.
   const renderItem = useCallback(
-    (info: { item: PendingThreadFeedEntry; index: number }) => (
+    (info: { item: PresentedThreadFeedEntry; index: number }) => (
+      // No key here. On Android the list recycles this container; a key would
+      // destroy the native text tree every time a settled row comes back.
       <Animated.View
-        key={info.item.id}
         entering={disclosureToggleSettling ? THREAD_FEED_DISCLOSURE_ENTER_TRANSITION : undefined}
       >
         <ThreadMediaVisibility>
@@ -2932,8 +3119,14 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             viewabilityConfig={THREAD_MEDIA_VIEWABILITY_CONFIG}
             keyExtractor={(entry) => entry.id}
             getItemType={(entry) =>
-              entry.type === "message" ? `message:${entry.message.role}` : entry.type
+              androidTranscriptItemType(entry) ??
+              (entry.type === "message" ? `message:${entry.message.role}` : entry.type)
             }
+            // Android recycles row containers so a settled message is not
+            // destroyed and mounted again when it re-enters the draw window.
+            // iOS keeps remounting; UITextView is cheap, and recycling would
+            // reuse its selection state.
+            recycleItems={Platform.OS === "android"}
             getFixedItemSize={getFixedItemSize}
             // Virtualized rows must move with their measurements. Native layout
             // transitions can retain stale positions during sync, even at duration 0.
