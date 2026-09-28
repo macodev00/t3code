@@ -2,6 +2,33 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { deriveToolActivityPresentation, projectQuestionToolInput } from "./toolActivity.ts";
 
+/**
+ * Header and options without question text, a streamed `{}`, and
+ * whitespace-only text project as `{}`. Real text is kept. Header and
+ * options stay off the projected entry.
+ */
+function projectQuestionOmitsEmptyText() {
+  const projected = projectQuestionToolInput(
+    {
+      toolName: "AskUserQuestion",
+      input: {
+        questions: [
+          {
+            header: "Scope",
+            options: [{ label: "Web", description: "Ship the web app" }],
+          },
+          {},
+          { question: "  " },
+          { question: "Continue?" },
+        ],
+      },
+    },
+    "AskUserQuestion",
+  );
+
+  expect(projected.input?.questions).toStrictEqual([{}, {}, {}, { question: "Continue?" }]);
+}
+
 describe("toolActivity", () => {
   it("normalizes command tools to a stable ran-command label", () => {
     expect(
@@ -55,25 +82,8 @@ describe("toolActivity", () => {
     });
   });
 
-  it("omits question when an AskUserQuestion entry has header and options but no question text", () => {
-    const projected = projectQuestionToolInput(
-      {
-        toolName: "AskUserQuestion",
-        input: {
-          questions: [
-            {
-              header: "Scope",
-              options: [{ label: "Web", description: "Ship the web app" }],
-            },
-            {},
-            { question: "  " },
-            { question: "Continue?" },
-          ],
-        },
-      },
-      "AskUserQuestion",
-    );
-
-    expect(projected.input?.questions).toStrictEqual([{}, {}, {}, { question: "Continue?" }]);
-  });
+  it(
+    "omits question when an AskUserQuestion entry has header and options but no question text",
+    projectQuestionOmitsEmptyText,
+  );
 });

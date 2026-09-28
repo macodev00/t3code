@@ -1,11 +1,32 @@
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
 
+/**
+ * Narrows an unknown value to a plain object.
+ *
+ * `null`, arrays, and other non-objects are rejected so callers can read
+ * fields without treating those values as dictionaries. The AskUserQuestion
+ * projection uses this for `item`, nested `input` / `params`, and each
+ * question entry.
+ *
+ * @param value Candidate payload value.
+ * @returns The object when `value` is a non-null, non-array object.
+ */
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
 }
 
+/**
+ * Trims a string and treats blank text as missing.
+ *
+ * Non-strings and whitespace-only strings return `undefined`. The
+ * AskUserQuestion projection uses that so `"  "` does not become a question
+ * label.
+ *
+ * @param value Candidate text.
+ * @returns The trimmed string when `value` is a non-empty string.
+ */
 function asTrimmedString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -261,31 +282,90 @@ export function deriveToolActivityPresentation(
 }
 
 /**
+ * Leaf name used to recognize an AskUserQuestion-style tool.
+ *
+ * Providers prefix the name (`mcp__server__AskUserQuestion`,
+ * `functions.AskQuestion`). Only the last segment is compared, with
+ * underscores and spaces removed.
+ *
+ * @param toolName Raw tool name from the payload or the activity title.
+ * @returns Lowercased leaf name, or `undefined` when the name has no leaf segment.
+ */
+function questionToolLeafName(toolName: string): string | undefined {
+  return toolName
+    .split(/__|[./]/)
+    .at(-1)
+    ?.replace(/[_\s]/g, "")
+    .toLowerCase();
+}
+
+/**
+ * Whether `name` is an AskUserQuestion-style tool after {@link questionToolLeafName}.
+ *
+ * Recognizes AskUserQuestion, request user input (including the async form),
+ * AskQuestion, and Question.
+ *
+ * @param name Lowercased leaf name.
+ * @returns `true` when the projection should keep this tool's questions.
+ */
+function isQuestionToolName(name: string): boolean {
+  return /^(askuserquestion|requestuserinput(?:async)?|askquestion|question)$/.test(name);
+}
+
+/**
+ * Reads the question text clients match against a native user-input activity.
+ *
+ * The first non-empty value among `question`, `question_text`, `prompt`, and
+ * `title` wins. Header, options, and answers are ignored. Whitespace-only
+ * text is missing text.
+ *
+ * @param value One entry from a question tool's `questions` array.
+ * @returns Trimmed question text, or `undefined` when the entry has none yet.
+ */
+function readQuestionText(value: unknown): string | undefined {
+  const question = asRecord(value);
+  return asTrimmedString(
+    question?.question ?? question?.question_text ?? question?.prompt ?? question?.title,
+  );
+}
+
+/**
+ * Projects one AskUserQuestion entry down to question text.
+ *
+ * An entry can arrive with a header and options, or as `{}` mid-stream, before
+ * any question text. `{ question: undefined }` is not valid JSON, and
+ * `Schema.Unknown` rejects the whole thread snapshot, so missing text is
+ * projected as `{}` and the key is left out.
+ *
+ * @param value One entry from a question tool's `questions` array.
+ * @returns `{ question }` when trimmed text exists; otherwise `{}`.
+ */
+function projectQuestionEntry(value: unknown) {
+  const text = readQuestionText(value);
+  return text === undefined ? {} : { question: text };
+}
+
+/**
  * Projects an AskUserQuestion-style tool call down to the question text clients
  * match against the native user-input activity.
  *
- * `data` is the activity payload. `title` is used only when the payload has no
- * tool name. Header, options, and answers stay off this payload; they already
- * live on that activity. Each entry's text comes from its `question`,
- * `question_text`, `prompt`, or `title` field. An entry with no text yet (a
- * streamed `{}`, or header and options that arrived first) is projected as
- * `{}`. `{ question: undefined }` is not valid JSON, and `Schema.Unknown`
- * rejects the whole thread snapshot.
- *
+ * Header, options, and answers stay off this payload; they already live on
+ * that activity. Each entry is reduced with {@link projectQuestionEntry}.
  * Returns `{}` when the tool name is missing, the tool is not a recognized
  * question tool, or `questions` is not an array.
+ *
+ * @param data Activity payload. Tool name and input are read from `toolName`,
+ * `tool`, `item`, `input`, `rawInput`, or `state`.
+ * @param title Fallback tool name, used only when the payload has none.
+ * @returns `{ toolName, input: { questions } }` for a recognized question
+ * tool, or `{}` when the payload should not be projected.
  */
 export function projectQuestionToolInput(data: Record<string, unknown>, title: unknown) {
   const item = asRecord(data.item);
   const toolName = data.toolName ?? data.tool ?? item?.tool ?? title;
   if (typeof toolName !== "string") return {};
-  const name = toolName
-    .split(/__|[./]/)
-    .at(-1)
-    ?.replace(/[_\s]/g, "")
-    .toLowerCase();
-  if (!name || !/^(askuserquestion|requestuserinput(?:async)?|askquestion|question)$/.test(name))
-    return {};
+  const name = questionToolLeafName(toolName);
+  if (!name || !isQuestionToolName(name)) return {};
   const input = asRecord(
     data.input ?? data.rawInput ?? asRecord(data.state)?.input ?? item?.arguments,
   );
@@ -296,16 +376,7 @@ export function projectQuestionToolInput(data: Record<string, unknown>, title: u
   return {
     toolName,
     input: {
-      questions: questions.map((value) => {
-        const question = asRecord(value);
-        const text = asTrimmedString(
-          question?.question ?? question?.question_text ?? question?.prompt ?? question?.title,
-        );
-        // An entry can arrive with header/options (or as `{}` mid-stream) before
-        // any question text. Emitting `{ question: undefined }` is not JSON and
-        // Schema.Unknown rejects the whole thread snapshot.
-        return text === undefined ? {} : { question: text };
-      }),
+      questions: questions.map(projectQuestionEntry),
     },
   };
 }
