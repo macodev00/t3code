@@ -125,6 +125,10 @@ let activeSession: symbol | null = null;
 let activeTranscriptionOperation: Promise<unknown> | null = null;
 let audioCleanup: Promise<void> = Promise.resolve();
 
+/**
+ * Claim the process-wide voice session. A second claim returns null so two
+ * composers cannot record at once.
+ */
 function acquireSession(): symbol | null {
   if (activeSession) return null;
   const token = Symbol("voice-input-session");
@@ -156,6 +160,10 @@ function trackAudioCleanup(cleanup: Promise<void>): void {
 /** Keep the audio queue moving when a teardown settles or fails. */
 function ignoreCleanupResult(): void {}
 
+/**
+ * Free the process-wide voice session when `token` still owns it. A stale
+ * token leaves the current owner in place.
+ */
 function releaseSession(token: symbol | null): void {
   if (token && activeSession === token) activeSession = null;
 }
