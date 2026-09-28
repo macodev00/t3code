@@ -1,0 +1,463 @@
+import { describe, expect, it } from "vite-plus/test";
+
+import {
+  ANDROID_TRANSCRIPT_CODE_LINE_BUDGET,
+  ANDROID_TRANSCRIPT_MARKDOWN_CHAR_BUDGET,
+  ANDROID_TRANSCRIPT_SLICE_GAP,
+  androidTranscriptItemType,
+  assistantSliceGap,
+  assistantSliceMarkdown,
+  expandAndroidAssistantTranscriptRows,
+  fencedCodeMarkdown,
+  splitAssistantTranscriptSlices,
+  type AndroidTranscriptSlice,
+} from "./androidTranscriptSlices";
+
+/** Minimal feed message for slice tests. */
+function message(id: string, role: "assistant" | "user", text: string) {
+  return {
+    type: "message" as const,
+    id,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    message: { role, text },
+  };
+}
+
+/** Assistant message fixture. */
+function assistantMessage(id: string, text: string) {
+  return message(id, "assistant", text);
+}
+
+/** Fenced block with a numbered line per row, so windows are easy to count. */
+function codeFence(language: string, lineCount: number): string {
+  const body = Array.from({ length: lineCount }, (_, index) => `line ${index + 1}`).join("\n");
+  return `\`\`\`${language}\n${body}\n\`\`\``;
+}
+
+/** Compact kind/part/line-count label for slice assertions. */
+function sliceKinds(slices: readonly AndroidTranscriptSlice[]): string[] {
+  return slices.map((slice) =>
+    slice.kind === "code" ? `code:${slice.codePart}:${slice.text.split("\n").length}` : "markdown",
+  );
+}
+
+/** Markdown slices only. Code windows are checked separately. */
+function markdownTexts(slices: readonly AndroidTranscriptSlice[]): string[] {
+  return slices.filter((slice) => slice.kind === "markdown").map((slice) => slice.text);
+}
+
+describe("splitAssistantTranscriptSlices", () => {
+  it("leaves a short message with one fence as a single row", () => {
+    const markdown = `See this.\n\n${codeFence("ts", 4)}`;
+    expect(splitAssistantTranscriptSlices(markdown)).toBeNull();
+  });
+
+  it("splits prose that would mount as one oversized selectable text", () => {
+    const paragraph = "word ".repeat(200).trim();
+    const markdown = `${paragraph}\n\n${paragraph}`;
+    const slices = splitAssistantTranscriptSlices(markdown);
+    expect(slices).not.toBeNull();
+    expect(slices!.every((slice) => slice.kind === "markdown")).toBe(true);
+    for (const slice of slices!) {
+      expect(slice.text.length).toBeLessThanOrEqual(ANDROID_TRANSCRIPT_MARKDOWN_CHAR_BUDGET);
+    }
+    const words = (value: string) => value.replaceAll(/\s+/g, " ").trim();
+    expect(words(slices!.map((slice) => slice.text).join(" "))).toBe(words(markdown));
+  });
+
+  it("puts each fence on its own row when a message has more than one", () => {
+    const markdown = `${codeFence("ts", 3)}\n\nBetween.\n\n${codeFence("go", 2)}`;
+    const slices = splitAssistantTranscriptSlices(markdown);
+    expect(sliceKinds(slices!)).toEqual(["code:only:3", "markdown", "code:only:2"]);
+    expect(assistantSliceMarkdown(slices![0]!)).toContain("```ts");
+    expect(assistantSliceMarkdown(slices![2]!)).toContain("```go");
+  });
+
+  it("windows a long fence and keeps earlier windows stable as it grows", () => {
+    const before = codeFence("ts", ANDROID_TRANSCRIPT_CODE_LINE_BUDGET + 1);
+    const after = codeFence("ts", ANDROID_TRANSCRIPT_CODE_LINE_BUDGET * 2 + 3);
+    const first = splitAssistantTranscriptSlices(before);
+    const grown = splitAssistantTranscriptSlices(after);
+    expect(sliceKinds(first!)).toEqual([
+      `code:start:${ANDROID_TRANSCRIPT_CODE_LINE_BUDGET}`,
+      "code:end:1",
+    ]);
+    expect(sliceKinds(grown!)).toEqual([
+      `code:start:${ANDROID_TRANSCRIPT_CODE_LINE_BUDGET}`,
+      `code:middle:${ANDROID_TRANSCRIPT_CODE_LINE_BUDGET}`,
+      "code:end:3",
+    ]);
+    const grownHead = grown![0]!;
+    const firstHead = first![0]!;
+    const grownNext = grown![1]!;
+    const firstNext = first![1]!;
+    expect(grownHead).toMatchObject({
+      key: firstHead.key,
+      text: firstHead.text,
+    });
+    expect(grownNext.key).toBe(firstNext.key);
+    expect(grownHead.kind === "code" && grownHead.text.startsWith("line 1")).toBe(true);
+    expect(grownHead.kind === "code" && grownHead.text.includes("line 17")).toBe(false);
+    expect(assistantSliceMarkdown(grown![0]!)).toBeNull();
+    expect(
+      grown!.every(
+        (slice) =>
+          slice.kind !== "code" ||
+          slice.fullCode.split("\n").length === ANDROID_TRANSCRIPT_CODE_LINE_BUDGET * 2 + 3,
+      ),
+    ).toBe(true);
+  });
+
+  it("treats an unclosed streaming fence as code and does not renumber finished windows", () => {
+    const opened = `Intro.\n\n\`\`\`ts\n${Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n")}`;
+    const longer = `${opened}\n${Array.from({ length: 12 }, (_, index) => `line ${index + 11}`).join("\n")}`;
+    const before = splitAssistantTranscriptSlices(opened);
+    const after = splitAssistantTranscriptSlices(longer);
+    expect(before).toBeNull();
+    const intro = after![0]!;
+    const codeHead = after![1]!;
+    expect(intro).toMatchObject({ kind: "markdown", text: "Intro." });
+    expect(codeHead).toMatchObject({ kind: "code", codePart: "start" });
+    expect(codeHead.kind === "code" && codeHead.text.split("\n")).toHaveLength(
+      ANDROID_TRANSCRIPT_CODE_LINE_BUDGET,
+    );
+  });
+
+  it("keeps a GFM table intact when the surrounding message is split", () => {
+    const cell = "c".repeat(80);
+    const row = `| ${cell} | ${cell} |`;
+    const table = [row, "| --- | --- |", row, row].join("\n");
+    const slices = splitAssistantTranscriptSlices(`${table}\n\n${"word ".repeat(200).trim()}`);
+    const tableSlices = slices!.filter((slice) => slice.text.includes("| --- |"));
+    expect(tableSlices).toHaveLength(1);
+    expect(tableSlices[0]!.text).toBe(table);
+  });
+
+  it("ignores a four-space indented fence and still splits long prose", () => {
+    const indented = `    \`\`\`\n${"x".repeat(ANDROID_TRANSCRIPT_MARKDOWN_CHAR_BUDGET + 40)}`;
+    const slices = splitAssistantTranscriptSlices(indented);
+    expect(slices!.every((slice) => slice.kind === "markdown")).toBe(true);
+  });
+
+  it("does not treat a backtick fence as code when the info string contains a backtick", () => {
+    const prose = `\`\`\`js const tick = \`oops\`\n${"word ".repeat(200).trim()}`;
+    const slices = splitAssistantTranscriptSlices(prose);
+    expect(slices?.some((slice) => slice.kind === "code") ?? false).toBe(false);
+  });
+
+  it("splits an ordered list only between complete items", () => {
+    const items = Array.from(
+      { length: 30 },
+      (_, index) => `${index + 1}. ${"entry ".repeat(8).trim()}`,
+    );
+    const slices = splitAssistantTranscriptSlices(items.join("\n"));
+    expect(slices).not.toBeNull();
+    expect(slices!.length).toBeGreaterThan(1);
+    const lines = slices!.flatMap((slice) =>
+      slice.text.split("\n").filter((line) => line.trim().length > 0),
+    );
+    expect(lines).toEqual(items);
+    for (const slice of slices!) {
+      expect(slice.kind).toBe("markdown");
+      expect(slice.text).toMatch(/^\d+\. /);
+    }
+  });
+
+  it("keeps a long ordered-list item whole instead of dropping its marker", () => {
+    const item = `12. ${"word ".repeat(200).trim()}`;
+    const tail = "after ".repeat(200).trim();
+    const slices = splitAssistantTranscriptSlices(`${item}\n\n${tail}`)!;
+    const owner = slices.find((slice) => slice.text.includes("12. "));
+    expect(owner?.text.startsWith("12. ")).toBe(true);
+    expect(owner?.text).toContain("word");
+    expect(owner?.text.includes(tail.slice(0, 12))).toBe(false);
+    for (const slice of slices) {
+      if (slice === owner) continue;
+      expect(slice.text.startsWith("word")).toBe(false);
+    }
+  });
+
+  it("keeps nested list items and loose continuation with their parent", () => {
+    const parent = `1. parent item\n   - child stays\n   - child two\n\n   continuation stays`;
+    const siblings = Array.from(
+      { length: 4 },
+      (_, index) => `${index + 2}. ${"entry ".repeat(160).trim()}`,
+    );
+    const slices = splitAssistantTranscriptSlices(`${parent}\n\n${siblings.join("\n")}`)!;
+    const first = slices.find((slice) => slice.text.includes("parent item"));
+    expect(first?.text).toContain("- child stays");
+    expect(first?.text).toContain("- child two");
+    expect(first?.text).toContain("continuation stays");
+    expect(first?.text).not.toContain("2. ");
+  });
+
+  it("keeps a lazy list continuation with its marker", () => {
+    const item = `1. short\n${"lazy ".repeat(40).trim()}`;
+    const tail = "after ".repeat(200).trim();
+    const slices = splitAssistantTranscriptSlices(`${item}\n\n${tail}`)!;
+    const owner = slices.find((slice) => slice.text.includes("1. short"));
+    expect(owner?.text.startsWith("1. short")).toBe(true);
+    expect(owner?.text).toContain("lazy");
+    expect(owner?.text.includes("after")).toBe(false);
+  });
+
+  it("keeps lazy blockquote continuation with the quote marker", () => {
+    const quote = `> quoted start\n${"still quoted ".repeat(30).trim()}`;
+    const after = "outside ".repeat(200).trim();
+    const slices = splitAssistantTranscriptSlices(`${quote}\n\n${after}`)!;
+    const quoteSlice = slices.find((slice) => slice.text.includes("> quoted start"));
+    expect(quoteSlice?.text.startsWith(">")).toBe(true);
+    expect(quoteSlice?.text).toContain("still quoted");
+    expect(quoteSlice?.text.includes("outside")).toBe(false);
+  });
+
+  it("keeps a multi-line setext heading with its underline", () => {
+    const heading = `${"Title words ".repeat(40).trim()}\n${"still the title ".repeat(20).trim()}\n---`;
+    const after = "body ".repeat(200).trim();
+    const slices = splitAssistantTranscriptSlices(`${heading}\n\n${after}`)!;
+    const headingSlice = slices.find((slice) => slice.text.includes("Title words"));
+    expect(headingSlice?.text).toContain("still the title");
+    expect(headingSlice?.text.trimEnd().endsWith("---")).toBe(true);
+    expect(headingSlice?.text.includes("body")).toBe(false);
+    expect(slices.some((slice) => slice.text.trim() === "---")).toBe(false);
+  });
+
+  it("keeps a blockquote together when the message around it is split", () => {
+    const quote = ["> " + "alpha ".repeat(80).trim(), ">", "> " + "beta ".repeat(40).trim()].join(
+      "\n",
+    );
+    const after = "gamma ".repeat(200).trim();
+    const slices = splitAssistantTranscriptSlices(`${quote}\n\n${after}`)!;
+    const quoteSlice = slices.find((slice) => slice.text.includes("> alpha"));
+    expect(quoteSlice?.text).toContain("> beta");
+    expect(quoteSlice?.text.startsWith(">")).toBe(true);
+    expect(slices.some((slice) => slice.text.includes("gamma") && !slice.text.includes(">"))).toBe(
+      true,
+    );
+  });
+
+  it("does not turn a wrapped ordered line into its own list", () => {
+    const paragraph = `${"word ".repeat(80).trim()}\n2. ${"cont ".repeat(80).trim()}`;
+    const slices = splitAssistantTranscriptSlices(paragraph)!;
+    const owner = slices.find((slice) => slice.text.includes("2. "));
+    expect(owner?.text.startsWith("2.")).toBe(false);
+    expect(owner?.text).toMatch(/\S\n2\. /);
+  });
+
+  it("keeps an inline link in one slice, including a long destination", () => {
+    const url = `https://example.com/${"a".repeat(200)}`;
+    const label = `docs ${"label ".repeat(10).trim()}`;
+    const link = `[${label}](${url})`;
+    const before = "before ".repeat(80).trim();
+    const after = "after ".repeat(80).trim();
+    const slices = splitAssistantTranscriptSlices(`${before} ${link} ${after}`)!;
+    expect(markdownTexts(slices).filter((text) => text.includes(link))).toHaveLength(1);
+    for (const text of markdownTexts(slices)) {
+      if (text.includes(link)) continue;
+      expect(text.includes(url)).toBe(false);
+      expect(text.includes(`](${url.slice(0, 24)}`)).toBe(false);
+    }
+  });
+
+  it("keeps emphasis and inline code intact when the paragraph is split", () => {
+    const bold = `**${"bold ".repeat(30).trim()}**`;
+    const code = `\`${"c".repeat(180)}\``;
+    const text = `${"word ".repeat(80).trim()} ${bold} ${code} ${"word ".repeat(80).trim()}`;
+    const slices = splitAssistantTranscriptSlices(text)!;
+    expect(markdownTexts(slices).filter((slice) => slice.includes(bold))).toHaveLength(1);
+    expect(markdownTexts(slices).filter((slice) => slice.includes(code))).toHaveLength(1);
+    for (const slice of markdownTexts(slices)) {
+      const markers = slice.match(/\*\*/g)?.length ?? 0;
+      expect(markers % 2).toBe(0);
+    }
+  });
+
+  it("keeps a raw HTML element in one slice", () => {
+    const html = `<em>${"x".repeat(240)}</em>`;
+    const text = `${"word ".repeat(80).trim()} ${html} ${"word ".repeat(80).trim()}`;
+    const slices = splitAssistantTranscriptSlices(text)!;
+    expect(markdownTexts(slices).filter((slice) => slice.includes(html))).toHaveLength(1);
+  });
+
+  it("copies link reference definitions onto the slice that uses them", () => {
+    const body = `${"word ".repeat(200).trim()}\n\nSee [the docs][ref].\n\n${"word ".repeat(200).trim()}`;
+    const definition = "[ref]: https://example.com/docs";
+    const slices = splitAssistantTranscriptSlices(`${body}\n\n${definition}`)!;
+    const linkSlice = slices.find((slice) => slice.text.includes("[the docs][ref]"));
+    expect(linkSlice?.text).toContain(definition);
+  });
+
+  it("keeps an empty fenced block when the message is split", () => {
+    const markdown = `${codeFence("ts", 3)}\n\n\`\`\`ts\n\`\`\`\n\n${codeFence("go", 2)}`;
+    const slices = splitAssistantTranscriptSlices(markdown)!;
+    const empty = slices.find((slice) => slice.kind === "code" && slice.text === "");
+    expect(empty).toMatchObject({
+      kind: "code",
+      codePart: "only",
+      language: "ts",
+      text: "",
+      fullCode: "",
+    });
+    expect(assistantSliceMarkdown(empty!)).toContain("```ts");
+  });
+
+  it("strips the opening fence indent from code that is split out", () => {
+    const fence = "   ```ts\n   const value = 1;\n    still indented\n   ```";
+    const slices = splitAssistantTranscriptSlices(`${fence}\n\n${"word ".repeat(200).trim()}`)!;
+    const code = slices.find((slice) => slice.kind === "code");
+    expect(code).toMatchObject({
+      kind: "code",
+      text: "const value = 1;\n still indented",
+      fullCode: "const value = 1;\n still indented",
+    });
+  });
+
+  it("copies a reference definition whose destination is on the next line", () => {
+    const body = `${"word ".repeat(200).trim()}\n\nSee [the docs][docs].\n\n${"word ".repeat(200).trim()}`;
+    const definition = "[docs]:\n  https://example.com/docs";
+    const slices = splitAssistantTranscriptSlices(`${body}\n\n${definition}`)!;
+    const linkSlice = slices.find((slice) => slice.text.includes("[the docs][docs]"));
+    expect(linkSlice?.text).toContain("[docs]:");
+    expect(linkSlice?.text).toContain("https://example.com/docs");
+  });
+
+  it("copies a reference definition whose title is on the next line", () => {
+    const body = `${"word ".repeat(200).trim()}\n\nSee [the docs][docs].\n\n${"word ".repeat(200).trim()}`;
+    const definition = '[docs]: https://example.com/docs\n"API docs"';
+    const slices = splitAssistantTranscriptSlices(`${body}\n\n${definition}`)!;
+    const linkSlice = slices.find((slice) => slice.text.includes("[the docs][docs]"));
+    expect(linkSlice?.text).toContain("https://example.com/docs");
+    expect(linkSlice?.text).toContain('"API docs"');
+  });
+
+  it("keeps nested elements of the same name in one slice", () => {
+    const html = `<em>outer <em>inner</em> ${"still ".repeat(80).trim()}</em>`;
+    const text = `${"word ".repeat(80).trim()} ${html} ${"word ".repeat(80).trim()}`;
+    const slices = splitAssistantTranscriptSlices(text)!;
+    const owners = markdownTexts(slices).filter((slice) => slice.includes("</em>"));
+    expect(owners).toHaveLength(1);
+    expect(owners[0]).toContain(html);
+  });
+
+  it("keeps a textarea block intact through its closing tag", () => {
+    const block = `<textarea>\n${"a".repeat(400)}\n\n${"b".repeat(400)}\n</textarea>`;
+    const slices = splitAssistantTranscriptSlices(`${block}\n\n${"word ".repeat(200).trim()}`)!;
+    const owners = slices.filter((slice) => slice.text.toLowerCase().includes("textarea"));
+    expect(owners).toHaveLength(1);
+    expect(owners[0]!.text).toContain(block);
+  });
+
+  it("does not start a slice on a mid-line list, heading, or quote marker", () => {
+    const markdown = `${"word ".repeat(150)}- dash ${"word ".repeat(40)}# title ${"word ".repeat(40)}> quote ${"word ".repeat(80)}`;
+    const slices = splitAssistantTranscriptSlices(markdown)!;
+    expect(slices.length).toBeGreaterThan(1);
+    for (const slice of slices) {
+      expect(slice.text).not.toMatch(/^[-+*] |^#{1,6} |^>/);
+    }
+  });
+
+  it("keeps an artifact-template directive inside one slice", () => {
+    const directive = `::artifact-template{skill_name="artifact-template-hello-world" skill_directory="${"a".repeat(500)}" display_name="Hello World" artifact_kind="document"}`;
+    const markdown = `${"word ".repeat(80).trim()} ${directive} ${"word ".repeat(80).trim()}`;
+    const slices = splitAssistantTranscriptSlices(markdown)!;
+    const owners = slices.filter((slice) => slice.text.includes("::artifact-template"));
+    expect(owners).toHaveLength(1);
+    expect(owners[0]!.text).toContain(directive);
+  });
+
+  it("leaves a fence inside a list item in that item", () => {
+    const item = `1. run this\n\n   \`\`\`ts\n   const value = 1;\n   \`\`\``;
+    const rest = "tail ".repeat(200).trim();
+    const slices = splitAssistantTranscriptSlices(`${item}\n\n${rest}`)!;
+    const owner = slices.find((slice) => slice.text.includes("run this"));
+    expect(owner?.kind).toBe("markdown");
+    expect(owner?.text).toContain("```ts");
+    expect(owner?.text).toContain("const value = 1;");
+    expect(slices.some((slice) => slice.kind === "code")).toBe(false);
+  });
+});
+
+describe("expandAndroidAssistantTranscriptRows", () => {
+  it("returns the same array off Android and for rows that are already small", () => {
+    const feed = [
+      message("user-1", "user", "hello"),
+      { type: "thinking" as const, id: "thinking" },
+      assistantMessage("short", `ok\n\n${codeFence("ts", 2)}`),
+    ];
+    expect(expandAndroidAssistantTranscriptRows(feed, "ios")).toBe(feed);
+    expect(expandAndroidAssistantTranscriptRows(feed, "android")).toBe(feed);
+  });
+
+  it("does not slice a long user message", () => {
+    const feed = [message("user-1", "user", "word ".repeat(400).trim())];
+    expect(expandAndroidAssistantTranscriptRows(feed, "android")).toBe(feed);
+  });
+
+  it("keeps the message id on the first slice and appends the rest", () => {
+    const fence = codeFence("ts", ANDROID_TRANSCRIPT_CODE_LINE_BUDGET + 2);
+    const feed = [
+      message("user-1", "user", "ship it"),
+      { type: "work-toggle" as const, id: "work-1" },
+      assistantMessage("assistant-1", fence),
+    ];
+    const rows = expandAndroidAssistantTranscriptRows(feed, "android");
+    expect(rows.map((row) => row.type)).toEqual([
+      "message",
+      "work-toggle",
+      "assistant-slice",
+      "assistant-slice",
+    ]);
+    expect(rows[0]).toBe(feed[0]);
+    expect(rows[1]).toBe(feed[1]);
+    const head = rows[2];
+    const tail = rows[3];
+    if (head?.type !== "assistant-slice" || tail?.type !== "assistant-slice") {
+      throw new Error("expected assistant slices");
+    }
+    expect(head.id).toBe("assistant-1");
+    expect(head.isFirst).toBe(true);
+    expect(head.isLast).toBe(false);
+    expect(tail.id).toBe(`assistant-1:${tail.slice.key}`);
+    expect(tail.isLast).toBe(true);
+    expect(tail.source).toBe(feed[2]);
+    expect(androidTranscriptItemType(head)).toBe("assistant-code-head");
+    expect(androidTranscriptItemType(tail)).toBe("assistant-code-body");
+    expect(androidTranscriptItemType(feed[0]!)).toBeNull();
+  });
+
+  it("keeps earlier slice ids when the settled message later grows at the end", () => {
+    const before = expandAndroidAssistantTranscriptRows(
+      [assistantMessage("assistant-1", codeFence("ts", ANDROID_TRANSCRIPT_CODE_LINE_BUDGET + 1))],
+      "android",
+    );
+    const after = expandAndroidAssistantTranscriptRows(
+      [assistantMessage("assistant-1", codeFence("ts", ANDROID_TRANSCRIPT_CODE_LINE_BUDGET + 4))],
+      "android",
+    );
+    expect(before.map((row) => row.id)).toEqual([after[0]!.id, after[1]!.id]);
+    expect(after).toHaveLength(2);
+  });
+});
+
+describe("assistant slice presentation", () => {
+  it("closes a fence that contains backticks and leaves plain windows without markdown", () => {
+    const fenced = fencedCodeMarkdown("ts", "const tick = ```;");
+    expect(fenced.startsWith("````")).toBe(true);
+    expect(fenced).toContain("const tick = ```;");
+    expect(fenced.trimEnd().endsWith("````")).toBe(true);
+  });
+
+  it("does not gap code windows that belong to the same fence", () => {
+    const slices = splitAssistantTranscriptSlices(
+      codeFence("ts", ANDROID_TRANSCRIPT_CODE_LINE_BUDGET * 2 + 1),
+    )!;
+    expect(assistantSliceGap(slices[0]!, false)).toBe(0);
+    expect(assistantSliceGap(slices[1]!, false)).toBe(0);
+    expect(assistantSliceGap(slices[2]!, true)).toBe(0);
+    const prose = splitAssistantTranscriptSlices(
+      `${"word ".repeat(200).trim()}\n\n${"word ".repeat(200).trim()}`,
+    )!;
+    expect(assistantSliceGap(prose[0]!, false)).toBe(ANDROID_TRANSCRIPT_SLICE_GAP);
+    expect(assistantSliceGap(prose[0]!, true)).toBe(0);
+  });
+});

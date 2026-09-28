@@ -26,7 +26,8 @@
     "./markdown": "./src/nativeMarkdownText.ts",
     "./primitive": "./src/MarkdownTextPrimitive.tsx",
     "./renderer": "./src/SelectableMarkdownText.tsx",
-    "./types": "./src/SelectableMarkdownText.types.ts"
+    "./types": "./src/SelectableMarkdownText.types.ts",
+    "./fence-key": "./src/stableFenceKey.ts"
   },
   "peerDependencies": {
     "@t3tools/client-runtime": "*",

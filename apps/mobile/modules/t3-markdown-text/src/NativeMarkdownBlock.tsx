@@ -17,6 +17,7 @@ import type {
   NativeMarkdownTextStyle,
   SelectableMarkdownSkill,
 } from "./SelectableMarkdownText.types";
+import { useStableFenceKey } from "./stableFenceKey";
 import { useHighlightedCode, type HighlightedCode } from "./useHighlightedCode";
 
 /** Set by SelectableMarkdownText so images anywhere in the block tree can use it. */
@@ -156,6 +157,7 @@ function NativeCodeBlock(props: {
   const theme = colorScheme === "dark" ? "dark" : "light";
   const highlighted = useHighlightedCode(content, props.node.language, theme, props.highlightCode);
   const languageLabel = props.node.language?.toUpperCase() ?? "CODE";
+  const fenceKey = useStableFenceKey(languageLabel, content);
   return (
     <View
       style={{
@@ -194,6 +196,7 @@ function NativeCodeBlock(props: {
           {languageLabel}
         </MarkdownTextPrimitive>
         <CopyTextButton
+          key={fenceKey}
           accessibilityLabel={`Copy ${languageLabel.toLowerCase()} code`}
           text={content}
           tintColor={props.textStyle.mutedColor}
@@ -205,6 +208,7 @@ function NativeCodeBlock(props: {
         />
       </View>
       <ScrollView
+        key={fenceKey}
         horizontal
         bounces={false}
         nestedScrollEnabled={Platform.OS === "android"}
