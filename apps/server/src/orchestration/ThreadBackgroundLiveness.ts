@@ -141,7 +141,7 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
        *
        * @returns Nothing. Arms `resumeHolds` when this completion leaves the thread idle.
        */
-      const armProviderResumeIfIdle = () => {
+      function armProviderResumeIfIdle() {
         if (input.awaitsProviderResume !== true) {
           return;
         }
@@ -150,7 +150,7 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
         if (!stillLive) {
           resumeHolds.add(input.threadId);
         }
-      };
+      }
 
       const taskType = input.taskType;
       if (taskType !== undefined && INERT_TASK_TYPES.has(taskType)) {

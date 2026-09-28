@@ -70,6 +70,31 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
+/**
+ * A ready session follows background liveness. Working and monitoring win
+ * over ready, and a cleared hold returns the sidebar to ready.
+ */
+function keepsReadySessionWorkingWhileBackgroundLivenessIsHeld() {
+  const session = {
+    threadId: ThreadId.make("thread-1"),
+    status: "ready" as const,
+    providerName: "Codex",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    runtimeMode: DEFAULT_RUNTIME_MODE,
+    activeTurnId: "turn-1" as never,
+    lastError: null,
+    updatedAt: "2026-03-09T10:00:00.000Z",
+  };
+  const idle = { hasPendingApprovals: false, hasPendingUserInput: false };
+  expect(resolveSidebarThreadStatus({ ...idle, session, backgroundLiveness: "working" })).toBe(
+    "working",
+  );
+  expect(resolveSidebarThreadStatus({ ...idle, session, backgroundLiveness: "monitoring" })).toBe(
+    "monitoring",
+  );
+  expect(resolveSidebarThreadStatus({ ...idle, session, backgroundLiveness: null })).toBe("ready");
+}
+
 describe("resolveSidebarRowAccessibility", () => {
   it.each([
     {
@@ -844,18 +869,10 @@ describe("resolveSidebarThreadStatus", () => {
     expect(resolveSidebarThreadStatus({ ...idle, session: null })).toBe("ready");
   });
 
-  it("keeps a ready session working while background liveness is held", () => {
-    const ready = { ...session, status: "ready" as const };
-    expect(
-      resolveSidebarThreadStatus({ ...idle, session: ready, backgroundLiveness: "working" }),
-    ).toBe("working");
-    expect(
-      resolveSidebarThreadStatus({ ...idle, session: ready, backgroundLiveness: "monitoring" }),
-    ).toBe("monitoring");
-    expect(resolveSidebarThreadStatus({ ...idle, session: ready, backgroundLiveness: null })).toBe(
-      "ready",
-    );
-  });
+  it(
+    "keeps a ready session working while background liveness is held",
+    keepsReadySessionWorkingWhileBackgroundLivenessIsHeld,
+  );
 });
 
 describe("searchSidebarThreads", () => {

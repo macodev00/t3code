@@ -107,6 +107,79 @@ async function complete() {
   await render();
 }
 
+/**
+ * A session error alerts immediately while background liveness is working.
+ * The failure sound and toast are not held for the follow-up turn.
+ */
+async function alertsFailureImmediatelyWhileBackgroundWorkIsLive() {
+  state.mode = "notifications-and-sound";
+  state.backgroundLiveness = "working";
+  await render();
+  state.sessionError = true;
+  await render();
+  expect(state.add).toHaveBeenCalledTimes(1);
+  expect(state.add).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Thread failed" }));
+  expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
+}
+
+/**
+ * An approval alerts immediately while background liveness is working.
+ * The input sound and toast are not suppressed by the resume hold.
+ */
+async function alertsApprovalImmediatelyWhileBackgroundWorkIsLive() {
+  state.mode = "notifications-and-sound";
+  state.backgroundLiveness = "working";
+  await render();
+  state.approval = true;
+  await render();
+  expect(state.add).toHaveBeenCalledTimes(1);
+  expect(state.add).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Approval needed" }));
+  expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
+}
+
+/**
+ * Ending background work without a follow-up turn alerts completion once.
+ * The toast and completion sound share that single transition.
+ */
+async function alertsOnceWhenBackgroundWorkEndsAndAgentDoesNotResume() {
+  state.mode = "notifications-and-sound";
+  state.backgroundLiveness = "monitoring";
+  state.completedAt = "2026-09-13T10:00:00.000Z";
+  await render();
+  state.backgroundLiveness = null;
+  await render();
+  expect(state.sound).toHaveBeenCalledTimes(1);
+  expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
+  expect(state.add).toHaveBeenCalledTimes(1);
+  expect(state.add).toHaveBeenLastCalledWith(
+    expect.objectContaining({ title: "Thread completed" }),
+  );
+}
+
+/**
+ * Handing background work to a running turn stays quiet. The completion
+ * alert fires once, when that follow-up turn later settles.
+ */
+async function alertsFollowUpOnceWhenBackgroundWorkHandsOffToRunningTurn() {
+  state.mode = "notifications-and-sound";
+  state.backgroundLiveness = "working";
+  state.completedAt = "2026-09-13T10:00:00.000Z";
+  await render();
+  state.backgroundLiveness = null;
+  state.sessionStatus = "running";
+  state.completedAt = null;
+  await render();
+  expect(state.sound).not.toHaveBeenCalled();
+  expect(state.add).not.toHaveBeenCalled();
+
+  state.sessionStatus = null;
+  state.completedAt = "2026-09-13T10:05:00.000Z";
+  await render();
+  expect(state.sound).toHaveBeenCalledTimes(1);
+  expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
+  expect(state.add).toHaveBeenCalledTimes(1);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(state, {
@@ -254,64 +327,25 @@ describe("thread notifications", () => {
     expect(state.notification).not.toHaveBeenCalled();
   });
 
-  it("alerts a failure immediately while background work is live", async () => {
-    state.mode = "notifications-and-sound";
-    state.backgroundLiveness = "working";
-    await render();
-    state.sessionError = true;
-    await render();
-    expect(state.add).toHaveBeenCalledTimes(1);
-    expect(state.add).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Thread failed" }));
-    expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
-  });
+  it(
+    "alerts a failure immediately while background work is live",
+    alertsFailureImmediatelyWhileBackgroundWorkIsLive,
+  );
 
-  it("alerts an approval immediately while background work is live", async () => {
-    state.mode = "notifications-and-sound";
-    state.backgroundLiveness = "working";
-    await render();
-    state.approval = true;
-    await render();
-    expect(state.add).toHaveBeenCalledTimes(1);
-    expect(state.add).toHaveBeenLastCalledWith(
-      expect.objectContaining({ title: "Approval needed" }),
-    );
-    expect(state.sound).toHaveBeenCalledWith("input", expect.any(Function));
-  });
+  it(
+    "alerts an approval immediately while background work is live",
+    alertsApprovalImmediatelyWhileBackgroundWorkIsLive,
+  );
 
-  it("alerts once when background work ends and the agent does not resume", async () => {
-    state.mode = "notifications-and-sound";
-    state.backgroundLiveness = "monitoring";
-    state.completedAt = "2026-09-13T10:00:00.000Z";
-    await render();
-    state.backgroundLiveness = null;
-    await render();
-    expect(state.sound).toHaveBeenCalledTimes(1);
-    expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
-    expect(state.add).toHaveBeenCalledTimes(1);
-    expect(state.add).toHaveBeenLastCalledWith(
-      expect.objectContaining({ title: "Thread completed" }),
-    );
-  });
+  it(
+    "alerts once when background work ends and the agent does not resume",
+    alertsOnceWhenBackgroundWorkEndsAndAgentDoesNotResume,
+  );
 
-  it("alerts the follow-up once when background work hands off to a running turn", async () => {
-    state.mode = "notifications-and-sound";
-    state.backgroundLiveness = "working";
-    state.completedAt = "2026-09-13T10:00:00.000Z";
-    await render();
-    state.backgroundLiveness = null;
-    state.sessionStatus = "running";
-    state.completedAt = null;
-    await render();
-    expect(state.sound).not.toHaveBeenCalled();
-    expect(state.add).not.toHaveBeenCalled();
-
-    state.sessionStatus = null;
-    state.completedAt = "2026-09-13T10:05:00.000Z";
-    await render();
-    expect(state.sound).toHaveBeenCalledTimes(1);
-    expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
-    expect(state.add).toHaveBeenCalledTimes(1);
-  });
+  it(
+    "alerts the follow-up once when background work hands off to a running turn",
+    alertsFollowUpOnceWhenBackgroundWorkHandsOffToRunningTurn,
+  );
 
   it("keeps system alerts when the app is in the background", async () => {
     state.mode = "notifications";

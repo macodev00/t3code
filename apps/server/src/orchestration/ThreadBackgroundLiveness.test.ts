@@ -1,6 +1,120 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as ThreadBackgroundLiveness from "./ThreadBackgroundLiveness.ts";
 
+/**
+ * A waking completion stays working after the last live task drops, until
+ * `releaseProviderResume`. An earlier completion while a monitor is still
+ * live stays monitoring.
+ */
+function holdsWorkingAfterWakingCompletionUntilProviderResumes() {
+  const liveness = ThreadBackgroundLiveness.make();
+  const threadId = "thread-resume";
+  liveness.recordTaskLiveness({
+    threadId,
+    taskId: "subagent",
+    taskType: "local_agent",
+    status: undefined,
+    kind: "started",
+  });
+  liveness.recordTaskLiveness({
+    threadId,
+    taskId: "monitor",
+    taskType: "local_bash",
+    status: undefined,
+    kind: "started",
+  });
+  liveness.recordTaskLiveness({
+    threadId,
+    taskId: "subagent",
+    taskType: "local_agent",
+    status: "completed",
+    kind: "completed",
+    awaitsProviderResume: true,
+  });
+  expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("monitoring");
+  liveness.recordTaskLiveness({
+    threadId,
+    taskId: "monitor",
+    taskType: "local_bash",
+    status: "completed",
+    kind: "completed",
+    awaitsProviderResume: true,
+  });
+  expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
+  liveness.releaseProviderResume(threadId);
+  expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
+}
+
+/**
+ * A terminal task update without `awaitsProviderResume` clears liveness.
+ * Ordinary completions must not keep the sidebar on working.
+ */
+function doesNotHoldCompletionThatWillNotResumeProvider() {
+  const liveness = ThreadBackgroundLiveness.make();
+  const threadId = "thread-settle";
+  liveness.recordTaskLiveness({
+    threadId,
+    taskId: "monitor",
+    taskType: "local_bash",
+    status: undefined,
+    kind: "started",
+  });
+  liveness.recordTaskLiveness({
+    threadId,
+    taskId: "monitor",
+    taskType: "local_bash",
+    status: "completed",
+    kind: "completed",
+  });
+  expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
+}
+
+/**
+ * Clearing a thread drops both live tasks and a resume hold, so a dead
+ * session does not stay working.
+ */
+function dropsResumeHoldWhenBackgroundWorkIsCleared() {
+  const liveness = ThreadBackgroundLiveness.make();
+  liveness.recordTaskLiveness({
+    threadId: "thread",
+    taskId: "subagent",
+    taskType: "local_agent",
+    status: "completed",
+    kind: "completed",
+    awaitsProviderResume: true,
+  });
+  expect(liveness.getThreadBackgroundLiveness("thread")).toBe("working");
+  liveness.clearThreadLiveness("thread");
+  expect(liveness.getThreadBackgroundLiveness("thread")).toBeNull();
+}
+
+/**
+ * Releasing the resume hold leaves a task that started during the handoff.
+ * The sidebar then follows that task instead of going ready.
+ */
+function releasesOnlyResumeHoldAndLeavesTaskStartedDuringHandoff() {
+  const liveness = ThreadBackgroundLiveness.make();
+  const threadId = "thread-handoff";
+  liveness.recordTaskLiveness({
+    threadId,
+    taskId: "subagent",
+    taskType: "local_agent",
+    status: "completed",
+    kind: "completed",
+    awaitsProviderResume: true,
+  });
+  liveness.recordTaskLiveness({
+    threadId,
+    taskId: "monitor",
+    taskType: "local_bash",
+    status: undefined,
+    kind: "started",
+  });
+  expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
+  liveness.releaseProviderResume(threadId);
+  expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("monitoring");
+}
+
 describe("ThreadBackgroundLiveness", () => {
   it("does not let status-free progress or metadata restart an idle task", () => {
     const liveness = ThreadBackgroundLiveness.make();
@@ -227,100 +341,23 @@ describe("ThreadBackgroundLiveness", () => {
     expect(a.getThreadBackgroundLiveness("t")).toBeNull();
   });
 
-  it("holds working after a waking completion until the provider resumes", () => {
-    const liveness = ThreadBackgroundLiveness.make();
-    const threadId = "thread-resume";
-    liveness.recordTaskLiveness({
-      threadId,
-      taskId: "subagent",
-      taskType: "local_agent",
-      status: undefined,
-      kind: "started",
-    });
-    liveness.recordTaskLiveness({
-      threadId,
-      taskId: "monitor",
-      taskType: "local_bash",
-      status: undefined,
-      kind: "started",
-    });
-    liveness.recordTaskLiveness({
-      threadId,
-      taskId: "subagent",
-      taskType: "local_agent",
-      status: "completed",
-      kind: "completed",
-      awaitsProviderResume: true,
-    });
-    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("monitoring");
-    liveness.recordTaskLiveness({
-      threadId,
-      taskId: "monitor",
-      taskType: "local_bash",
-      status: "completed",
-      kind: "completed",
-      awaitsProviderResume: true,
-    });
-    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
-    liveness.releaseProviderResume(threadId);
-    expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
-  });
+  it(
+    "holds working after a waking completion until the provider resumes",
+    holdsWorkingAfterWakingCompletionUntilProviderResumes,
+  );
 
-  it("does not hold a completion that will not resume the provider", () => {
-    const liveness = ThreadBackgroundLiveness.make();
-    const threadId = "thread-settle";
-    liveness.recordTaskLiveness({
-      threadId,
-      taskId: "monitor",
-      taskType: "local_bash",
-      status: undefined,
-      kind: "started",
-    });
-    liveness.recordTaskLiveness({
-      threadId,
-      taskId: "monitor",
-      taskType: "local_bash",
-      status: "completed",
-      kind: "completed",
-    });
-    expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
-  });
+  it(
+    "does not hold a completion that will not resume the provider",
+    doesNotHoldCompletionThatWillNotResumeProvider,
+  );
 
-  it("drops a resume hold when the thread's background work is cleared", () => {
-    const liveness = ThreadBackgroundLiveness.make();
-    liveness.recordTaskLiveness({
-      threadId: "thread",
-      taskId: "subagent",
-      taskType: "local_agent",
-      status: "completed",
-      kind: "completed",
-      awaitsProviderResume: true,
-    });
-    expect(liveness.getThreadBackgroundLiveness("thread")).toBe("working");
-    liveness.clearThreadLiveness("thread");
-    expect(liveness.getThreadBackgroundLiveness("thread")).toBeNull();
-  });
+  it(
+    "drops a resume hold when the thread's background work is cleared",
+    dropsResumeHoldWhenBackgroundWorkIsCleared,
+  );
 
-  it("releases only the resume hold and leaves a task that started during the handoff", () => {
-    const liveness = ThreadBackgroundLiveness.make();
-    const threadId = "thread-handoff";
-    liveness.recordTaskLiveness({
-      threadId,
-      taskId: "subagent",
-      taskType: "local_agent",
-      status: "completed",
-      kind: "completed",
-      awaitsProviderResume: true,
-    });
-    liveness.recordTaskLiveness({
-      threadId,
-      taskId: "monitor",
-      taskType: "local_bash",
-      status: undefined,
-      kind: "started",
-    });
-    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
-    liveness.releaseProviderResume(threadId);
-    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("monitoring");
-  });
+  it(
+    "releases only the resume hold and leaves a task that started during the handoff",
+    releasesOnlyResumeHoldAndLeavesTaskStartedDuringHandoff,
+  );
 });

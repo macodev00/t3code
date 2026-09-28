@@ -4680,7 +4680,12 @@ describe("ProviderRuntimeIngestion", () => {
     expect(activity?.payload).toMatchObject({ requestId: "message-compact" });
   });
 
-  it("keeps background liveness through a provider resume until the follow-up turn starts", async () => {
+  /**
+   * The parent turn can settle while a task is still live. The waking
+   * completion keeps background liveness working until the follow-up turn
+   * starts, then the hold drops.
+   */
+  async function keepsBackgroundLivenessUntilFollowUpTurnStarts() {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = asThreadId("thread-1");
@@ -4747,9 +4752,13 @@ describe("ProviderRuntimeIngestion", () => {
     const resumed = await harness.readThreadShell();
     expect(resumed.session?.status).toBe("running");
     expect(resumed.backgroundLiveness).toBeNull();
-  });
+  }
 
-  it("clears background liveness when a completion will not resume the provider", async () => {
+  /**
+   * A completion that does not resume the provider clears background
+   * liveness. The sidebar is not held on working.
+   */
+  async function clearsBackgroundLivenessWhenCompletionWillNotResumeProvider() {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = asThreadId("thread-1");
@@ -4781,9 +4790,13 @@ describe("ProviderRuntimeIngestion", () => {
       },
     ]);
     expect((await harness.readThreadShell()).backgroundLiveness).toBeNull();
-  });
+  }
 
-  it("drops a provider-resume hold when the session errors", async () => {
+  /**
+   * A session error drops a provider-resume hold. The shell is not pinned
+   * on working after the provider can no longer resume.
+   */
+  async function dropsProviderResumeHoldWhenSessionErrors() {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const threadId = asThreadId("thread-1");
@@ -4818,7 +4831,22 @@ describe("ProviderRuntimeIngestion", () => {
     const failed = await harness.readThreadShell();
     expect(failed.session?.status).toBe("error");
     expect(failed.backgroundLiveness).toBeNull();
-  });
+  }
+
+  it(
+    "keeps background liveness through a provider resume until the follow-up turn starts",
+    keepsBackgroundLivenessUntilFollowUpTurnStarts,
+  );
+
+  it(
+    "clears background liveness when a completion will not resume the provider",
+    clearsBackgroundLivenessWhenCompletionWillNotResumeProvider,
+  );
+
+  it(
+    "drops a provider-resume hold when the session errors",
+    dropsProviderResumeHoldWhenSessionErrors,
+  );
 
   it("projects Codex task lifecycle chunks into thread activities", async () => {
     const harness = await createHarness();
