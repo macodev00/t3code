@@ -25,6 +25,7 @@ import type {
 import { GitManagerError } from "@t3tools/contracts";
 
 import * as VcsStatusBroadcaster from "./VcsStatusBroadcaster.ts";
+import * as VersionControlPolicy from "./VersionControlPolicy.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
@@ -940,6 +941,54 @@ describe("VcsStatusBroadcaster", () => {
       assert.equal(state.remoteStatusCalls, 0);
       assert.equal(state.remoteInvalidationCalls, 0);
     }).pipe(Effect.provide(testLayer));
+  });
+
+  it.effect("does not read or refresh Git status when version control is disabled", () => {
+    const state = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: baseRemoteStatus,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+    let versionControlEnabled = true;
+
+    return Effect.gen(function* () {
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+
+      const loaded = yield* broadcaster.getStatus({ cwd: "/repo" });
+      assert.strictEqual(loaded.isRepo, true);
+      assert.equal(state.localStatusCalls, 1);
+      assert.equal(state.remoteStatusCalls, 1);
+
+      versionControlEnabled = false;
+
+      const disabled = yield* broadcaster.getStatus({ cwd: "/repo" });
+      const refreshed = yield* broadcaster.refreshStatus("/repo");
+      const local = yield* broadcaster.refreshLocalStatus("/repo");
+      const pullRequest = yield* broadcaster.refreshPullRequestStatus("/repo");
+
+      assert.strictEqual(disabled.isRepo, false);
+      assert.strictEqual(refreshed.isRepo, false);
+      assert.strictEqual(local.isRepo, false);
+      assert.isNull(pullRequest);
+      assert.equal(state.localStatusCalls, 1);
+      assert.equal(state.remoteStatusCalls, 1);
+      assert.equal(state.localInvalidationCalls, 0);
+      assert.equal(state.remoteInvalidationCalls, 0);
+
+      versionControlEnabled = true;
+      const restored = yield* broadcaster.getStatus({ cwd: "/repo" });
+      assert.strictEqual(restored.isRepo, true);
+      assert.equal(state.localStatusCalls, 2);
+      assert.equal(state.remoteStatusCalls, 2);
+    }).pipe(
+      Effect.provide(makeTestLayer(state)),
+      Effect.provideService(VersionControlPolicy.VersionControlPolicy, {
+        isEnabled: () => Effect.succeed(versionControlEnabled),
+      }),
+    );
   });
 
   it.effect("stops the remote poller after the last stream subscriber disconnects", () => {

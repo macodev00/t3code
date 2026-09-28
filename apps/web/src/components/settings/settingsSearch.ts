@@ -677,6 +677,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["pull request merge squash rebase last selected"],
   },
   {
+    id: "version-control",
+    title: "Version control",
+    to: "/settings/source-control",
+    scope: "project-defaults",
+    searchTerms: ["disable git turn off skip status fetch commands"],
+  },
+  {
     id: "source-control",
     title: "Source control",
     to: "/settings/source-control",

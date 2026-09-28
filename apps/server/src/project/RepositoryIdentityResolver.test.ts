@@ -12,6 +12,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import { TestClock } from "effect/testing";
 
 import * as ProcessRunner from "../processRunner.ts";
+import * as VersionControlPolicy from "../vcs/VersionControlPolicy.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 
 const normalizePathSeparators = (value: string) => value.replaceAll("\\", "/");
@@ -390,4 +391,27 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       ),
     ),
   );
+
+  it.effect("does not spawn Git when version control is disabled", () => {
+    const resolverLayer = Layer.effect(
+      RepositoryIdentityResolver.RepositoryIdentityResolver,
+      RepositoryIdentityResolver.make(),
+    ).pipe(
+      Layer.provide(
+        Layer.succeed(ProcessRunner.ProcessRunner, {
+          run: () => Effect.die("git should not run when version control is disabled"),
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      expect(yield* resolver.resolve("/repo")).toBeNull();
+    }).pipe(
+      Effect.provide(resolverLayer),
+      Effect.provideService(VersionControlPolicy.VersionControlPolicy, {
+        isEnabled: () => Effect.succeed(false),
+      }),
+    );
+  });
 });

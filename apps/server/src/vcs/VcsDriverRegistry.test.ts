@@ -6,6 +6,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as VcsProcess from "./VcsProcess.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
+import * as VersionControlPolicy from "./VersionControlPolicy.ts";
 import * as VcsDriverRegistry from "./VcsDriverRegistry.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
@@ -136,5 +137,39 @@ describe("VcsDriverRegistry", () => {
       assert.equal((yield* registry.detect({ cwd: "/repo" }))?.repository.rootPath, "/repo");
       assert.equal(insideWorkTreeChecks, 2);
     }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does not probe Git when version control is disabled", () => {
+    const calls: string[] = [];
+    const layer = Layer.effect(VcsDriverRegistry.VcsDriverRegistry, VcsDriverRegistry.make).pipe(
+      Layer.provide(NodeServices.layer),
+      Layer.provide(
+        Layer.mock(VcsProjectConfig.VcsProjectConfig)({
+          resolveKind: (input) => Effect.succeed(input.requestedKind ?? "auto"),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: (input) =>
+            Effect.sync(() => {
+              calls.push(input.args.join(" "));
+              return processOutput("true\n");
+            }),
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
+      assert.equal(yield* registry.detect({ cwd: "/repo" }), null);
+      const error = yield* registry.resolve({ cwd: "/repo" }).pipe(Effect.flip);
+      assert.strictEqual(error._tag, "VcsUnsupportedOperationError");
+      assert.deepStrictEqual(calls, []);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(VersionControlPolicy.VersionControlPolicy, {
+        isEnabled: () => Effect.succeed(false),
+      }),
+    );
   });
 });

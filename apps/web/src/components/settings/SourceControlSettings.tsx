@@ -18,7 +18,11 @@ import {
   resolveServerBackgroundActivitySettings,
 } from "@t3tools/shared/backgroundActivitySettings";
 
-import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
+import {
+  useScopedSettings,
+  useScopedSettingsMixed,
+  useUpdateScopedSettings,
+} from "./useScopedSettings";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { cn } from "../../lib/utils";
@@ -64,6 +68,7 @@ import {
   SettingsPageContainer,
   SettingsSearchTarget,
   SettingsSection,
+  useSettingsSearchTarget,
   useSettingsSearchTargetId,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
@@ -206,11 +211,27 @@ function itemSummary({
   item,
   auth,
   authAccount,
+  versionControl,
 }: {
   readonly item: VcsDiscoveryItem | SourceControlProviderDiscoveryItem;
   readonly auth: SourceControlProviderAuth | null;
   readonly authAccount: string | null;
+  readonly versionControl: { readonly enabled: boolean; readonly mixed: boolean } | null;
 }) {
+  if (
+    versionControl !== null &&
+    item.status === "available" &&
+    !isProviderDiscoveryItem(item) &&
+    item.implemented
+  ) {
+    if (versionControl.mixed) {
+      return <span>Version control differs across the selected projects.</span>;
+    }
+    if (!versionControl.enabled) {
+      return <span>Version control is off. Git commands are skipped.</span>;
+    }
+  }
+
   if (isVcsNotReady(item)) {
     return <span>Support for {item.label} is coming soon.</span>;
   }
@@ -258,6 +279,25 @@ function itemSummary({
   return <span>Available</span>;
 }
 
+function VersionControlSwitch(props: {
+  readonly available: boolean;
+  readonly enabled: boolean;
+  readonly mixed: boolean;
+  readonly onEnabledChange: (enabled: boolean) => void;
+}) {
+  return (
+    <Switch
+      checked={props.available && !props.mixed && props.enabled}
+      mixed={props.available && props.mixed}
+      disabled={!props.available}
+      aria-label={props.available ? "Enable Git" : "Git availability"}
+      onCheckedChange={(enabled) => {
+        if (typeof enabled === "boolean") props.onEnabledChange(enabled);
+      }}
+    />
+  );
+}
+
 function DiscoveryItemRow({
   item,
   children,
@@ -275,6 +315,11 @@ function DiscoveryItemRow({
   const [isExpanded, setIsExpanded] = useState(false);
   const hasDetails = children !== undefined;
   const searchTargetId = useSettingsSearchTargetId();
+  const versionControlEnabled = useScopedSettings((settings) => settings.enableVersionControl);
+  const versionControlMixed = useScopedSettingsMixed(["enableVersionControl"]);
+  const updateSettings = useUpdateScopedSettings();
+  const searchId = item.kind === "git" ? searchableSetting("version-control").id : undefined;
+  const searchTargetRef = useSettingsSearchTarget<HTMLDivElement>(searchId);
 
   useEffect(() => {
     if (item.kind === "git" && searchTargetId === searchableSetting("git-fetch-interval").id) {
@@ -284,6 +329,9 @@ function DiscoveryItemRow({
 
   return (
     <div
+      ref={searchTargetRef}
+      id={searchId}
+      tabIndex={searchId ? -1 : undefined}
       className={cn(
         "first:rounded-t-xl last:rounded-b-xl transition-colors hover:bg-muted/20",
         isVcsNotReady(item) && "opacity-80",
@@ -308,7 +356,15 @@ function DiscoveryItemRow({
               ) : null}
             </div>
             <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs leading-normal text-muted-foreground/80">
-              {itemSummary({ item, auth, authAccount })}
+              {itemSummary({
+                item,
+                auth,
+                authAccount,
+                versionControl:
+                  item.kind === "git"
+                    ? { enabled: versionControlEnabled, mixed: versionControlMixed }
+                    : null,
+              })}
             </p>
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
@@ -326,7 +382,16 @@ function DiscoveryItemRow({
               </Button>
             ) : null}
             {!isVcsNotReady(item) ? (
-              <Switch checked={enabled} disabled aria-label={`${item.label} availability`} />
+              item.kind === "git" ? (
+                <VersionControlSwitch
+                  available={item.status === "available" && item.implemented}
+                  enabled={versionControlEnabled}
+                  mixed={versionControlMixed}
+                  onEnabledChange={(next) => updateSettings({ enableVersionControl: next })}
+                />
+              ) : (
+                <Switch checked={enabled} disabled aria-label={`${item.label} availability`} />
+              )
             ) : null}
           </div>
         </div>

@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import type { VcsDriverKind, VcsError, VcsRepositoryIdentity } from "@t3tools/contracts";
 import { VcsUnsupportedOperationError } from "@t3tools/contracts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import * as VersionControlPolicy from "./VersionControlPolicy.ts";
 import * as VcsProjectConfig from "./VcsProjectConfig.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 
@@ -124,6 +125,12 @@ export const make = Effect.gen(function* () {
 
   const detect: VcsDriverRegistry["Service"]["detect"] = Effect.fn("VcsDriverRegistry.detect")(
     function* (input) {
+      // Off means "there is no repository": status, fetch, worktrees, and
+      // checkpoints all stop before they spawn Git.
+      const versionControl = yield* VersionControlPolicy.VersionControlPolicy;
+      if (!(yield* versionControl.isEnabled(input.cwd))) {
+        return null;
+      }
       const requestedKind = yield* projectConfig.resolveKind(input);
       return yield* Cache.get(detectionCache, detectionCacheKey({ cwd: input.cwd, requestedKind }));
     },

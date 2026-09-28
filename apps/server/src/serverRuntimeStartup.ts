@@ -842,7 +842,10 @@ export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
   const workspaceRoots = [
     ...new Set(
       projects
-        .filter((project) => resolveProjectSettings(settings, project.id).settings.defaultAutoPull)
+        .filter((project) => {
+          const resolved = resolveProjectSettings(settings, project.id).settings;
+          return resolved.enableVersionControl && resolved.defaultAutoPull;
+        })
         .map((project) => project.workspaceRoot),
     ),
   ];

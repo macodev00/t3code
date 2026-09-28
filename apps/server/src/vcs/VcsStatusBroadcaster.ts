@@ -28,6 +28,20 @@ import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as VersionControlPolicy from "./VersionControlPolicy.ts";
+
+const DISABLED_LOCAL_STATUS: VcsStatusLocalResult = {
+  isRepo: false,
+  hasPrimaryRemote: false,
+  isDefaultRef: false,
+  refName: null,
+  hasWorkingTreeChanges: false,
+  workingTree: {
+    files: [],
+    insertions: 0,
+    deletions: 0,
+  },
+};
 
 const DEFAULT_VCS_STATUS_REFRESH_INTERVAL = Duration.seconds(30);
 const VCS_STATUS_REFRESH_FAILURE_BASE_DELAY = Duration.seconds(30);
@@ -360,9 +374,39 @@ export const make = Effect.gen(function* () {
     return yield* updateCachedLocalStatus(cwd, local);
   });
 
+  const versionControlEnabled = (cwd: string) =>
+    Effect.flatMap(VersionControlPolicy.VersionControlPolicy, (policy) => policy.isEnabled(cwd));
+
+  // Drop any cached repo snapshot. Leaving `isRepo: false` in the cache would
+  // keep status, streams, and refreshes from calling Git after the setting is
+  // turned back on.
+  const forgetCachedStatus = Effect.fn("VcsStatusBroadcaster.forgetCachedStatus")(function* (
+    cwd: string,
+  ) {
+    const removed = yield* Ref.modify(cacheRef, (cache) => {
+      if (!cache.has(cwd)) return [false, cache] as const;
+      const nextCache = new Map(cache);
+      nextCache.delete(cwd);
+      return [true, nextCache] as const;
+    });
+    if (!removed) return;
+    yield* PubSub.publish(changesPubSub, {
+      cwd,
+      event: {
+        _tag: "snapshot",
+        local: DISABLED_LOCAL_STATUS,
+        remote: null,
+      },
+    });
+  });
+
   const getOrLoadLocalStatus = Effect.fn("VcsStatusBroadcaster.getOrLoadLocalStatus")(function* (
     cwd: string,
   ) {
+    if (!(yield* versionControlEnabled(cwd))) {
+      yield* forgetCachedStatus(cwd);
+      return DISABLED_LOCAL_STATUS;
+    }
     const cached = yield* getCachedStatus(cwd);
     if (cached?.local) {
       return cached.local.value;
@@ -376,6 +420,10 @@ export const make = Effect.gen(function* () {
     "VcsStatusBroadcaster.getStatus",
   )(function* (input) {
     const cwd = yield* withFileSystem(normalizeCwd(input.cwd));
+    if (!(yield* versionControlEnabled(cwd))) {
+      yield* forgetCachedStatus(cwd);
+      return mergeGitStatusParts(DISABLED_LOCAL_STATUS, null);
+    }
     const cached = yield* getCachedStatus(cwd);
     if (cached?.local && cached.remote) {
       return mergeGitStatusParts(cached.local.value, cached.remote.value);
@@ -408,6 +456,10 @@ export const make = Effect.gen(function* () {
     "VcsStatusBroadcaster.refreshLocalStatus",
   )(function* (rawCwd) {
     const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
+    if (!(yield* versionControlEnabled(cwd))) {
+      yield* forgetCachedStatus(cwd);
+      return DISABLED_LOCAL_STATUS;
+    }
     return yield* refreshLocalStatusCore(cwd);
   });
 
@@ -459,6 +511,10 @@ export const make = Effect.gen(function* () {
     return yield* withRemoteWriteLock(
       cwd,
       Effect.gen(function* () {
+        if (!(yield* versionControlEnabled(cwd))) {
+          yield* forgetCachedStatus(cwd);
+          return null;
+        }
         if (options?.refreshUpstream !== false) {
           yield* workflow.invalidateRemoteStatus(cwd);
         }
@@ -474,6 +530,10 @@ export const make = Effect.gen(function* () {
     "VcsStatusBroadcaster.refreshStatus",
   )(function* (rawCwd) {
     const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
+    if (!(yield* versionControlEnabled(cwd))) {
+      yield* forgetCachedStatus(cwd);
+      return mergeGitStatusParts(DISABLED_LOCAL_STATUS, null);
+    }
     // invalidateStatus (not the two partial invalidations) so an explicit
     // refresh also bypasses GitManager's slow PR-lookup cache.
     return yield* withRemoteWriteLock(
@@ -494,6 +554,10 @@ export const make = Effect.gen(function* () {
   const refreshPullRequestStatus: VcsStatusBroadcaster["Service"]["refreshPullRequestStatus"] =
     Effect.fn("VcsStatusBroadcaster.refreshPullRequestStatus")(function* (rawCwd) {
       const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
+      if (!(yield* versionControlEnabled(cwd))) {
+        yield* forgetCachedStatus(cwd);
+        return null;
+      }
       return yield* withRemoteWriteLock(
         cwd,
         Effect.gen(function* () {
@@ -698,10 +762,14 @@ export const make = Effect.gen(function* () {
     Stream.unwrap(
       Effect.gen(function* () {
         const cwd = yield* withFileSystem(normalizeCwd(input.cwd));
+        const enabled = yield* versionControlEnabled(cwd);
+        if (!enabled) {
+          yield* forgetCachedStatus(cwd);
+        }
         const subscription = yield* PubSub.subscribe(changesPubSub);
-        const initialLocal = yield* getOrLoadLocalStatus(cwd);
+        const initialLocal = enabled ? yield* getOrLoadLocalStatus(cwd) : DISABLED_LOCAL_STATUS;
         const cachedStatus = yield* getCachedStatus(cwd);
-        const initialRemote = cachedStatus?.remote?.value ?? null;
+        const initialRemote = enabled ? (cachedStatus?.remote?.value ?? null) : null;
         yield* retainRemotePoller(
           cwd,
           input.cwd,
