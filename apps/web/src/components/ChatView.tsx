@@ -5322,6 +5322,11 @@ export default function ChatView(props: ChatViewProps) {
     settledTimelineAnchorRef.current = null;
     activeTimelineAnchorIndexRef.current = null;
   }, []);
+  /** Whether live follow is still held. A gesture clears this before the next render. */
+  const isTimelineLiveFollowLatched = useCallback(
+    () => liveFollowUserScrollGenerationRef.current === anchorUserScrollGenerationRef.current,
+    [],
+  );
   const cancelTimelineLiveFollowForUserNavigationRef = useRef(
     cancelTimelineLiveFollowForUserNavigation,
   );
@@ -9887,6 +9892,7 @@ export default function ChatView(props: ChatViewProps) {
                 onAnchorReady={onTimelineAnchorReady}
                 contentInsetEndAdjustment={composerTimelineInset}
                 liveFollowEnabled={!paintOnlyDisplayedTimeline && timelineLiveFollowEnabled}
+                isLiveFollowLatched={isTimelineLiveFollowLatched}
                 onIsAtEndChange={onIsAtEndChange}
                 onContentOverflowChange={setTimelineOverflows}
                 onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}

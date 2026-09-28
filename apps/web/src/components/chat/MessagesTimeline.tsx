@@ -449,6 +449,8 @@ interface MessagesTimelineProps {
    * scroll-mode refs whenever the user drifts near the bottom.
    */
   liveFollowEnabled: boolean;
+  /** Live-follow latch. A gesture releases it before the next render. */
+  isLiveFollowLatched: () => boolean;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   /**
    * Whether the real rows extend past the viewport above the composer.
@@ -513,6 +515,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onAnchorReady,
   contentInsetEndAdjustment,
   liveFollowEnabled,
+  isLiveFollowLatched,
   onIsAtEndChange,
   onContentOverflowChange,
   onToolOutputCollapsedAtEnd,
@@ -1018,6 +1021,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onContentOverflowChange?.(measureContentOverflow());
   }, [cancelContentOverflowFrame, measureContentOverflow, onContentOverflowChange, rows.length]);
 
+  /**
+   * Saves the visible row. Layout scrolls keep a latched follow at the end
+   * so a measurement gap is not restored as a reading position.
+   */
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
     if (restoringThreadPosition || state?.data !== rows) return;
@@ -1033,7 +1040,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           // DOM geometry includes the header and the virtualizer's layout adjustment.
           offsetWithinRow: element.getBoundingClientRect().top - row.getBoundingClientRect().top,
           scrollOffset: element.scrollTop,
-          atEnd: isAtEnd,
+          // A latched follow treats a layout gap as the end. Anchored end
+          // space holds the first send near the top, so that gap is kept.
+          atEnd: isAtEnd || (liveFollowEnabled && isLiveFollowLatched() && !anchoredEndSpace),
           disclosures: {
             turns: paintedExpandedTurnIds,
             workGroups: paintedExpandedWorkGroupIds,
@@ -1091,6 +1100,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     workGroupViewState,
     rows,
     listIdentityKey,
+    liveFollowEnabled,
+    isLiveFollowLatched,
+    anchoredEndSpace,
     restoringThreadPosition,
     listRef,
     minimapItems,

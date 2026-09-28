@@ -10,8 +10,13 @@ import { act, createRef, useLayoutEffect, type ReactNode, type Ref } from "react
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { LegendListRef, MaintainScrollAtEndOptions } from "@legendapp/list/react";
+import {
+  LegendList,
+  type LegendListRef,
+  type MaintainScrollAtEndOptions,
+} from "@legendapp/list/react";
 import { shouldUseRestingComposerLayout } from "../composerFooterLayout";
+import { readTimelinePosition } from "./timelineScrollAnchoring";
 import { useComposerFocusState } from "./useComposerFocusState";
 
 vi.mock("@legendapp/list/react", async () => {
@@ -195,6 +200,7 @@ beforeEach(stubDomGlobals);
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
 const MESSAGE_CREATED_AT = "2026-03-17T19:12:28.000Z";
 
+/** Default MessagesTimeline props for render tests. Live follow starts latched. */
 function buildProps() {
   return {
     isWorking: false,
@@ -218,6 +224,7 @@ function buildProps() {
     onAnchorReady: () => {},
     contentInsetEndAdjustment: 0,
     liveFollowEnabled: true,
+    isLiveFollowLatched: () => true,
     onIsAtEndChange: () => {},
     onManualNavigation: () => {},
   };
@@ -1012,6 +1019,103 @@ describe("MessagesTimeline", () => {
       expect(animatedAttr(renderer)).toBe(true);
     } finally {
       act(() => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("remembers a latched follow at the end when layout leaves a gap", () => {
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const threadKey = "env-1:thread-follow-gap";
+    const workEntry = {
+      id: "entry-follow-work",
+      kind: "work" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      entry: {
+        id: "work-follow",
+        createdAt: MESSAGE_CREATED_AT,
+        toolCallId: "call-follow",
+        label: "Run lint",
+        tone: "tool" as const,
+        itemType: "command_execution" as const,
+        command: "pnpm lint",
+        toolLifecycleStatus: "completed" as const,
+      },
+    };
+    let renderer: ReactTestRenderer | undefined;
+    let latched = true;
+    const props = {
+      ...buildProps(),
+      isLiveFollowLatched: () => latched,
+      routeThreadKey: threadKey,
+    };
+    // Streamed or measured content sits 500px past the viewport. The follow
+    // scroll has not caught up, so geometry alone is not at the end.
+    props.listRef.current = {
+      getState: () => ({
+        data: renderer?.root.findAllByType(LegendList)[0]?.props.data,
+        isAtEnd: false,
+        contentLength: 2000,
+        scroll: 700,
+        scrollLength: 800,
+        positionAtIndex: () => 0,
+        indexByKey: () => 0,
+        elementAtIndex: () => ({ getBoundingClientRect: () => ({ top: -700 }) }),
+      }),
+      getScrollableNode: () => ({
+        scrollTop: 700,
+        getBoundingClientRect: () => ({ top: 0 }),
+      }),
+    } as unknown as LegendListRef;
+    try {
+      act(() => {
+        renderer = create(
+          <MessagesTimeline {...props} liveFollowEnabled timelineEntries={[workEntry]} />,
+        );
+      });
+      act(() => {
+        renderer?.root.findByType(LegendList).props.onScroll();
+      });
+      expect(readTimelinePosition(threadKey)?.atEnd).toBe(true);
+
+      // A gesture releases the latch before the next render turns follow off.
+      latched = false;
+      act(() => {
+        renderer?.root.findByType(LegendList).props.onScroll();
+      });
+      expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
+
+      latched = true;
+      act(() => {
+        renderer?.update(
+          <MessagesTimeline {...props} liveFollowEnabled={false} timelineEntries={[workEntry]} />,
+        );
+      });
+      act(() => {
+        renderer?.root.findByType(LegendList).props.onScroll();
+      });
+      expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
+
+      // A first send anchored near the top is not following the end either.
+      act(() => {
+        renderer?.update(
+          <MessagesTimeline
+            {...props}
+            liveFollowEnabled
+            anchorMessageId={MessageId.make("message-1")}
+            timelineEntries={[buildUserTimelineEntry("First send"), workEntry]}
+          />,
+        );
+      });
+      act(() => {
+        renderer?.root.findByType(LegendList).props.onScroll();
+      });
+      expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
+    } finally {
+      act(() => {
+        renderer?.unmount();
+      });
       vi.unstubAllGlobals();
     }
   });
