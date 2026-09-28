@@ -59,6 +59,7 @@ import { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
+import * as VersionControlPolicy from "../vcs/VersionControlPolicy.ts";
 import { importRecentAgentThreads } from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 
@@ -576,6 +577,7 @@ const integrationLayer = Layer.mergeAll(
   Layer.provide(OrchestrationEventStoreLive),
   Layer.provide(OrchestrationCommandReceiptRepositoryLive),
   Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provide(VersionControlPolicy.layerTest),
   Layer.provide(SqlitePersistenceMemory),
   Layer.provideMerge(integrationServerConfig),
   Layer.provideMerge(NodeServices.layer),

@@ -47,7 +47,7 @@ const PAGE_TITLES: Record<SettingsPage, string> = {
 
 const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettingKey[]> = {
   "new-threads": ["defaultThreadEnvMode", "worktreeSubmodules", "defaultRuntimeMode"],
-  "source-control": ["defaultAutoPull", "newWorktreesStartFromOrigin"],
+  "source-control": ["enableVersionControl", "defaultAutoPull", "newWorktreesStartFromOrigin"],
   "agent-behavior": ["responseStreamingMode", "enableAgentBrowserAccess"],
   maintenance: ["continueThreadsAfterServerUpdate"],
 };
@@ -325,6 +325,16 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
 
               {props.page === "source-control" ? (
                 <>
+                  <SettingsSection title="Version control">
+                    <FanoutSwitchRow
+                      icon="arrow.triangle.branch"
+                      label="Git"
+                      subtitle="Turn off to skip Git status, fetch, and other Git commands."
+                      value={uniform("enableVersionControl")}
+                      disabled={disabledFor("enableVersionControl")}
+                      onValueChange={(value) => write({ enableVersionControl: value })}
+                    />
+                  </SettingsSection>
                   <SettingsSection title="Default branch">
                     <FanoutSwitchRow
                       icon="arrow.down.circle"

@@ -57,6 +57,7 @@ import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegi
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { TerminalManager } from "../../terminal/Manager.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import * as VersionControlPolicy from "../../vcs/VersionControlPolicy.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -497,6 +498,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provide(VersionControlPolicy.layerTest),
     );
     runtime = ManagedRuntime.make(layer);
 

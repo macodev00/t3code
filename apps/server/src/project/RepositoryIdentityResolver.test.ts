@@ -12,6 +12,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import { TestClock } from "effect/testing";
 
 import * as ProcessRunner from "../processRunner.ts";
+import * as VersionControlPolicy from "../vcs/VersionControlPolicy.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 
 const normalizePathSeparators = (value: string) => value.replaceAll("\\", "/");
@@ -36,7 +37,11 @@ const makeRepositoryIdentityResolverTestLayer = (options: {
       cacheCapacity: 16,
       ...options,
     }),
-  ).pipe(Layer.provide(ProcessRunner.layer));
+  ).pipe(Layer.provide(ProcessRunner.layer), Layer.provide(VersionControlPolicy.layerTest));
+
+const repositoryIdentityResolverLayer = RepositoryIdentityResolver.layer.pipe(
+  Layer.provide(VersionControlPolicy.layerTest),
+);
 
 it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
   it.effect("refreshes the Git root only when requested", () => {
@@ -88,7 +93,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
           );
         },
       }),
-    ).pipe(Layer.provide(processRunner));
+    ).pipe(Layer.provide(processRunner), Layer.provide(VersionControlPolicy.layerTest));
 
     return Effect.gen(function* () {
       const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -156,7 +161,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     const resolverLayer = Layer.effect(
       RepositoryIdentityResolver.RepositoryIdentityResolver,
       RepositoryIdentityResolver.make(),
-    ).pipe(Layer.provide(processRunner));
+    ).pipe(Layer.provide(processRunner), Layer.provide(VersionControlPolicy.layerTest));
 
     return Effect.gen(function* () {
       const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -199,7 +204,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(identity?.provider).toBe("github");
       expect(identity?.owner).toBe("t3tools");
       expect(identity?.name).toBe("t3code");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(repositoryIdentityResolverLayer)),
   );
 
   it.effect("returns the git top-level root path when resolving from a nested workspace", () =>
@@ -226,7 +231,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(normalizeResolvedPath(resolvedIdentityRoot)).toBe(
         normalizeResolvedPath(resolvedRepoRoot),
       );
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(repositoryIdentityResolverLayer)),
   );
 
   it.effect("returns null for non-git folders and repos without remotes", () =>
@@ -247,7 +252,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
       expect(nonGitIdentity).toBeNull();
       expect(noRemoteIdentity).toBeNull();
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(repositoryIdentityResolverLayer)),
   );
 
   it.effect.each(["add", "replace"] as const)(
@@ -285,7 +290,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
         expect(identity?.displayName).toBe("t3tools/t3code");
         expect(yield* resolver.resolve(cwd)).toEqual(identity);
-      }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+      }).pipe(Effect.provide(repositoryIdentityResolverLayer)),
   );
 
   it.effect("uses the last remote path segment as the repository name for nested groups", () =>
@@ -306,7 +311,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(identity?.displayName).toBe("t3tools/platform/t3code");
       expect(identity?.owner).toBe("t3tools");
       expect(identity?.name).toBe("t3code");
-    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+    }).pipe(Effect.provide(repositoryIdentityResolverLayer)),
   );
 
   it.effect(
@@ -390,4 +395,27 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       ),
     ),
   );
+
+  it.effect("does not spawn Git when version control is disabled", () => {
+    const resolverLayer = Layer.effect(
+      RepositoryIdentityResolver.RepositoryIdentityResolver,
+      RepositoryIdentityResolver.make(),
+    ).pipe(
+      Layer.provide(
+        Layer.succeed(ProcessRunner.ProcessRunner, {
+          run: () => Effect.die("git should not run when version control is disabled"),
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(VersionControlPolicy.VersionControlPolicy, {
+          isEnabled: () => Effect.succeed(false),
+        }),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      expect(yield* resolver.resolve("/repo")).toBeNull();
+    }).pipe(Effect.provide(resolverLayer));
+  });
 });

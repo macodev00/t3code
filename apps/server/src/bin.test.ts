@@ -44,6 +44,7 @@ import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
+import * as VersionControlPolicy from "./vcs/VersionControlPolicy.ts";
 import {
   makePersistedServerRuntimeState,
   persistServerRuntimeState,
@@ -130,6 +131,7 @@ const makeProjectPersistenceLayer = (config: ServerConfig.ServerConfig["Service"
   Layer.mergeAll(
     OrchestrationLayerLive.pipe(
       Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provide(VersionControlPolicy.layerTest),
       Layer.provideMerge(SqlitePersistenceLayerLive),
     ),
     WorkspacePaths.layer,

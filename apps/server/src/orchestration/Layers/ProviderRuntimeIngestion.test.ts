@@ -52,6 +52,7 @@ import {
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
+import * as VersionControlPolicy from "../../vcs/VersionControlPolicy.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
@@ -344,6 +345,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
       Layer.provideMerge(Layer.succeed(Tracer.Tracer, sqlCounter.tracer)),
+      Layer.provide(VersionControlPolicy.layerTest),
     );
     const testRuntime = ManagedRuntime.make(layer);
     runtime = testRuntime;

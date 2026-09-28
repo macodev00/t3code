@@ -16,6 +16,7 @@ import { checkpointRefForThreadTurn } from "./Utils.ts";
 import { parseTurnDiffFilesFromNumstat } from "./Diffs.ts";
 import * as CheckpointStore from "./CheckpointStore.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VersionControlPolicy from "../vcs/VersionControlPolicy.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ServerConfig from "../config.ts";
 
@@ -23,7 +24,10 @@ const ServerConfigLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-checkpoint-store-test-",
 });
 const VcsProcessTestLayer = VcsProcess.layer.pipe(Layer.provide(NodeServices.layer));
-const VcsDriverTestLayer = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProcessTestLayer));
+const VcsDriverTestLayer = VcsDriverRegistry.layer.pipe(
+  Layer.provide(VcsProcessTestLayer),
+  Layer.provide(VersionControlPolicy.layerTest),
+);
 const CheckpointStoreTestLayer = CheckpointStore.layer.pipe(
   Layer.provideMerge(VcsDriverTestLayer),
   Layer.provideMerge(NodeServices.layer),

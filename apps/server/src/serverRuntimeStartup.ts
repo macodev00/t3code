@@ -834,6 +834,7 @@ interface StartupOptions {
   readonly abort?: (error: ServerRuntimeStartupError) => Effect.Effect<void>;
 }
 
+/** Pulls clean default-branch checkouts whose version control and auto-pull settings are on. */
 export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
   projects: ReadonlyArray<OrchestrationProjectShell>,
   settings: ServerSettingsValue = DEFAULT_SERVER_SETTINGS,
@@ -842,7 +843,10 @@ export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
   const workspaceRoots = [
     ...new Set(
       projects
-        .filter((project) => resolveProjectSettings(settings, project.id).settings.defaultAutoPull)
+        .filter((project) => {
+          const resolved = resolveProjectSettings(settings, project.id).settings;
+          return resolved.enableVersionControl && resolved.defaultAutoPull;
+        })
         .map((project) => project.workspaceRoot),
     ),
   ];

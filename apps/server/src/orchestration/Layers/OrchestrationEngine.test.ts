@@ -42,6 +42,7 @@ import {
   type OrchestrationEventStoreShape,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import * as VersionControlPolicy from "../../vcs/VersionControlPolicy.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -92,6 +93,7 @@ function makeOrchestrationLayer(
     Layer.provide(persistence),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provide(VersionControlPolicy.layerTest),
   );
 }
 
@@ -1519,6 +1521,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(Layer.succeed(OrchestrationEventStore, flakyStore)),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolver.layer),
+        Layer.provide(VersionControlPolicy.layerTest),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provideMerge(ServerConfigLayer),
         Layer.provideMerge(NodeServices.layer),
@@ -1627,6 +1630,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationEventStoreLive),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolver.layer),
+        Layer.provide(VersionControlPolicy.layerTest),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(NodeServices.layer),
       ),
@@ -1776,6 +1780,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(Layer.succeed(OrchestrationEventStore, nonTransactionalStore)),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolver.layer),
+        Layer.provide(VersionControlPolicy.layerTest),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(NodeServices.layer),
       ),

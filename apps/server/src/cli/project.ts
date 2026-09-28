@@ -30,6 +30,7 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as VersionControlPolicy from "../vcs/VersionControlPolicy.ts";
 import {
   clearPersistedServerRuntimeState,
   readPersistedServerRuntimeState,
@@ -197,10 +198,14 @@ const projectCommandUuid = Crypto.Crypto.pipe(
   ),
 );
 
+// Offline `t3 project` does not load server settings. The explicit test layer
+// keeps Git available here; the running server uses VersionControlPolicy.layer.
 const ProjectCliRuntimeLive = Layer.mergeAll(
   WorkspacePaths.layer,
   OrchestrationLayerLive.pipe(
-    Layer.provideMerge(RepositoryIdentityResolver.layer),
+    Layer.provideMerge(
+      RepositoryIdentityResolver.layer.pipe(Layer.provide(VersionControlPolicy.layerTest)),
+    ),
     Layer.provideMerge(SqlitePersistenceLayerLive),
   ),
 );

@@ -11,6 +11,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 
 import * as ProcessRunner from "../processRunner.ts";
+import * as VersionControlPolicy from "../vcs/VersionControlPolicy.ts";
 
 const DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY = 512;
 // Background sweeps resolve every project each minute. A long TTL keeps them
@@ -144,6 +145,7 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
   options: RepositoryIdentityResolverOptions = {},
 ) {
   const processRunner = yield* ProcessRunner.ProcessRunner;
+  const versionControl = yield* VersionControlPolicy.VersionControlPolicy;
   const cacheCapacity = options.cacheCapacity ?? DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY;
   const refine = options.refine ?? Effect.succeed;
   // Git errors and timeouts resolve to null, so they use the negative TTL like
@@ -177,10 +179,15 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
     { capacity: cacheCapacity, timeToLive },
   );
 
-  // Untraced because almost every call is a cache hit. The lookups that spawn
-  // git keep their own spans.
+  /**
+   * Resolves repository identity. Version control off returns null before any
+   * Git process is spawned and does not cache that miss.
+   * Untraced because almost every call is a cache hit. The lookups that spawn
+   * git keep their own spans.
+   */
   const resolve: RepositoryIdentityResolver["Service"]["resolve"] = Effect.fnUntraced(
     function* (cwd, options) {
+      if (!(yield* versionControl.isEnabled(cwd))) return null;
       if (options?.refresh) yield* Cache.invalidate(repositoryRootCache, cwd);
       const cacheKey = yield* Cache.get(repositoryRootCache, cwd);
       if (cacheKey === null) return null;

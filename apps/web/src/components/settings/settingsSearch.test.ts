@@ -65,6 +65,7 @@ describe("searchSettings", () => {
     const localeLowerCase = vi.spyOn(String.prototype, "toLocaleLowerCase").mockReturnValue("gıt");
     try {
       expect(searchSettings("GIT")[0]?.id).toBe("git-fetch-interval");
+      expect(searchSettings("disable git")[0]?.id).toBe("version-control");
       expect(localeLowerCase).not.toHaveBeenCalled();
     } finally {
       localeLowerCase.mockRestore();
@@ -398,6 +399,14 @@ describe("settings search targets", () => {
     expect(isSettingsSearchScopeAvailable(model.scope, "all")).toBe(true);
     expect(isSettingsSearchScopeAvailable(model.scope, "environment")).toBe(true);
     expect(isSettingsSearchScopeAvailable(model.scope, "project")).toBe(true);
+  });
+
+  it("reaches the version control switch from project scope", () => {
+    const item = getSettingsSearchTargetScope("version-control")!;
+    expect(isSettingsSearchScopeAvailable(item.scope, "project")).toBe(true);
+    expect(isSettingsSearchScopeAvailable(item.scope, "checkout")).toBe(true);
+    expect(isSettingsSearchScopeAvailable(item.scope, "all")).toBe(true);
+    expect(isSettingsSearchScopeAvailable(item.scope, "environment")).toBe(true);
   });
 
   it("reaches source control discovery and git fetch interval from the default scope", () => {
