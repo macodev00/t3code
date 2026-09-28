@@ -1473,6 +1473,10 @@ function releaseChatTimelineAnchor<T extends { readonly messageId: MessageId | n
   return current.messageId === null ? current : { ...current, messageId: null };
 }
 
+/**
+ * Thread chat surface. Passes the live-follow latch through so returning to a
+ * thread restores the end, or the offset a gesture actually left behind.
+ */
 export default function ChatView(props: ChatViewProps) {
   const {
     environmentId,
@@ -5324,6 +5328,7 @@ export default function ChatView(props: ChatViewProps) {
   }, []);
   /** Whether live follow is still held. A gesture clears this before the next render. */
   const isTimelineLiveFollowLatched = useCallback(
+    /** Whether live follow is still held. A gesture clears this before the next render. */
     () => liveFollowUserScrollGenerationRef.current === anchorUserScrollGenerationRef.current,
     [],
   );

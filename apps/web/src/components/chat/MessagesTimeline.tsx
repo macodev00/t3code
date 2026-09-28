@@ -475,6 +475,10 @@ interface MessagesTimelineProps {
 // MessagesTimeline — list owner
 // ---------------------------------------------------------------------------
 
+/**
+ * Paints the thread and saves a latched live follow as the end so a layout
+ * gap is not restored as a reading position.
+ */
 export const MessagesTimeline = memo(function MessagesTimeline({
   citationRequest = null,
   citationHistoryLoading = false,
