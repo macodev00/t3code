@@ -1185,7 +1185,13 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   );
 });
 
-const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(props: {
+/**
+ * Context meter and primary composer controls.
+ *
+ * Forwards interrupt eligibility so Stop is offered while a session is still
+ * starting, not only after the turn is running.
+ */
+function ComposerFooterPrimaryActions(props: {
   compact: boolean;
   activeContextWindow: ContextWindowSnapshot | null;
   reserveContextWindowMeter: boolean;
@@ -1248,7 +1254,9 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
       />
     </>
   );
-});
+}
+
+const MemoizedComposerFooterPrimaryActions = memo(ComposerFooterPrimaryActions);
 
 // --------------------------------------------------------------------------
 // Handle exposed to ChatView
@@ -1485,7 +1493,13 @@ export interface ChatComposerProps {
 // Component
 // --------------------------------------------------------------------------
 
-export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
+/**
+ * Draft composer for a thread, including attachments and the primary action.
+ *
+ * Interrupt eligibility follows the session, so Stop stays available while a
+ * session is still starting.
+ */
+function ChatComposer(props: ChatComposerProps) {
   const {
     composerDraftTarget,
     environmentId,
@@ -7015,7 +7029,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </Tooltip>
                     </>
                   ) : null}
-                  <ComposerFooterPrimaryActions
+                  <MemoizedComposerFooterPrimaryActions
                     compact={isComposerResting || isComposerPrimaryActionsCompact}
                     activeContextWindow={
                       settings.contextWindowMeterEnabled ? activeContextWindow : null
@@ -7057,4 +7071,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       </div>
     </form>
   );
-});
+}
+
+const MemoizedChatComposer = memo(ChatComposer);
+export { MemoizedChatComposer as ChatComposer };

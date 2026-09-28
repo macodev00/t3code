@@ -67,7 +67,14 @@ const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
 
-export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
+/**
+ * Send, Stop, and pending-question controls for the composer.
+ *
+ * While a session can be interrupted before provider work starts, Stop is the
+ * only primary control, even if the draft already has text. A running turn
+ * keeps Send beside Stop once there is something to send.
+ */
+function ComposerPrimaryActions({
   compact,
   pendingAction,
   isRunning,
@@ -296,4 +303,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
       {hasSendableContent ? sendButton : null}
     </>
   );
-});
+}
+
+const MemoizedComposerPrimaryActions = memo(ComposerPrimaryActions);
+export { MemoizedComposerPrimaryActions as ComposerPrimaryActions };
