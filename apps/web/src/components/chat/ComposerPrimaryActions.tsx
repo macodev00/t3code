@@ -20,6 +20,7 @@ import {
   alternateComposerDispatchAction,
   resolveComposerDispatchMode,
 } from "@t3tools/client-runtime/state/composer-dispatch";
+import { composerPrimaryActionIsStop } from "../ChatView.logic";
 
 interface PendingActionState {
   questionIndex: number;
@@ -33,6 +34,11 @@ interface ComposerPrimaryActionsProps {
   compact: boolean;
   pendingAction: PendingActionState | null;
   isRunning: boolean;
+  /**
+   * Preparing and starting runs stay in the connecting phase, but Stop must
+   * still be offered. Defaults to `isRunning` for callers that only know that.
+   */
+  canInterrupt?: boolean;
   followUpBehavior?: "queue" | "steer";
   alternateShortcutLabel?: string | null;
   showPlanFollowUpPrompt: boolean;
@@ -84,6 +90,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   pendingAction,
   isRunning,
+  canInterrupt,
   followUpBehavior = "steer",
   alternateShortcutLabel = null,
   showPlanFollowUpPrompt,
@@ -108,6 +115,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     : undefined;
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
   const shortcutModifiers = useShortcutModifierState();
+  const stopAvailable = canInterrupt ?? isRunning;
   const isQueuing =
     !isEditingQueuedMessage &&
     resolveComposerDispatchMode({
@@ -148,7 +156,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   if (pendingAction) {
     return (
       <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
-        {isRunning ? renderStopGenerationButton(true) : null}
+        {stopAvailable ? renderStopGenerationButton(true) : null}
         {pendingAction.questionIndex > 0 ? (
           compact ? (
             <Button
@@ -248,7 +256,14 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  if (isRunning && !hasSendableContent && !isEditingQueuedMessage) {
+  if (
+    composerPrimaryActionIsStop({
+      isRunning,
+      canInterrupt: stopAvailable,
+      hasSendableContent,
+      isEditingQueuedMessage,
+    })
+  ) {
     return renderStopGenerationButton(false);
   }
 

@@ -61,11 +61,28 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 
+/**
+ * Set once `providerSessions.open` succeeds. Later setup failures (resume,
+ * ensure, fork) are not the open-failure path, and only the last attempt may
+ * terminalize the run.
+ */
+interface ProviderTurnSessionGate {
+  sessionOpened: boolean;
+}
+
+function providerFailureDetail(cause: unknown): string | undefined {
+  const nested =
+    typeof cause === "object" && cause !== null && "cause" in cause ? cause.cause : undefined;
+  if (nested instanceof Error) return nested.message;
+  if (typeof nested === "string") return nested;
+  return cause instanceof Error ? cause.message : undefined;
+}
+
 export interface ProviderTurnStartServiceV2Shape {
   /**
    * Starts the run's provider turn. When `willRetry` is true, a session open
-   * failure is returned so the caller can retry. Otherwise the run is settled
-   * as failed.
+   * or post-open setup failure is returned so the caller can retry. Otherwise
+   * the run is settled as failed.
    */
   readonly start: (input: {
     readonly threadId: ThreadId;
@@ -209,11 +226,14 @@ export const layer: Layer.Layer<
       };
     };
 
-    const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
-      readonly threadId: ThreadId;
-      readonly runId: RunId;
-      readonly willRetry?: boolean;
-    }) {
+    const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (
+      input: {
+        readonly threadId: ThreadId;
+        readonly runId: RunId;
+        readonly willRetry?: boolean;
+      },
+      gate: ProviderTurnSessionGate,
+    ) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
       const run = projection.runs.find((candidate) => candidate.id === runId);
@@ -564,6 +584,7 @@ export const layer: Layer.Layer<
         return;
       }
       const session = sessionResult.success;
+      gate.sessionOpened = true;
       let effectiveHandoffs = handoffs;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -1168,15 +1189,124 @@ export const layer: Layer.Layer<
       });
     });
 
+    // Resume/ensure/fork run after open, while the run is still `starting`.
+    // Retryable attempts leave it starting. The last attempt settles it failed
+    // so a dead provider child cannot pin the thread with no Stop and no settle.
+    const settlePostOpenStartFailure = <E>(input: {
+      readonly threadId: ThreadId;
+      readonly runId: RunId;
+      readonly cause: E;
+    }) =>
+      Effect.gen(function* () {
+        const projection = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+        const run = projection.runs.find((candidate) => candidate.id === input.runId);
+        const rootNode = projection.nodes.find((candidate) => candidate.id === run?.rootNodeId);
+        const attempt = projection.attempts.find(
+          (candidate) => candidate.id === run?.activeAttemptId,
+        );
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === run?.providerThreadId,
+        );
+        if (
+          run === undefined ||
+          run.status !== "starting" ||
+          rootNode === undefined ||
+          attempt === undefined ||
+          providerThread === undefined
+        ) {
+          return yield* Effect.fail(input.cause);
+        }
+        const now = yield* DateTime.now;
+        const failure = makeProviderFailure({
+          cause: input.cause,
+          message: providerFailureDetail(input.cause),
+          class: "provider_error",
+        });
+        const item: OrchestrationV2TurnItem = {
+          id: idAllocator.derive.runSignalTurnItem({
+            runId: input.runId,
+            signal: "provider-turn-start-failure",
+          }),
+          threadId: projection.thread.id,
+          runId: input.runId,
+          nodeId: rootNode.id,
+          providerThreadId: providerThread.id,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal:
+            Math.max(
+              0,
+              ...projection.turnItems
+                .filter((candidate) => candidate.runId === input.runId)
+                .map((candidate) => candidate.ordinal),
+            ) + 1,
+          status: "failed",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "error",
+          title: "Provider turn failed to start",
+          failure,
+        };
+        const eventPayloads = [
+          { type: "turn-item.updated" as const, payload: item },
+          {
+            type: "run.updated" as const,
+            payload: { ...run, status: "failed" as const, completedAt: now },
+          },
+          {
+            type: "run-attempt.updated" as const,
+            payload: { ...attempt, status: "failed" as const, completedAt: now },
+          },
+          {
+            type: "node.updated" as const,
+            payload: { ...rootNode, status: "failed" as const, completedAt: now },
+          },
+        ];
+        const events = yield* Effect.forEach(eventPayloads, (event) =>
+          Effect.gen(function* () {
+            return {
+              ...event,
+              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+              threadId: projection.thread.id,
+              runId: input.runId,
+              nodeId: rootNode.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: now,
+            } satisfies OrchestrationV2DomainEvent;
+          }),
+        );
+        yield* eventSink.writeIfRunCurrent({
+          threadId: projection.thread.id,
+          runId: input.runId,
+          activeAttemptId: attempt.id,
+          expectedStatus: "starting",
+          events,
+        });
+      });
+
     return ProviderTurnStartServiceV2.of({
-      start: (input) =>
-        start(input).pipe(
+      start: (input) => {
+        const gate: ProviderTurnSessionGate = { sessionOpened: false };
+        return start(input, gate).pipe(
+          Effect.catch((cause) => {
+            if (input.willRetry === true || !gate.sessionOpened) {
+              return Effect.fail(cause);
+            }
+            return settlePostOpenStartFailure({
+              threadId: input.threadId,
+              runId: input.runId,
+              cause,
+            });
+          }),
           Effect.mapError((cause) =>
             isProviderTurnStartError(cause)
               ? cause
               : new ProviderTurnStartError({ runId: input.runId, cause }),
           ),
-        ),
+        );
+      },
     });
   }),
 );

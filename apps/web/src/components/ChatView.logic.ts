@@ -39,6 +39,7 @@ import {
   codexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
+import { threadRuntimeHasInterruptibleRun } from "@t3tools/client-runtime/state/thread-execution";
 import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   type ChatMessage,
@@ -1230,6 +1231,34 @@ export function deriveCommittedServerUserMessageIds(
       row.item.type === "user_message" ? [row.item.messageId] : [],
     ),
   );
+}
+
+/**
+ * Stop is offered for a running turn, and for a preparing or starting run.
+ * Those setup states stay in the connecting phase, but `run.interrupt` already
+ * accepts them. Queued runs are not interruptible.
+ */
+export function canInterruptThreadSession(
+  phase: SessionPhase,
+  runtime: Thread["runtime"] | null | undefined,
+): boolean {
+  return phase === "running" || threadRuntimeHasInterruptibleRun(runtime);
+}
+
+/**
+ * The primary composer control is Stop while a run can be interrupted and has
+ * not started provider work. A running turn keeps Steer once the draft has
+ * something to send.
+ */
+export function composerPrimaryActionIsStop(input: {
+  readonly isRunning: boolean;
+  readonly canInterrupt: boolean;
+  readonly hasSendableContent: boolean;
+  readonly isEditingQueuedMessage: boolean;
+}): boolean {
+  if (input.isEditingQueuedMessage) return false;
+  if (input.isRunning) return !input.hasSendableContent;
+  return input.canInterrupt;
 }
 
 export function hasServerAcknowledgedLocalDispatch(input: {

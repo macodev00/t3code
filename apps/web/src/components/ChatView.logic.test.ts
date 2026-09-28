@@ -65,6 +65,8 @@ import {
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
+  canInterruptThreadSession,
+  composerPrimaryActionIsStop,
   createLocalDispatchSnapshot,
   deriveCommittedServerUserMessageIds,
   deriveComposerSendState,
@@ -2134,5 +2136,95 @@ describe("waitForRevertedMessage", () => {
     await vi.advanceTimersByTimeAsync(50);
     await settled;
     vi.useRealTimers();
+  });
+});
+
+describe("canInterruptThreadSession", () => {
+  const runtime = (
+    status: NonNullable<Thread["runtime"]>["status"],
+    activeRunId: RunId | null,
+  ): NonNullable<Thread["runtime"]> => ({
+    status,
+    activeRunId,
+    providerInstanceId: ProviderInstanceId.make("provider-pi"),
+    providerName: "pi",
+    lastError: null,
+    updatedAt: "2026-09-24T06:32:35.405Z",
+  });
+
+  it("offers Stop for a stuck starting or preparing run", () => {
+    expect(canInterruptThreadSession("connecting", runtime("starting", RunId.make("run-7")))).toBe(
+      true,
+    );
+    expect(
+      canInterruptThreadSession("connecting", runtime("preparing", RunId.make("run-prep"))),
+    ).toBe(true);
+  });
+
+  it("does not offer Stop for a queued run in the connecting phase", () => {
+    expect(canInterruptThreadSession("connecting", runtime("queued", null))).toBe(false);
+  });
+
+  it("keeps Stop for a running turn and a waiting checkpoint", () => {
+    expect(canInterruptThreadSession("running", runtime("running", RunId.make("run-live")))).toBe(
+      true,
+    );
+    expect(canInterruptThreadSession("running", runtime("waiting", null))).toBe(true);
+  });
+
+  it("hides Stop once the thread is idle", () => {
+    expect(canInterruptThreadSession("ready", runtime("idle", null))).toBe(false);
+    expect(canInterruptThreadSession("disconnected", null)).toBe(false);
+  });
+});
+
+describe("composerPrimaryActionIsStop", () => {
+  it("replaces the connecting spinner with Stop before the provider turn starts", () => {
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: false,
+        canInterrupt: true,
+        hasSendableContent: false,
+        isEditingQueuedMessage: false,
+      }),
+    ).toBe(true);
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: false,
+        canInterrupt: true,
+        hasSendableContent: true,
+        isEditingQueuedMessage: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps Steer available once a running turn has a draft", () => {
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: true,
+        canInterrupt: true,
+        hasSendableContent: true,
+        isEditingQueuedMessage: false,
+      }),
+    ).toBe(false);
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: true,
+        canInterrupt: true,
+        hasSendableContent: false,
+        isEditingQueuedMessage: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not replace an in-progress queued-message edit", () => {
+    expect(
+      composerPrimaryActionIsStop({
+        isRunning: false,
+        canInterrupt: true,
+        hasSendableContent: false,
+        isEditingQueuedMessage: true,
+      }),
+    ).toBe(false);
   });
 });
