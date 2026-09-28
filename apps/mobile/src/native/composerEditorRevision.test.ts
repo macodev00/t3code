@@ -194,21 +194,30 @@ describe("assumeComposerControlledState", () => {
   });
 });
 
-describe("nextComposerDraftRebind", () => {
+/**
+ * Generation transitions when an ask-question card hides and then shows the composer.
+ */
+function registerNextComposerDraftRebindCases() {
   const draft = "long follow-up typed before the question";
   const selection = { start: draft.length, end: draft.length };
   const typedSnapshots = [{ eventCount: 6, value: draft, selection }];
 
-  it("keeps the editor mounted while the question card opens and stays open", () => {
+  /**
+   * Opening the card, and leaving it open, keeps the mounted editor generation.
+   */
+  function keepsEditorMountedWhileQuestionCardOpensAndStaysOpen() {
     const opened = nextComposerDraftRebind({ generation: 2, concealed: false }, true);
     expect(opened).toEqual({ generation: 2, concealed: true });
     const stillOpen = nextComposerDraftRebind(opened, true);
     expect(stillOpen).toBe(opened);
     // The stored draft is still an echo of the hidden editor, and this did not clear it.
     expect(isComposerNativeEcho(draft, selection, 6, typedSnapshots)).toBe(true);
-  });
+  }
 
-  it("rebinds when the question card closes so a fresh editor paints the stored draft", () => {
+  /**
+   * Closing the card bumps the generation so a fresh editor paints the stored draft.
+   */
+  function rebindsWhenQuestionCardClosesSoFreshEditorPaintsStoredDraft() {
     const closed = nextComposerDraftRebind({ generation: 2, concealed: true }, false);
     expect(closed).toEqual({ generation: 3, concealed: false });
 
@@ -218,13 +227,31 @@ describe("nextComposerDraftRebind", () => {
     const freshSnapshots: typeof typedSnapshots = [];
     expect(isComposerNativeEcho(draft, selection, 0, freshSnapshots)).toBe(false);
     expect(resolveComposerControlledEventCount(draft, selection, 0, freshSnapshots)).toBe(0);
-  });
+  }
 
-  it("does not rebind when the composer was already visible", () => {
+  /**
+   * An already visible composer does not remount when concealment stays false.
+   */
+  function doesNotRebindWhenComposerWasAlreadyVisible() {
     const visible = { generation: 4, concealed: false };
     expect(nextComposerDraftRebind(visible, false)).toBe(visible);
-  });
-});
+  }
+
+  it(
+    "keeps the editor mounted while the question card opens and stays open",
+    keepsEditorMountedWhileQuestionCardOpensAndStaysOpen,
+  );
+  it(
+    "rebinds when the question card closes so a fresh editor paints the stored draft",
+    rebindsWhenQuestionCardClosesSoFreshEditorPaintsStoredDraft,
+  );
+  it(
+    "does not rebind when the composer was already visible",
+    doesNotRebindWhenComposerWasAlreadyVisible,
+  );
+}
+
+describe("nextComposerDraftRebind", registerNextComposerDraftRebindCases);
 
 describe("typing immediately before an intercepted paste", () => {
   it("keeps the pre-paste React value behind the native paste revision", () => {

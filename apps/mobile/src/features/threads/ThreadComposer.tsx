@@ -210,6 +210,10 @@ const COMPOSER_ATTACHMENT_ENTERING =
 
 const AnimatedGlassSurface = Animated.createAnimatedComponent(GlassSurface);
 
+/**
+ * Glass shell around the composer. It morphs between the compact pill and the
+ * expanded card, and keeps that shape in sync on the glass and the content.
+ */
 export function ComposerSurface(props: {
   readonly children: ReactNode;
   readonly style: ViewStyle;
@@ -278,7 +282,7 @@ export function ComposerSurface(props: {
  * Composer for an existing thread. When `composerConcealed` flips from true
  * back to false, the editor remounts and paints the stored draft.
  */
-export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
+function ThreadComposerView(props: ThreadComposerProps) {
   const draftRebindGeneration = useComposerDraftRebind(props.composerConcealed);
   const project = useProject(scopeProjectRef(props.environmentId, props.selectedThread.projectId));
   const { themeVariables: materialTheme } = useAppearancePreferences();
@@ -1023,4 +1027,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       <FilePreviewModal source={previewFile} onRequestClose={closePreview} />
     </Animated.View>
   );
-});
+}
+
+export const ThreadComposer = memo(ThreadComposerView);
+ThreadComposer.displayName = "ThreadComposer";

@@ -269,7 +269,7 @@ const USER_INPUT_TOGGLE_TIMING = {
  * without clearing its draft, and the composer rebinds that draft when the
  * card closes.
  */
-export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+function ThreadDetailScreenView(props: ThreadDetailScreenProps) {
   const navigation = useNavigation();
   const deviceState = useEnvironmentQuery(
     deviceEnvironment.state({ environmentId: props.environmentId, input: {} }),
@@ -1119,4 +1119,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       ) : null}
     </View>
   );
-});
+}
+
+export const ThreadDetailScreen = memo(ThreadDetailScreenView);
+ThreadDetailScreen.displayName = "ThreadDetailScreen";

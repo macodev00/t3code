@@ -12,10 +12,14 @@ import { nextComposerDraftRebind, type ComposerDraftRebind } from "./composerEdi
  * native echo.
  */
 export function useComposerDraftRebind(concealed: boolean): number {
-  const [rebind, setRebind] = useState<ComposerDraftRebind>(() => ({
-    generation: 0,
-    concealed,
-  }));
+  /**
+   * Seed rebind state from the concealment the composer is mounted with.
+   */
+  function initialComposerDraftRebind() {
+    return { generation: 0, concealed };
+  }
+
+  const [rebind, setRebind] = useState<ComposerDraftRebind>(initialComposerDraftRebind);
   if (rebind.concealed === concealed) {
     return rebind.generation;
   }

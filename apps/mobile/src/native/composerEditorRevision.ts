@@ -136,6 +136,12 @@ export function nextComposerDraftRebind(
   return { generation: rebind.generation, concealed };
 }
 
+/**
+ * Drop acknowledged native snapshots, keeping the newest one.
+ *
+ * Echo detection still needs that newest snapshot. Without it, a later render
+ * of the same settled text would look like a parent edit and move the caret.
+ */
 export function pruneAcknowledgedComposerNativeEvents(
   snapshots: ReadonlyArray<ComposerNativeEventSnapshot>,
   acknowledgedEventCount: number,
