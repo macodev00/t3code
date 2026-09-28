@@ -252,6 +252,7 @@ describe("pending user input answers", () => {
   });
 });
 
+/** Thread activity fixture for mobile feed tests. */
 function makeActivity(
   input: Partial<OrchestrationThreadActivity> &
     Pick<OrchestrationThreadActivity, "id" | "kind" | "summary" | "createdAt">,
@@ -264,6 +265,7 @@ function makeActivity(
   };
 }
 
+/** Thread fixture for mobile feed tests. */
 function makeThread(
   input: Partial<OrchestrationThread> & Pick<OrchestrationThread, "id" | "projectId" | "title">,
 ): OrchestrationThread {

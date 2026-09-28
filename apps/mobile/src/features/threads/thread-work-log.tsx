@@ -82,6 +82,7 @@ const WORK_LOG_DETAIL_ENTER_TRANSITION = FadeIn.duration(140);
 const WORK_LOG_DETAIL_EXIT_TRANSITION = FadeOut.duration(120);
 type WorkContentIcon = AppSymbolName | "browser" | "device" | "t3-code" | "pull-request";
 
+/** Icon for a mobile work-log row, including the wordmark and device glyphs. */
 function WorkLogIcon(props: {
   readonly icon: WorkContentIcon;
   readonly color: ColorValue;
@@ -113,6 +114,7 @@ function WorkLogIcon(props: {
   );
 }
 
+/** Animated chevron that shows whether a work-log group is expanded. */
 export function ThreadDisclosureChevron(props: {
   readonly expanded: boolean;
   readonly collapsedDirection: "right" | "down";
@@ -151,6 +153,7 @@ export function ThreadDisclosureChevron(props: {
   );
 }
 
+/** Icon and label row painted under the work-log shimmer. */
 function ShimmerWorkContent(props: {
   readonly textClassName?: string;
   readonly compact?: boolean;
@@ -201,6 +204,7 @@ function ShimmerWorkContent(props: {
   );
 }
 
+/** In-progress work-log row with a shimmer sweep across the icon and label. */
 export function ShimmeringWorkContent(props: {
   readonly className?: string;
   readonly textClassName?: string;

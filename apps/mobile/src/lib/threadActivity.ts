@@ -1441,6 +1441,7 @@ function extractWorkLogItemType(
   return resolveWorkLogToolItemType(payload?.itemType, payload?.data);
 }
 
+/** Approval request kind stored on a work-log row. */
 function extractWorkLogRequestKind(
   payload: Record<string, unknown> | null,
 ): WorkLogEntry["requestKind"] | undefined {

@@ -389,6 +389,7 @@ function extractTextContentFromToolCallContent(
 // spans entries around an image/diff stays on those entries. Non-text kinds keep their
 // relative order; blank text entries are dropped; the truncation marker is prepended to
 // the first remaining text entry.
+/** Splits a retained output tail back across the original tool-call content entries. */
 function distributeRetainedTailAcrossContent(
   content: ReadonlyArray<EffectAcpSchema.ToolCallContent>,
   tail: string,
@@ -441,6 +442,7 @@ function distributeRetainedTailAcrossContent(
   });
 }
 
+/** Trimmed ACP tool kind, or undefined when the value is blank. */
 function normalizeToolKind(kind: unknown): string | undefined {
   return typeof kind === "string" && kind.trim().length > 0 ? kind.trim() : undefined;
 }
