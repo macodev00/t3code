@@ -69,6 +69,7 @@ import {
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { GlassSurface } from "../../components/GlassSurface";
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
+import { useComposerDraftRebind } from "../../native/useComposerDraftRebind";
 import { fileRoutePathSegments } from "../files/filePath";
 import {
   ComposerActionButton,
@@ -155,6 +156,12 @@ export interface ThreadComposerProps {
   readonly onExpandedChange?: (expanded: boolean) => void;
   /** Fires on editor focus/blur; hosts use it to vet stale keyboard state. */
   readonly onEditorFocusChange?: (focused: boolean) => void;
+  /**
+   * True while an ask-question card (or a failed-creation card) owns the
+   * composer slot. Flipping this back to false remounts the editor so the
+   * stored draft is shown again.
+   */
+  readonly composerConcealed: boolean;
 }
 
 /**
@@ -267,7 +274,12 @@ export function ComposerSurface(props: {
   );
 }
 
+/**
+ * Composer for an existing thread. When `composerConcealed` flips from true
+ * back to false, the editor remounts and paints the stored draft.
+ */
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
+  const draftRebindGeneration = useComposerDraftRebind(props.composerConcealed);
   const project = useProject(scopeProjectRef(props.environmentId, props.selectedThread.projectId));
   const { themeVariables: materialTheme } = useAppearancePreferences();
   const composerPanel = materialTheme["--color-composer-panel"];
@@ -737,7 +749,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               className={isExpanded ? "px-[14px]" : "min-w-0 flex-1 px-[4px]"}
               layout={COMPOSER_LAYOUT_TRANSITION}
             >
+              {/* Remount after the ask-question card closes. The hidden editor's
+                  revision history would treat the stored draft as a native echo
+                  and leave the text view empty. */}
               <ComposerEditor
+                key={draftRebindGeneration}
                 draftKey={composerOwnerKey}
                 environmentId={props.environmentId}
                 onOpenMention={(path) => {

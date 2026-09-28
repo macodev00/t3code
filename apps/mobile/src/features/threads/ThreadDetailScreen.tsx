@@ -264,6 +264,11 @@ const USER_INPUT_TOGGLE_TIMING = {
   easing: Easing.out(Easing.cubic),
 };
 
+/**
+ * Thread transcript and composer. An ask-question card hides the composer
+ * without clearing its draft, and the composer rebinds that draft when the
+ * card closes.
+ */
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const navigation = useNavigation();
   const deviceState = useEnvironmentQuery(
@@ -441,6 +446,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const [collapsedUserInputRequestId, setCollapsedUserInputRequestId] =
     useState<ApprovalRequestId | null>(null);
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;
+  // Same condition that hides the composer. Closing the card (or the failure
+  // card) flips this off so the editor rebinds the stored draft in place.
+  const composerConcealed =
+    activeUserInputRequestId !== null || props.creationState?.kind === "failed";
   // The open /usage-limits panel for this thread, model and turn. Only the open
   // moment is stored: the rows read live provider data, so a redeemed reset
   // credit or refreshed probe shows through. Anything that spends quota closes
@@ -1061,17 +1070,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               </View>
 
               {/* Hidden (not unmounted) while a user-input request owns the
-                composer slot, so composer drafts and editor state survive.
-                A rejected creation has no thread to send to; the failure card
-                owns the slot instead. */}
-              <View
-                style={
-                  activeUserInputRequestId !== null || props.creationState?.kind === "failed"
-                    ? { display: "none" }
-                    : undefined
-                }
-              >
+                composer slot, so the stored draft survives. Closing the card
+                rebinds the editor so that draft is shown again. A rejected
+                creation has no thread to send to; the failure card owns the
+                slot instead. */}
+              <View style={composerConcealed ? { display: "none" } : undefined}>
                 <ThreadComposer
+                  composerConcealed={composerConcealed}
                   editorRef={composerEditorRef}
                   draftMessage={props.draftMessage}
                   draftAttachments={props.draftAttachments}

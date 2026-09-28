@@ -103,6 +103,39 @@ export function assumeComposerControlledState(
   ];
 }
 
+export interface ComposerDraftRebind {
+  /** Increments when a concealed composer is shown again. */
+  readonly generation: number;
+  /** True while an ask-question card owns the composer slot. */
+  readonly concealed: boolean;
+}
+
+/**
+ * Decide whether the composer editor should rebind its stored draft.
+ *
+ * An ask-question card hides the composer without unmounting it, so the draft
+ * stays stored and the last keystroke stays classified as a native echo. On
+ * iOS that echo is dropped when the text view no longer matches, and the
+ * composer comes back empty. A thread switch mounts a fresh editor, which
+ * paints the same draft. `generation` advances only when the card closes so
+ * the editor can do that fresh mount in place.
+ *
+ * Opening the card, or leaving it open, keeps the current generation. The
+ * draft text is not an input, so this cannot clear it.
+ */
+export function nextComposerDraftRebind(
+  rebind: ComposerDraftRebind,
+  concealed: boolean,
+): ComposerDraftRebind {
+  if (rebind.concealed === concealed) {
+    return rebind;
+  }
+  if (rebind.concealed && !concealed) {
+    return { generation: rebind.generation + 1, concealed };
+  }
+  return { generation: rebind.generation, concealed };
+}
+
 export function pruneAcknowledgedComposerNativeEvents(
   snapshots: ReadonlyArray<ComposerNativeEventSnapshot>,
   acknowledgedEventCount: number,

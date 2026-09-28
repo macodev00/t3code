@@ -4,6 +4,7 @@ import {
   acknowledgeComposerNativeEvent,
   assumeComposerControlledState,
   isComposerNativeEcho,
+  nextComposerDraftRebind,
   pruneAcknowledgedComposerNativeEvents,
   resolveComposerControlledEventCount,
 } from "./composerEditorRevision";
@@ -190,6 +191,38 @@ describe("assumeComposerControlledState", () => {
     expect(resolveComposerControlledEventCount("typed", { start: 5, end: 5 }, 3, snapshots)).toBe(
       3,
     );
+  });
+});
+
+describe("nextComposerDraftRebind", () => {
+  const draft = "long follow-up typed before the question";
+  const selection = { start: draft.length, end: draft.length };
+  const typedSnapshots = [{ eventCount: 6, value: draft, selection }];
+
+  it("keeps the editor mounted while the question card opens and stays open", () => {
+    const opened = nextComposerDraftRebind({ generation: 2, concealed: false }, true);
+    expect(opened).toEqual({ generation: 2, concealed: true });
+    const stillOpen = nextComposerDraftRebind(opened, true);
+    expect(stillOpen).toBe(opened);
+    // The stored draft is still an echo of the hidden editor, and this did not clear it.
+    expect(isComposerNativeEcho(draft, selection, 6, typedSnapshots)).toBe(true);
+  });
+
+  it("rebinds when the question card closes so a fresh editor paints the stored draft", () => {
+    const closed = nextComposerDraftRebind({ generation: 2, concealed: true }, false);
+    expect(closed).toEqual({ generation: 3, concealed: false });
+
+    // The bumped generation remounts the editor. A new mount has no snapshot
+    // history, so the stored draft is a controlled document rather than an echo
+    // the text view would skip.
+    const freshSnapshots: typeof typedSnapshots = [];
+    expect(isComposerNativeEcho(draft, selection, 0, freshSnapshots)).toBe(false);
+    expect(resolveComposerControlledEventCount(draft, selection, 0, freshSnapshots)).toBe(0);
+  });
+
+  it("does not rebind when the composer was already visible", () => {
+    const visible = { generation: 4, concealed: false };
+    expect(nextComposerDraftRebind(visible, false)).toBe(visible);
   });
 });
 
