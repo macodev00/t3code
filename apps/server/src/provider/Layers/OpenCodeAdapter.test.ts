@@ -12,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -29,12 +30,14 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
+import * as OpenCodeChildSessionLiveness from "../Services/OpenCodeChildSessionLiveness.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
@@ -613,6 +616,7 @@ const OpenCodeAdapterTestLayer = Layer.effect(
     }),
   ),
   Layer.provideMerge(providerSessionDirectoryTestLayer),
+  Layer.provideMerge(OpenCodeChildSessionLiveness.layer),
   Layer.provideMerge(NodeServices.layer),
 );
 
@@ -666,7 +670,323 @@ const questionRequest = (id: string, sessionID: string): QuestionRequest => ({
   ],
 });
 
+const OPENCODE_PARENT_SESSION_ID = "http://127.0.0.1:9999/session";
+
+/**
+ * One consumer for a thread's runtime events.
+ *
+ * Child `session.status` writes quiet liveness and emits nothing, so the
+ * following parent title is the barrier that proves those updates landed.
+ */
+function collectOpenCodeThreadEvents(adapter: OpenCodeAdapterShape, threadId: ThreadId) {
+  return Effect.gen(function* () {
+    const seen: Array<ProviderRuntimeEvent> = [];
+    const titles = yield* Queue.unbounded<string>();
+    const completedTurnIds = yield* Queue.unbounded<string | undefined>();
+    yield* adapter.streamEvents.pipe(
+      Stream.filter((event) => event.threadId === threadId),
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          seen.push(event);
+          if (event.type === "thread.metadata.updated" && event.payload.name) {
+            yield* Queue.offer(titles, event.payload.name);
+          }
+          if (event.type === "turn.completed") {
+            yield* Queue.offer(completedTurnIds, event.turnId);
+          }
+        }),
+      ),
+      Effect.forkChild,
+    );
+
+    const waitForTitle = (title: string) =>
+      Stream.fromQueue(titles).pipe(
+        Stream.filter((candidate) => candidate === title),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+    const waitForTurnCompleted = () => Queue.take(completedTurnIds);
+
+    return { seen, waitForTitle, waitForTurnCompleted };
+  });
+}
+
+const openCodeParentTitle = (sessionId: string, title: string) => ({
+  type: "session.updated" as const,
+  properties: {
+    info: {
+      id: sessionId,
+      title,
+    },
+  },
+});
+
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  it.effect(
+    "records related child session.status as quiet reaper liveness without task activity",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const liveness = yield* OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness;
+        const threadId = asThreadId("thread-opencode-child-liveness");
+        const enqueue = makeOpenCodeEventQueue();
+        const { seen, waitForTitle } = yield* collectOpenCodeThreadEvents(adapter, threadId);
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "busy" } },
+        });
+        enqueue({
+          type: "session.created",
+          properties: {
+            info: {
+              id: "ses_research",
+              parentID: OPENCODE_PARENT_SESSION_ID,
+              title: "Research agent",
+            },
+          },
+        });
+        enqueue({
+          type: "session.created",
+          properties: {
+            info: {
+              id: "ses_unrelated",
+              parentID: "ses_other_parent",
+              title: "Someone else",
+            },
+          },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_unrelated", status: { type: "busy" } },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "busy" } },
+        });
+        enqueue({
+          type: "session.status",
+          properties: {
+            sessionID: "ses_research",
+            status: { type: "retry", attempt: 2, message: "rate limit", next: 10 },
+          },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "paused" } },
+        });
+        enqueue({
+          type: "session.created",
+          properties: {
+            info: {
+              id: "ses_nested",
+              parentID: "ses_research",
+              title: "Child session - 2026-09-24T21:48:38.700Z",
+            },
+          },
+        });
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_nested", status: { type: "busy" } },
+        });
+        enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Children are running"));
+
+        yield* waitForTitle("Children are running");
+        NodeAssert.equal(yield* liveness.hasLive(threadId), true);
+        const session = (yield* adapter.listSessions()).find(
+          (candidate) => candidate.threadId === threadId,
+        );
+        NodeAssert.equal(session?.activeTurnId, undefined);
+        NodeAssert.notEqual(session?.status, "running");
+
+        enqueue({
+          type: "session.status",
+          properties: { sessionID: "ses_research", status: { type: "idle" } },
+        });
+        enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Nested child still running"));
+        yield* waitForTitle("Nested child still running");
+        NodeAssert.equal(yield* liveness.hasLive(threadId), true);
+
+        enqueue({
+          type: "session.deleted",
+          properties: { info: { id: "ses_nested" } },
+        });
+        enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Nested child deleted"));
+        yield* waitForTitle("Nested child deleted");
+        NodeAssert.equal(yield* liveness.hasLive(threadId), false);
+
+        enqueue({
+          type: "session.status",
+          properties: {
+            sessionID: "ses_research",
+            status: { type: "retry", attempt: 3, message: "again", next: 20 },
+          },
+        });
+        enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Research resumed"));
+        yield* waitForTitle("Research resumed");
+        NodeAssert.equal(yield* liveness.hasLive(threadId), true);
+        NodeAssert.deepEqual(
+          seen.filter((event) => event.type.startsWith("task.")),
+          [],
+        );
+
+        yield* adapter.stopSession(threadId);
+        NodeAssert.equal(yield* liveness.hasLive(threadId), false);
+      }),
+  );
+
+  it.effect("keeps the parent turn running when a related child session goes idle", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const liveness = yield* OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness;
+      const threadId = asThreadId("thread-opencode-child-liveness-turn");
+      runtimeMock.state.sessionStatus = "busy";
+      const enqueue = makeOpenCodeEventQueue();
+      const { seen, waitForTitle, waitForTurnCompleted } = yield* collectOpenCodeThreadEvents(
+        adapter,
+        threadId,
+      );
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Run the suite in the background",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+      enqueue({
+        type: "session.created",
+        properties: {
+          info: {
+            id: "ses_live",
+            parentID: OPENCODE_PARENT_SESSION_ID,
+            title: "Browser run",
+          },
+        },
+      });
+      enqueue({
+        type: "session.status",
+        properties: { sessionID: "ses_live", status: { type: "busy" } },
+      });
+      enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Child is busy"));
+      yield* waitForTitle("Child is busy");
+      NodeAssert.equal(yield* liveness.hasLive(threadId), true);
+      NodeAssert.equal(
+        seen.some((event) => event.type === "turn.completed"),
+        false,
+      );
+
+      enqueue({
+        type: "session.status",
+        properties: { sessionID: "ses_live", status: { type: "idle" } },
+      });
+      enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Child is idle"));
+      yield* waitForTitle("Child is idle");
+      NodeAssert.equal(yield* liveness.hasLive(threadId), false);
+      NodeAssert.equal(
+        seen.some((event) => event.type === "turn.completed"),
+        false,
+      );
+      NodeAssert.equal(
+        (yield* adapter.listSessions()).find((candidate) => candidate.threadId === threadId)
+          ?.activeTurnId,
+        turn.turnId,
+      );
+
+      enqueue({
+        type: "session.status",
+        properties: { sessionID: OPENCODE_PARENT_SESSION_ID, status: { type: "idle" } },
+      });
+      NodeAssert.equal(yield* waitForTurnCompleted(), turn.turnId);
+      NodeAssert.deepEqual(
+        seen.filter((event) => event.type.startsWith("task.")),
+        [],
+      );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("drops quiet child liveness when the OpenCode session is rewound or stopped", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const liveness = yield* OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness;
+      const threadId = asThreadId("thread-opencode-child-liveness-teardown");
+      const enqueue = makeOpenCodeEventQueue();
+      const { waitForTitle } = yield* collectOpenCodeThreadEvents(adapter, threadId);
+
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      enqueue({
+        type: "session.created",
+        properties: {
+          info: {
+            id: "ses_old",
+            parentID: OPENCODE_PARENT_SESSION_ID,
+            title: "Old child",
+          },
+        },
+      });
+      enqueue({
+        type: "session.status",
+        properties: { sessionID: "ses_old", status: { type: "busy" } },
+      });
+      enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Old child is live"));
+      yield* waitForTitle("Old child is live");
+      NodeAssert.equal(yield* liveness.hasLive(threadId), true);
+
+      runtimeMock.state.messages = [
+        { info: { id: "user-1", role: "user" }, parts: [] },
+        {
+          info: { id: "assistant-1", role: "assistant" },
+          parts: [{ id: "part-1", type: "text", text: "answer" }],
+        },
+      ];
+      yield* adapter.rollbackThread(threadId, 1);
+      NodeAssert.equal(yield* liveness.hasLive(threadId), false);
+
+      const forkedSessionId = `${OPENCODE_PARENT_SESSION_ID}_fork`;
+      enqueue({
+        type: "session.created",
+        properties: {
+          info: {
+            id: "ses_new",
+            parentID: forkedSessionId,
+            title: "Replacement child",
+          },
+        },
+      });
+      enqueue({
+        type: "session.status",
+        properties: {
+          sessionID: "ses_new",
+          status: { type: "retry", attempt: 1, message: "again", next: 5 },
+        },
+      });
+      enqueue(openCodeParentTitle(forkedSessionId, "Replacement child is live"));
+      yield* waitForTitle("Replacement child is live");
+      NodeAssert.equal(yield* liveness.hasLive(threadId), true);
+
+      yield* adapter.stopSession(threadId);
+      NodeAssert.equal(yield* liveness.hasLive(threadId), false);
+    }),
+  );
+
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -1439,6 +1759,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
           Layer.provideMerge(ServerSettingsService.layerTest()),
           Layer.provideMerge(providerSessionDirectoryTestLayer),
+          Layer.provideMerge(OpenCodeChildSessionLiveness.layer),
           Layer.provideMerge(NodeServices.layer),
         );
         const context = yield* Layer.buildWithScope(adapterLayer, scope);
@@ -6493,6 +6814,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(OpenCodeChildSessionLiveness.layer),
       Layer.provideMerge(NodeServices.layer),
     );
 
@@ -6559,6 +6881,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(OpenCodeChildSessionLiveness.layer),
       Layer.provideMerge(NodeServices.layer),
     );
 
@@ -6610,6 +6933,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(OpenCodeChildSessionLiveness.layer),
       Layer.provideMerge(NodeServices.layer),
     );
 
@@ -7852,6 +8176,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           }),
         ),
         Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(OpenCodeChildSessionLiveness.layer),
         Layer.provideMerge(NodeServices.layer),
       );
 
@@ -7934,6 +8259,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           }),
         ),
         Layer.provideMerge(providerSessionDirectoryTestLayer),
+        Layer.provideMerge(OpenCodeChildSessionLiveness.layer),
         Layer.provideMerge(NodeServices.layer),
       );
 

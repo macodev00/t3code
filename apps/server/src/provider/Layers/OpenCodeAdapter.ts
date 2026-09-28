@@ -59,6 +59,7 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
+import * as OpenCodeChildSessionLiveness from "../Services/OpenCodeChildSessionLiveness.ts";
 import * as Option from "effect/Option";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
@@ -946,6 +947,7 @@ export function makeOpenCodeAdapter(
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("opencode");
     const serverConfig = yield* ServerConfig;
     const openCodeRuntime = yield* OpenCodeRuntime;
+    const childLiveness = yield* OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -2227,7 +2229,13 @@ export function makeOpenCodeAdapter(
           addRelatedOpenCodeSession(context, session.id);
         }
       } else if (event.type === "session.deleted") {
-        context.relatedSessionIds.delete(event.properties.info.id);
+        const deletedSessionId = event.properties.info.id;
+        if (
+          context.relatedSessionIds.delete(deletedSessionId) &&
+          deletedSessionId !== context.openCodeSessionId
+        ) {
+          yield* childLiveness.clearChild(context.session.threadId, deletedSessionId);
+        }
       }
 
       const payloadSessionId = openCodeEventSessionId(event);
@@ -2260,6 +2268,23 @@ export function makeOpenCodeAdapter(
         payloadSessionId !== undefined &&
         isOpenCodeChildRequestEvent(event) &&
         (context.relatedSessionIds.has(payloadSessionId) || isKnownPendingTerminalEvent);
+      // Related child session.status is quiet liveness for the reaper. It must
+      // not fall through into parent turn admission or completion, and it must
+      // not emit task activity.
+      if (
+        event.type === "session.status" &&
+        payloadSessionId !== undefined &&
+        !isParentEvent &&
+        context.relatedSessionIds.has(payloadSessionId)
+      ) {
+        const liveness = OpenCodeChildSessionLiveness.openCodeChildSessionLivenessStatus(
+          event.properties.status.type,
+        );
+        if (liveness !== undefined) {
+          yield* childLiveness.note(context.session.threadId, payloadSessionId, liveness);
+        }
+        return;
+      }
       if (!isParentEvent && !isChildRequestEvent) {
         return;
       }
@@ -2726,6 +2751,13 @@ export function makeOpenCodeAdapter(
     });
 
     const startEventPump = Effect.fn("startEventPump")(function* (context: OpenCodeSessionContext) {
+      // Children die with the provider process. Release their hold when this
+      // session scope closes (stop, unexpected exit, or layer shutdown) so a
+      // finished session cannot keep the reaper from stopping the thread.
+      yield* Scope.addFinalizer(
+        context.sessionScope,
+        childLiveness.clearThread(context.session.threadId),
+      );
       // One AbortController per session scope. The finalizer fires when
       // the scope closes (explicit stop, unexpected exit, or layer
       // shutdown) and cancels the in-flight `event.subscribe` fetch so
@@ -3972,6 +4004,8 @@ export function makeOpenCodeAdapter(
             }),
           ).pipe(Effect.mapError(toRequestError));
           yield* clearPendingOpenCodeRequests(context, { type: "session.fork" });
+          // Children of the session being replaced must not hold the fork.
+          yield* childLiveness.clearThread(threadId);
           context.openCodeSessionId = forkedSessionId;
           context.relatedSessionIds.clear();
           context.relatedSessionIds.add(forkedSessionId);

@@ -12,6 +12,7 @@ import {
   type ProviderSessionReaperShape,
 } from "../Services/ProviderSessionReaper.ts";
 import { forkParked } from "../../serverActivation.ts";
+import * as OpenCodeChildSessionLiveness from "../Services/OpenCodeChildSessionLiveness.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
@@ -27,6 +28,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     const providerService = yield* ProviderService;
     const directory = yield* ProviderSessionDirectory;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const childLiveness = yield* OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness;
 
     const inactivityThresholdMs = Math.max(
       1,
@@ -87,6 +89,22 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           yield* Effect.logDebug("provider.session.reaper.skipped-background-work", {
             threadId: binding.threadId,
             backgroundLiveness: thread.backgroundLiveness,
+            idleDurationMs,
+          });
+          continue;
+        }
+
+        // OpenCode child sessions keep the provider process working after the
+        // parent turn settles. They never emit task lifecycle events, so
+        // backgroundLiveness stays empty and the idle clock keeps advancing
+        // from the last user-facing activity. Leave that clock alone and skip
+        // the stop while a related child is still busy or retrying. Idle,
+        // deletion, and session teardown release the hold, so the next sweep
+        // can reap. Other providers are not held.
+        if (yield* childLiveness.holdsInactivity(binding.provider, binding.threadId)) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-opencode-child-session", {
+            threadId: binding.threadId,
+            provider: binding.provider,
             idleDurationMs,
           });
           continue;

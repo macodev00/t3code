@@ -37,6 +37,7 @@ import {
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { OpenCodeRuntime, loadOpenCodeCommands } from "../opencodeRuntime.ts";
+import type * as OpenCodeChildSessionLiveness from "../Services/OpenCodeChildSessionLiveness.ts";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -84,6 +85,7 @@ export type OpenCodeDriverEnv =
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
+  | OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness
   | OpenCodeRuntime
   | Path.Path
   | ProviderEventLoggers

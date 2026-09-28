@@ -21,6 +21,7 @@ import { ProjectionSnapshotQuery } from "../../orchestration/Services/Projection
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
 import { ProviderValidationError } from "../Errors.ts";
+import * as OpenCodeChildSessionLiveness from "../Services/OpenCodeChildSessionLiveness.ts";
 import { ProviderSessionReaper } from "../Services/ProviderSessionReaper.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
@@ -62,7 +63,7 @@ function makeReadModel(
     readonly session: {
       readonly threadId: ThreadId;
       readonly status: "starting" | "running" | "ready" | "interrupted" | "stopped" | "error";
-      readonly providerName: "codex" | "claudeAgent";
+      readonly providerName: "codex" | "claudeAgent" | "opencode";
       readonly runtimeMode: "approval-required" | "full-access" | "auto-accept-edits";
       readonly activeTurnId: TurnId | null;
       readonly lastError: string | null;
@@ -122,7 +123,9 @@ function makeReadModel(
 
 describe("ProviderSessionReaper", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    ProviderSessionReaper | ProviderSessionRuntime.ProviderSessionRuntimeRepository,
+    | ProviderSessionReaper
+    | ProviderSessionRuntime.ProviderSessionRuntimeRepository
+    | OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -150,8 +153,8 @@ describe("ProviderSessionReaper", () => {
     );
   }
 
-  async function sweepAt(nowMs: number) {
-    await runtime!.runPromise(
+  async function sweepAt(nowMs: number, target: NonNullable<typeof runtime> = runtime!) {
+    await target.runPromise(
       Effect.gen(function* () {
         const reaper = yield* ProviderSessionReaper;
         const clock = yield* Clock.Clock;
@@ -265,6 +268,7 @@ describe("ProviderSessionReaper", () => {
           searchThreads: () => Effect.succeed({ matches: [] }),
         }),
       ),
+      Layer.provideMerge(OpenCodeChildSessionLiveness.layer),
       Layer.provideMerge(NodeServices.layer),
     );
 
@@ -733,5 +737,168 @@ describe("ProviderSessionReaper", () => {
       defectThreadId,
       reapedThreadId,
     ]);
+  });
+
+  it("does not reap a stale OpenCode session while a child session is still live", async () => {
+    const liveThreadId = ThreadId.make("thread-reaper-opencode-child-live");
+    const settledOpenCodeThreadId = ThreadId.make("thread-reaper-opencode-settled");
+    const claudeThreadId = ThreadId.make("thread-reaper-claude-not-held");
+    const updatedAt = "2026-04-14T00:00:00.000Z";
+    const shell = (threadId: ThreadId, providerName: "opencode" | "claudeAgent") => ({
+      id: threadId,
+      session: {
+        threadId,
+        status: "ready" as const,
+        providerName,
+        runtimeMode: "full-access" as const,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt,
+      },
+    });
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        shell(claudeThreadId, "claudeAgent"),
+        shell(liveThreadId, "opencode"),
+        shell(settledOpenCodeThreadId, "opencode"),
+      ]),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+    const liveness = await runtime!.runPromise(
+      Effect.service(OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness),
+    );
+    const seed = (threadId: ThreadId, providerName: "opencode" | "claudeAgent") =>
+      runtime!.runPromise(
+        repository.upsert({
+          threadId,
+          providerName,
+          providerInstanceId: null,
+          adapterKey: providerName,
+          runtimeMode: "full-access",
+          status: "running",
+          lastSeenAt: updatedAt,
+          resumeCursor: { opaque: `resume-${threadId}` },
+          runtimePayload: null,
+        }),
+      );
+    await seed(claudeThreadId, "claudeAgent");
+    await seed(liveThreadId, "opencode");
+    await seed(settledOpenCodeThreadId, "opencode");
+
+    await runtime!.runPromise(
+      Effect.gen(function* () {
+        yield* liveness.note(liveThreadId, "ses_a", "running");
+        yield* liveness.note(liveThreadId, "ses_b", "running");
+        yield* liveness.note(claudeThreadId, "ses_claude", "running");
+      }),
+    );
+
+    await sweepAt(Date.parse(updatedAt) + 1_000);
+    expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+      claudeThreadId,
+      settledOpenCodeThreadId,
+    ]);
+
+    const markStopped = (threadId: ThreadId, providerName: "opencode" | "claudeAgent") =>
+      runtime!.runPromise(
+        repository.upsert({
+          threadId,
+          providerName,
+          providerInstanceId: null,
+          adapterKey: providerName,
+          runtimeMode: "full-access",
+          status: "stopped",
+          lastSeenAt: updatedAt,
+          resumeCursor: { opaque: `resume-${threadId}` },
+          runtimePayload: null,
+        }),
+      );
+    await markStopped(claudeThreadId, "claudeAgent");
+    await markStopped(settledOpenCodeThreadId, "opencode");
+
+    await runtime!.runPromise(liveness.note(liveThreadId, "ses_a", "idle"));
+    await sweepAt(Date.parse(updatedAt) + 1_000);
+    expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+      claudeThreadId,
+      settledOpenCodeThreadId,
+    ]);
+
+    await runtime!.runPromise(liveness.clearThread(liveThreadId));
+    await sweepAt(Date.parse(updatedAt) + 1_000);
+    expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+      claudeThreadId,
+      settledOpenCodeThreadId,
+      liveThreadId,
+    ]);
+  });
+
+  it("does not let one runtime's OpenCode child liveness hold another runtime", async () => {
+    const threadId = ThreadId.make("thread-reaper-opencode-runtime-isolation");
+    const updatedAt = "2026-04-14T00:00:00.000Z";
+    const shell = {
+      id: threadId,
+      session: {
+        threadId,
+        status: "ready" as const,
+        providerName: "opencode" as const,
+        runtimeMode: "full-access" as const,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt,
+      },
+    };
+    const harnessA = await createHarness({ readModel: makeReadModel([shell]) });
+    const runtimeA = runtime!;
+    runtime = null;
+    const harnessB = await createHarness({ readModel: makeReadModel([shell]) });
+    const runtimeB = runtime!;
+    try {
+      const seed = (
+        target: NonNullable<typeof runtime>,
+        repository: ProviderSessionRuntime.ProviderSessionRuntimeRepository["Service"],
+      ) =>
+        target.runPromise(
+          repository.upsert({
+            threadId,
+            providerName: "opencode",
+            providerInstanceId: null,
+            adapterKey: "opencode",
+            runtimeMode: "full-access",
+            status: "running",
+            lastSeenAt: updatedAt,
+            resumeCursor: { opaque: `resume-${threadId}` },
+            runtimePayload: null,
+          }),
+        );
+      const repositoryA = await runtimeA.runPromise(
+        Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+      );
+      const repositoryB = await runtimeB.runPromise(
+        Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+      );
+      await seed(runtimeA, repositoryA);
+      await seed(runtimeB, repositoryB);
+      const livenessA = await runtimeA.runPromise(
+        Effect.service(OpenCodeChildSessionLiveness.OpenCodeChildSessionLiveness),
+      );
+      await runtimeA.runPromise(livenessA.note(threadId, "ses_background", "running"));
+
+      await sweepAt(Date.parse(updatedAt) + 1_000, runtimeA);
+      await sweepAt(Date.parse(updatedAt) + 1_000, runtimeB);
+      expect(harnessA.stopSession).not.toHaveBeenCalled();
+      expect(harnessB.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+        threadId,
+      ]);
+
+      await runtimeA.runPromise(livenessA.clearThread(threadId));
+      await sweepAt(Date.parse(updatedAt) + 1_000, runtimeA);
+      expect(harnessA.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+        threadId,
+      ]);
+    } finally {
+      await runtimeA.dispose();
+    }
   });
 });
