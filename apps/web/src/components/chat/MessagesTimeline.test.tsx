@@ -294,9 +294,160 @@ function buildSnapShotTimelineEntry(previewUrl?: string) {
 }
 
 /**
+ * A latched follow left at the end is remembered at the end even when
+ * layout measurement still shows a gap.
+ */
+function remembersLatchedFollowAtEndWhenLayoutLeavesAGap() {
+  vi.stubGlobal(
+    "requestAnimationFrame",
+    /** Animation frames do not run in this test. */
+    () => 0,
+  );
+  vi.stubGlobal(
+    "cancelAnimationFrame",
+    /** No frame was scheduled. */
+    () => {},
+  );
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const threadKey = "env-1:thread-follow-gap";
+  const workEntry = {
+    id: "entry-follow-work",
+    kind: "work" as const,
+    createdAt: MESSAGE_CREATED_AT,
+    entry: {
+      id: "work-follow",
+      createdAt: MESSAGE_CREATED_AT,
+      toolCallId: "call-follow",
+      label: "Run lint",
+      tone: "tool" as const,
+      itemType: "command_execution" as const,
+      command: "pnpm lint",
+      toolLifecycleStatus: "completed" as const,
+    },
+  };
+  let renderer: ReactTestRenderer | undefined;
+  let latched = true;
+  const props = {
+    ...buildProps(),
+    isLiveFollowLatched:
+      /** Reads the latch without waiting for the next render. */
+      () => latched,
+    routeThreadKey: threadKey,
+  };
+  // Streamed or measured content sits 500px past the viewport. The follow
+  // scroll has not caught up, so geometry alone is not at the end.
+  props.listRef.current = {
+    getState:
+      /** Virtualizer state for a follow scroll that has not caught up. */
+      () => ({
+        data: renderer?.root.findAllByType(LegendList)[0]?.props.data,
+        isAtEnd: false,
+        contentLength: 2000,
+        scroll: 700,
+        scrollLength: 800,
+        positionAtIndex:
+          /** Row offset stub. */
+          () => 0,
+        indexByKey:
+          /** Row index stub. */
+          () => 0,
+        elementAtIndex:
+          /** Row element stub used to measure the visible offset. */
+          () => ({
+            getBoundingClientRect:
+              /** Viewport rect of the anchored row. */
+              () => ({ top: -700 }),
+          }),
+      }),
+    getScrollableNode:
+      /** Scroll container stub. */
+      () => ({
+        scrollTop: 700,
+        getBoundingClientRect:
+          /** Viewport rect of the scroll container. */
+          () => ({ top: 0 }),
+      }),
+  } as unknown as LegendListRef;
+  try {
+    act(
+      /** Mount the timeline with live follow still latched. */
+      () => {
+        renderer = create(
+          <MessagesTimeline {...props} liveFollowEnabled timelineEntries={[workEntry]} />,
+        );
+      },
+    );
+    act(
+      /** Save the latched follow while geometry is still short of the end. */
+      () => {
+        renderer?.root.findByType(LegendList).props.onScroll();
+      },
+    );
+    expect(readTimelinePosition(threadKey)?.atEnd).toBe(true);
+
+    // A gesture releases the latch before the next render turns follow off.
+    latched = false;
+    act(
+      /** Save the real offset once the gesture has released the latch. */
+      () => {
+        renderer?.root.findByType(LegendList).props.onScroll();
+      },
+    );
+    expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
+
+    latched = true;
+    act(
+      /** Turn live follow off after the gesture. */
+      () => {
+        renderer?.update(
+          <MessagesTimeline {...props} liveFollowEnabled={false} timelineEntries={[workEntry]} />,
+        );
+      },
+    );
+    act(
+      /** A latched read must not put the follow back once it is disabled. */
+      () => {
+        renderer?.root.findByType(LegendList).props.onScroll();
+      },
+    );
+    expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
+
+    // A first send anchored near the top is not following the end either.
+    act(
+      /** Anchor the first send near the top. */
+      () => {
+        renderer?.update(
+          <MessagesTimeline
+            {...props}
+            liveFollowEnabled
+            anchorMessageId={MessageId.make("message-1")}
+            timelineEntries={[buildUserTimelineEntry("First send"), workEntry]}
+          />,
+        );
+      },
+    );
+    act(
+      /** Anchored end space keeps the gap instead of treating it as the end. */
+      () => {
+        renderer?.root.findByType(LegendList).props.onScroll();
+      },
+    );
+    expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
+  } finally {
+    act(
+      /** Unmount the timeline. */
+      () => {
+        renderer?.unmount();
+      },
+    );
+    vi.unstubAllGlobals();
+  }
+}
+
+/**
  * Timeline rendering, scroll anchoring, and live-follow position tests.
  */
-describe("MessagesTimeline", () => {
+function messagesTimelineTests() {
   it("renders previous and next controls with the minimap", () => {
     const first = buildUserTimelineEntry("First turn");
     const secondBase = buildUserTimelineEntry("Second turn");
@@ -1028,156 +1179,10 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  /**
-   * A latched follow left at the end is remembered at the end even when
-   * layout measurement still shows a gap.
-   */
-  it("remembers a latched follow at the end when layout leaves a gap", () => {
-    vi.stubGlobal(
-      "requestAnimationFrame",
-      /** Animation frames do not run in this test. */
-      () => 0,
-    );
-    vi.stubGlobal(
-      "cancelAnimationFrame",
-      /** No frame was scheduled. */
-      () => {},
-    );
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    const threadKey = "env-1:thread-follow-gap";
-    const workEntry = {
-      id: "entry-follow-work",
-      kind: "work" as const,
-      createdAt: MESSAGE_CREATED_AT,
-      entry: {
-        id: "work-follow",
-        createdAt: MESSAGE_CREATED_AT,
-        toolCallId: "call-follow",
-        label: "Run lint",
-        tone: "tool" as const,
-        itemType: "command_execution" as const,
-        command: "pnpm lint",
-        toolLifecycleStatus: "completed" as const,
-      },
-    };
-    let renderer: ReactTestRenderer | undefined;
-    let latched = true;
-    const props = {
-      ...buildProps(),
-      isLiveFollowLatched:
-        /** Reads the latch without waiting for the next render. */
-        () => latched,
-      routeThreadKey: threadKey,
-    };
-    // Streamed or measured content sits 500px past the viewport. The follow
-    // scroll has not caught up, so geometry alone is not at the end.
-    props.listRef.current = {
-      getState:
-        /** Virtualizer state for a follow scroll that has not caught up. */
-        () => ({
-          data: renderer?.root.findAllByType(LegendList)[0]?.props.data,
-          isAtEnd: false,
-          contentLength: 2000,
-          scroll: 700,
-          scrollLength: 800,
-          positionAtIndex:
-            /** Row offset stub. */
-            () => 0,
-          indexByKey:
-            /** Row index stub. */
-            () => 0,
-          elementAtIndex:
-            /** Row element stub used to measure the visible offset. */
-            () => ({
-              getBoundingClientRect:
-                /** Viewport rect of the anchored row. */
-                () => ({ top: -700 }),
-            }),
-        }),
-      getScrollableNode:
-        /** Scroll container stub. */
-        () => ({
-          scrollTop: 700,
-          getBoundingClientRect:
-            /** Viewport rect of the scroll container. */
-            () => ({ top: 0 }),
-        }),
-    } as unknown as LegendListRef;
-    try {
-      act(
-        /** Mount the timeline with live follow still latched. */
-        () => {
-          renderer = create(
-            <MessagesTimeline {...props} liveFollowEnabled timelineEntries={[workEntry]} />,
-          );
-        },
-      );
-      act(
-        /** Save the latched follow while geometry is still short of the end. */
-        () => {
-          renderer?.root.findByType(LegendList).props.onScroll();
-        },
-      );
-      expect(readTimelinePosition(threadKey)?.atEnd).toBe(true);
-
-      // A gesture releases the latch before the next render turns follow off.
-      latched = false;
-      act(
-        /** Save the real offset once the gesture has released the latch. */
-        () => {
-          renderer?.root.findByType(LegendList).props.onScroll();
-        },
-      );
-      expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
-
-      latched = true;
-      act(
-        /** Turn live follow off after the gesture. */
-        () => {
-          renderer?.update(
-            <MessagesTimeline {...props} liveFollowEnabled={false} timelineEntries={[workEntry]} />,
-          );
-        },
-      );
-      act(
-        /** A latched read must not put the follow back once it is disabled. */
-        () => {
-          renderer?.root.findByType(LegendList).props.onScroll();
-        },
-      );
-      expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
-
-      // A first send anchored near the top is not following the end either.
-      act(
-        /** Anchor the first send near the top. */
-        () => {
-          renderer?.update(
-            <MessagesTimeline
-              {...props}
-              liveFollowEnabled
-              anchorMessageId={MessageId.make("message-1")}
-              timelineEntries={[buildUserTimelineEntry("First send"), workEntry]}
-            />,
-          );
-        },
-      );
-      act(
-        /** Anchored end space keeps the gap instead of treating it as the end. */
-        () => {
-          renderer?.root.findByType(LegendList).props.onScroll();
-        },
-      );
-      expect(readTimelinePosition(threadKey)).toMatchObject({ atEnd: false, scrollOffset: 700 });
-    } finally {
-      act(
-        /** Unmount the timeline. */
-        () => {
-          renderer?.unmount();
-        },
-      );
-      vi.unstubAllGlobals();
-    }
-  });
+  it(
+    "remembers a latched follow at the end when layout leaves a gap",
+    remembersLatchedFollowAtEndWhenLayoutLeavesAGap,
+  );
 
   it("keeps reserved end space when tool work starts while reading history", () => {
     const turnId = TurnId.make("turn-with-active-tool");
@@ -2392,4 +2397,6 @@ describe("MessagesTimeline", () => {
       await act(() => renderer?.unmount());
     }
   });
-});
+}
+
+describe("MessagesTimeline", messagesTimelineTests);

@@ -5326,12 +5326,14 @@ export default function ChatView(props: ChatViewProps) {
     settledTimelineAnchorRef.current = null;
     activeTimelineAnchorIndexRef.current = null;
   }, []);
+  /**
+   * Whether live follow is still held. A gesture clears this before the next render.
+   */
+  function readTimelineLiveFollowLatch() {
+    return liveFollowUserScrollGenerationRef.current === anchorUserScrollGenerationRef.current;
+  }
   /** Whether live follow is still held. A gesture clears this before the next render. */
-  const isTimelineLiveFollowLatched = useCallback(
-    /** Whether live follow is still held. A gesture clears this before the next render. */
-    () => liveFollowUserScrollGenerationRef.current === anchorUserScrollGenerationRef.current,
-    [],
-  );
+  const isTimelineLiveFollowLatched = useCallback(readTimelineLiveFollowLatch, []);
   const cancelTimelineLiveFollowForUserNavigationRef = useRef(
     cancelTimelineLiveFollowForUserNavigation,
   );

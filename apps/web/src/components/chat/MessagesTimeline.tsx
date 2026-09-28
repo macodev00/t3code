@@ -479,7 +479,7 @@ interface MessagesTimelineProps {
  * Paints the thread and saves a latched live follow as the end so a layout
  * gap is not restored as a reading position.
  */
-export const MessagesTimeline = memo(function MessagesTimeline({
+function MessagesTimelineList({
   citationRequest = null,
   citationHistoryLoading = false,
   onCiteAssistantText,
@@ -1029,7 +1029,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
    * Saves the visible row. Layout scrolls keep a latched follow at the end
    * so a measurement gap is not restored as a reading position.
    */
-  const handleScroll = useCallback(() => {
+  function recordTimelineScroll() {
     const state = listRef.current?.getState?.();
     if (restoringThreadPosition || state?.data !== rows) return;
     const isAtEnd = resolveTimelineIsAtEnd(state);
@@ -1095,7 +1095,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     setMinimapCurrentIndex((current) =>
       current === nextCurrentIndex ? current : nextCurrentIndex,
     );
-  }, [
+  }
+
+  /** Stable scroll listener. Saves the visible row so a thread can restore it. */
+  const handleScroll = useCallback(recordTimelineScroll, [
     citationPositioning,
     paintedExpandedTurnIds,
     paintedExpandedWorkGroupIds,
@@ -1378,7 +1381,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       </TimelineRowActivityCtx>
     </TimelineRowCtx>
   );
-});
+}
+
+/** Memoized thread timeline. Restores a latched live follow as the end. */
+export const MessagesTimeline = memo(MessagesTimelineList);
 
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
