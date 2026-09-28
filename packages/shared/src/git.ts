@@ -331,6 +331,10 @@ export function mergeGitStatusParts(
   };
 }
 
+/**
+ * Keeps the remote half of a status snapshot, including a stopped upstream
+ * refresh, so a later local-only update does not drop that flag.
+ */
 function toRemoteStatusPart(status: VcsStatusResult): VcsStatusRemoteResult {
   return {
     hasUpstream: status.hasUpstream,
@@ -339,6 +343,7 @@ function toRemoteStatusPart(status: VcsStatusResult): VcsStatusRemoteResult {
     ...(status.aheadOfDefaultCount === undefined
       ? {}
       : { aheadOfDefaultCount: status.aheadOfDefaultCount }),
+    ...(status.upstreamNeedsAttention ? { upstreamNeedsAttention: true as const } : {}),
     pr: status.pr,
   };
 }

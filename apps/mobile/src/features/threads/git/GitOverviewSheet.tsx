@@ -2,7 +2,9 @@ import {
   type GitActionRequestInput,
   buildMenuItems,
   getGitActionDisabledReason,
+  offersUpstreamAttentionPull,
   requiresDefaultBranchConfirmation,
+  upstreamStatusAttentionMessage,
 } from "@t3tools/client-runtime/state/vcs";
 import {
   resolveThreadPullRequestChains,
@@ -54,6 +56,10 @@ type GitOverviewSheetProps = StaticScreenProps<{
   readonly presentation?: "sheet" | "inspector";
 };
 
+/**
+ * Git overview for a thread. Offers Pull when the branch is behind, and also
+ * when background upstream refresh has stopped on a cache that is not behind.
+ */
 export function GitOverviewSheet(props: GitOverviewSheetProps) {
   const { layout } = useAdaptiveWorkspaceLayout();
   const navigation = useNavigation();
@@ -217,6 +223,8 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
   );
 
   const behindCount = gitStatus.data?.behindCount ?? 0;
+  const upstreamAttention = upstreamStatusAttentionMessage(gitStatus.data);
+  const showUpstreamAttentionPull = offersUpstreamAttentionPull(gitStatus.data);
 
   // Deterministic pull-to-refresh state. Tying RefreshControl to the query's
   // isPending flag left the spinner stuck (the status query reports pending
@@ -273,6 +281,17 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
               icon="arrow.down.circle"
               title="Pull latest"
               subtitle={`${behindCount} commit${behindCount === 1 ? "" : "s"} behind upstream`}
+              disabled={busy || !isRepo}
+              onPress={() => void gitActions.onPullSelectedThreadBranch()}
+            />
+          </>
+        ) : showUpstreamAttentionPull ? (
+          <>
+            {Platform.OS !== "android" ? <View className="ml-12 h-px bg-border" /> : null}
+            <SheetListRow
+              icon="arrow.down.circle"
+              title="Pull latest"
+              subtitle={upstreamAttention ?? "Upstream status needs attention. Pull to refresh it."}
               disabled={busy || !isRepo}
               onPress={() => void gitActions.onPullSelectedThreadBranch()}
             />

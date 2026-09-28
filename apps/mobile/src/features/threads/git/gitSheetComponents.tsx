@@ -133,6 +133,10 @@ export function menuItemIconName(
   return "arrow.up.right.circle";
 }
 
+/**
+ * One-line git summary for the overview sheet. Includes a stopped upstream
+ * refresh so the sheet is not labeled clean while polling has stopped.
+ */
 export function statusSummary(
   gitStatus: {
     readonly isRepo?: boolean;
@@ -140,6 +144,7 @@ export function statusSummary(
     readonly workingTree?: { readonly files: readonly { readonly path: string }[] };
     readonly aheadCount?: number;
     readonly behindCount?: number;
+    readonly upstreamNeedsAttention?: boolean;
     readonly pr?: { readonly state?: string; readonly number?: number } | null;
   } | null,
 ): string {
@@ -166,6 +171,9 @@ export function statusSummary(
   }
   if (gitStatus.pr?.state === "open") {
     parts.push(`PR #${gitStatus.pr.number} open`);
+  }
+  if (gitStatus.upstreamNeedsAttention) {
+    parts.push("upstream needs attention");
   }
 
   return parts.join(" \u00b7 ");

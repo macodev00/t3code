@@ -108,6 +108,11 @@ export function buildMenuItems(
   ];
 }
 
+/**
+ * Picks the primary git button for the current branch.
+ * When background upstream refresh has stopped and the cached branch is not
+ * behind, the button is Pull so that refresh can be resumed.
+ */
 export function resolveQuickAction(
   gitStatus: VcsStatusResult | null,
   isBusy: boolean,
@@ -235,6 +240,14 @@ export function resolveQuickAction(
     return { label: "View PR", disabled: false, kind: "open_pr" };
   }
 
+  if (offersUpstreamAttentionPull(gitStatus)) {
+    return {
+      label: "Pull",
+      disabled: false,
+      kind: "run_pull",
+    };
+  }
+
   return {
     label: "Commit",
     disabled: true,
@@ -355,4 +368,37 @@ export function resolveDefaultBranchActionDialogCopy(input: {
     description: `This action will push local commits and create a PR${suffix}`,
     continueLabel: "Push & create PR",
   };
+}
+
+/**
+ * Notice shown when background upstream refresh has stopped, or null while
+ * that remote is still being polled.
+ *
+ * Surfaces that say this also offer Pull when the cached branch is not behind.
+ * Pull is not limited to the background fetch timeout, so a keychain prompt
+ * can be approved and refresh can resume.
+ */
+export function upstreamStatusAttentionMessage(
+  gitStatus: Pick<VcsStatusResult, "upstreamNeedsAttention"> | null | undefined,
+): string | null {
+  if (gitStatus?.upstreamNeedsAttention !== true) return null;
+  return "Upstream status needs attention. Pull to refresh it.";
+}
+
+/**
+ * True when Pull must be offered even though the cached branch is not behind.
+ * Behind branches already expose Pull. Without this, a stopped refresh on an
+ * up-to-date cache cannot be resumed from the git menu.
+ */
+export function offersUpstreamAttentionPull(
+  gitStatus:
+    | Pick<VcsStatusResult, "upstreamNeedsAttention" | "behindCount" | "hasUpstream">
+    | null
+    | undefined,
+): boolean {
+  return (
+    gitStatus?.upstreamNeedsAttention === true &&
+    gitStatus.hasUpstream === true &&
+    gitStatus.behindCount === 0
+  );
 }

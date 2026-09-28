@@ -815,9 +815,270 @@ it.effect("backs off and logs failed fetch attempts across linked worktrees", ()
       assert.lengthOf(warnings, 2);
 
       yield* TestClock.adjust("1 second");
-      yield* readRemoteStatus(cwd);
+      const stillRetrying = yield* readRemoteStatus(cwd);
       assert.equal(yield* Ref.get(fetchAttempts), 3);
       assert.lengthOf(warnings, 3);
+      assert.equal(stillRetrying.upstreamNeedsAttention, false);
+
+      // Fast failures keep backing off. They do not stop the remote.
+      yield* TestClock.adjust("121 seconds");
+      const retried = yield* readRemoteStatus(cwd);
+      assert.equal(yield* Ref.get(fetchAttempts), 4);
+      assert.equal(retried.upstreamNeedsAttention, false);
+    }),
+  ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
+/**
+ * Builds a repository whose background status fetch can be hung or released.
+ * Used to check that repeated timeouts stop polling and that pull or fetch resumes it.
+ */
+const makeUpstreamRefreshFixture = () =>
+  Effect.gen(function* () {
+    const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fetchAttempts = yield* Ref.make(0);
+    const hangStatusFetches = yield* Ref.make(true);
+    const fetchStartedRef = yield* Ref.make(yield* Deferred.make<void>());
+    const statusFetches: Array<{
+      readonly args: ReadonlyArray<string>;
+      readonly env: Record<string, string | undefined> | undefined;
+    }> = [];
+    const pullCommands: Array<{
+      readonly args: ReadonlyArray<string>;
+      readonly env: Record<string, string | undefined> | undefined;
+    }> = [];
+    const warnings: string[] = [];
+    const logger = Logger.make<unknown, void>(({ message }) => {
+      warnings.push(String(message));
+    });
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        if (!ChildProcess.isStandardCommand(command)) {
+          return yield* Effect.die("expected a standard Git command");
+        }
+        const isStatusFetch =
+          command.args.includes("fetch") && command.args.includes("--no-auto-gc");
+        if (isStatusFetch) {
+          statusFetches.push({ args: command.args, env: command.options.env });
+          yield* Ref.update(fetchAttempts, (count) => count + 1);
+          if (yield* Ref.get(hangStatusFetches)) {
+            yield* Deferred.succeed(yield* Ref.get(fetchStartedRef), undefined).pipe(Effect.ignore);
+            return ChildProcessSpawner.makeHandle({
+              ...makeNonRepositoryHandle(),
+              exitCode: Effect.never,
+            });
+          }
+        }
+        if (command.args[0] === "pull") {
+          pullCommands.push({ args: command.args, env: command.options.env });
+        }
+        return yield* delegate.spawn(command);
+      }),
+    );
+    const driver = yield* makeGitVcsDriverCore().pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+    );
+    const cwd = yield* makeTmpDir();
+    const remote = yield* makeTmpDir("git-vcs-driver-remote-");
+    const runGit = (workingDirectory: string, args: ReadonlyArray<string>) =>
+      driver.execute({
+        operation: "GitVcsDriver.test.upstreamRefreshStop",
+        cwd: workingDirectory,
+        args,
+        timeoutMs: 10_000,
+      });
+    yield* driver.initRepo({ cwd });
+    yield* runGit(cwd, ["config", "user.email", "test@test.com"]);
+    yield* runGit(cwd, ["config", "user.name", "Test"]);
+    yield* writeTextFile(cwd, "README.md", "# test\n");
+    yield* runGit(cwd, ["add", "."]);
+    yield* runGit(cwd, ["commit", "-m", "initial commit"]);
+    const initialBranch = (yield* runGit(cwd, ["branch", "--show-current"])).stdout.trim();
+    yield* runGit(remote, ["init", "--bare"]);
+    yield* runGit(cwd, ["remote", "add", "origin", remote]);
+    yield* runGit(cwd, ["push", "-u", "origin", initialBranch]);
+    yield* Ref.set(fetchAttempts, 0);
+    statusFetches.length = 0;
+
+    const withLogger = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(Effect.provideService(Logger.CurrentLoggers, new Set([logger])));
+    const readStatus = () => withLogger(driver.statusDetailsRemote(cwd));
+    /**
+     * Reads status while the status fetch is hung, then advances the test clock
+     * until that fetch hits the status timeout.
+     */
+    const readUntilFetchTimeout = () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        yield* Ref.set(fetchStartedRef, started);
+        const fiber = yield* readStatus().pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(started);
+        // The timeout is armed when the hung fetch is spawned. A second tick covers
+        // the case where that registration lands after the first adjustment.
+        yield* TestClock.adjust("5 seconds");
+        yield* TestClock.adjust("5 seconds");
+        return yield* Fiber.join(fiber);
+      });
+
+    const previousEnv = {
+      GCM_INTERACTIVE: process.env.GCM_INTERACTIVE,
+      GIT_TERMINAL_PROMPT: process.env.GIT_TERMINAL_PROMPT,
+    };
+    process.env.GCM_INTERACTIVE = "always";
+    process.env.GIT_TERMINAL_PROMPT = "1";
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        for (const key of ["GCM_INTERACTIVE", "GIT_TERMINAL_PROMPT"] as const) {
+          const previous = previousEnv[key];
+          if (previous === undefined) delete process.env[key];
+          else process.env[key] = previous;
+        }
+      }),
+    );
+
+    return {
+      driver,
+      cwd,
+      fetchAttempts,
+      hangStatusFetches,
+      warnings,
+      statusFetches,
+      pullCommands,
+      readStatus,
+      readUntilFetchTimeout,
+    };
+  });
+
+it.effect(
+  "stops background upstream refresh after repeated timeouts without clearing credential helpers",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeUpstreamRefreshFixture();
+
+        const first = yield* fixture.readUntilFetchTimeout();
+        assert.equal(first.upstreamNeedsAttention, false);
+        yield* TestClock.adjust("31 seconds");
+        const second = yield* fixture.readUntilFetchTimeout();
+        assert.equal(second.upstreamNeedsAttention, false);
+        yield* TestClock.adjust("61 seconds");
+        const third = yield* fixture.readUntilFetchTimeout();
+
+        assert.equal(third.upstreamNeedsAttention, true);
+        assert.equal(yield* Ref.get(fixture.fetchAttempts), 3);
+        assert.equal(
+          fixture.warnings.filter((warning) => warning.includes("upstream status needs attention"))
+            .length,
+          1,
+        );
+        const statusFetch = fixture.statusFetches[0];
+        assert.ok(statusFetch);
+        assert.equal(statusFetch.args[0], "--git-dir");
+        assert.deepEqual(statusFetch.args.slice(-5), [
+          "fetch",
+          "--quiet",
+          "--no-tags",
+          "--no-auto-gc",
+          "origin",
+        ]);
+        assert.isFalse(statusFetch.args.includes("-c"));
+        assert.isFalse(statusFetch.args.some((arg) => arg.includes("credential.helper")));
+        assert.equal(statusFetch.env?.GCM_INTERACTIVE, "never");
+        assert.equal(statusFetch.env?.GIT_ASKPASS, "");
+        assert.equal(statusFetch.env?.GIT_TERMINAL_PROMPT, "0");
+        assert.equal(statusFetch.env?.SSH_ASKPASS, "");
+        assert.equal(statusFetch.env?.SSH_ASKPASS_REQUIRE, "never");
+        assert.deepEqual(
+          Object.keys(statusFetch.env ?? {}).filter(
+            (key) => key.startsWith("GIT_CONFIG_KEY_") && process.env[key] === undefined,
+          ),
+          [],
+        );
+
+        yield* TestClock.adjust("15 minutes");
+        const paused = yield* fixture.readStatus();
+        assert.equal(paused.upstreamNeedsAttention, true);
+        assert.equal(yield* Ref.get(fixture.fetchAttempts), 3);
+      }),
+    ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
+it.effect("resets the background fetch timeout streak after a successful fetch", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeUpstreamRefreshFixture();
+
+      yield* fixture.readUntilFetchTimeout();
+      yield* TestClock.adjust("31 seconds");
+      yield* fixture.readUntilFetchTimeout();
+      yield* TestClock.adjust("61 seconds");
+      yield* Ref.set(fixture.hangStatusFetches, false);
+
+      const recovered = yield* fixture.readStatus();
+      assert.equal(recovered.upstreamNeedsAttention, false);
+      assert.equal(yield* Ref.get(fixture.fetchAttempts), 3);
+
+      yield* TestClock.adjust("16 seconds");
+      yield* Ref.set(fixture.hangStatusFetches, true);
+      const afterReset = yield* fixture.readUntilFetchTimeout();
+      assert.equal(afterReset.upstreamNeedsAttention, false);
+      assert.equal(yield* Ref.get(fixture.fetchAttempts), 4);
+
+      yield* TestClock.adjust("31 seconds");
+      const secondAfterReset = yield* fixture.readUntilFetchTimeout();
+      assert.equal(secondAfterReset.upstreamNeedsAttention, false);
+      assert.equal(yield* Ref.get(fixture.fetchAttempts), 5);
+    }),
+  ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
+it.effect("resumes background upstream refresh after an explicit pull", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeUpstreamRefreshFixture();
+      yield* fixture.readUntilFetchTimeout();
+      yield* TestClock.adjust("31 seconds");
+      yield* fixture.readUntilFetchTimeout();
+      yield* TestClock.adjust("61 seconds");
+      yield* fixture.readUntilFetchTimeout();
+      assert.equal(yield* Ref.get(fixture.fetchAttempts), 3);
+
+      yield* Ref.set(fixture.hangStatusFetches, false);
+      const pulled = yield* fixture.driver
+        .pullCurrentBranch(fixture.cwd)
+        .pipe(Effect.provideService(Logger.CurrentLoggers, new Set()));
+      assert.equal(pulled.status, "skipped_up_to_date");
+      assert.equal(fixture.pullCommands.length, 1);
+      assert.deepEqual(fixture.pullCommands[0]?.args, ["pull", "--ff-only"]);
+      assert.equal(fixture.pullCommands[0]?.env?.GIT_TERMINAL_PROMPT, "1");
+      assert.equal(fixture.pullCommands[0]?.env?.GCM_INTERACTIVE, "always");
+      assert.isFalse(
+        fixture.pullCommands[0]?.args.some((arg) => arg.includes("credential.helper")),
+      );
+      assert.equal(yield* Ref.get(fixture.fetchAttempts), 3);
+
+      const recovered = yield* fixture.readStatus();
+      assert.equal(recovered.upstreamNeedsAttention, false);
+      assert.equal(yield* Ref.get(fixture.fetchAttempts), 4);
+    }),
+  ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
+it.effect("resumes background upstream refresh after an explicit fetch", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fixture = yield* makeUpstreamRefreshFixture();
+      yield* fixture.readUntilFetchTimeout();
+      yield* TestClock.adjust("31 seconds");
+      yield* fixture.readUntilFetchTimeout();
+      yield* TestClock.adjust("61 seconds");
+      yield* fixture.readUntilFetchTimeout();
+
+      yield* Ref.set(fixture.hangStatusFetches, false);
+      yield* fixture.driver.fetchRemote({ cwd: fixture.cwd, remoteName: "origin" });
+      const recovered = yield* fixture.readStatus();
+      assert.equal(recovered.upstreamNeedsAttention, false);
+      assert.equal(yield* Ref.get(fixture.fetchAttempts), 4);
     }),
   ).pipe(Effect.provide(ServerConfigLayer.pipe(Layer.provideMerge(NodeServices.layer)))),
 );

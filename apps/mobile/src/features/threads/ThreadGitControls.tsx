@@ -39,6 +39,10 @@ function compactMenuBranchLabel(branch: string): string {
   return truncateMiddle(branch, 24);
 }
 
+/**
+ * Short git status for the thread header. Mentions a stopped upstream refresh
+ * so the overview, which can pull, is reachable from that label.
+ */
 function compactMenuStatus(gitStatus: VcsStatusResult | null): string {
   if (!gitStatus) {
     return "Checking status";
@@ -61,6 +65,9 @@ function compactMenuStatus(gitStatus: VcsStatusResult | null): string {
   }
   if (gitStatus.pr?.state === "open") {
     parts.push(`PR #${gitStatus.pr.number}`);
+  }
+  if (gitStatus.upstreamNeedsAttention) {
+    parts.push("upstream needs attention");
   }
 
   return parts.join(" · ");

@@ -3,6 +3,7 @@ import type {
   GitStackedAction,
   VcsStatusResult,
 } from "@t3tools/contracts";
+import { offersUpstreamAttentionPull } from "@t3tools/client-runtime/state/vcs";
 import { isTemporaryWorktreeBranch } from "@t3tools/shared/git";
 import {
   DEFAULT_CHANGE_REQUEST_TERMINOLOGY,
@@ -164,6 +165,11 @@ export function buildMenuItems(
   ];
 }
 
+/**
+ * Picks the primary git button for the current branch.
+ * When background upstream refresh has stopped and the cached branch is not
+ * behind, the button is Pull so that refresh can be resumed.
+ */
 export function resolveQuickAction(
   gitStatus: VcsStatusResult | null,
   isBusy: boolean,
@@ -298,6 +304,14 @@ export function resolveQuickAction(
       disabled: false,
       kind: "run_action",
       action: "create_pr",
+    };
+  }
+
+  if (offersUpstreamAttentionPull(gitStatus)) {
+    return {
+      label: "Pull",
+      disabled: false,
+      kind: "run_pull",
     };
   }
 

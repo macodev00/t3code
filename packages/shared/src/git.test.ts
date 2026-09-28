@@ -273,4 +273,39 @@ describe("applyGitStatusStreamEvent", () => {
       pr: null,
     });
   });
+
+  it("keeps a stopped upstream refresh across a local-only update", () => {
+    const current: VcsStatusResult = {
+      isRepo: true,
+      hasPrimaryRemote: true,
+      isDefaultRef: true,
+      refName: "main",
+      hasWorkingTreeChanges: false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      upstreamNeedsAttention: true,
+      pr: null,
+    };
+
+    const next = applyGitStatusStreamEvent(current, {
+      _tag: "localUpdated",
+      local: {
+        isRepo: true,
+        hasPrimaryRemote: true,
+        isDefaultRef: true,
+        refName: "main",
+        hasWorkingTreeChanges: true,
+        workingTree: {
+          files: [{ path: "src/demo.ts", insertions: 1, deletions: 0 }],
+          insertions: 1,
+          deletions: 0,
+        },
+      },
+    });
+
+    expect(next.upstreamNeedsAttention).toBe(true);
+    expect(next.hasWorkingTreeChanges).toBe(true);
+  });
 });

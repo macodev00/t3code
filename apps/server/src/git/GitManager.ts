@@ -1273,6 +1273,10 @@ export const make = Effect.gen(function* () {
       ),
     );
   });
+  /**
+   * Reads ahead/behind for the UI. Omits `upstreamNeedsAttention` while background
+   * refresh is healthy so status payloads stay small.
+   */
   const readRemoteStatus = Effect.fn("readRemoteStatus")(function* (
     cwd: string,
     options?: GitRemoteStatusOptions,
@@ -1303,6 +1307,7 @@ export const make = Effect.gen(function* () {
       aheadCount: details.aheadCount,
       behindCount: details.behindCount,
       aheadOfDefaultCount: details.aheadOfDefaultCount,
+      ...(details.upstreamNeedsAttention ? { upstreamNeedsAttention: true as const } : {}),
       pr,
     } satisfies VcsStatusRemoteResult;
   });

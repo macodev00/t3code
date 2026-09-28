@@ -142,6 +142,11 @@ does not show its diff, so marks are made and read on web and desktop.
 - **GitHub sign-in cannot be verified:** update GitHub CLI to at least 2.81.0.
 - **Push fails despite a connected account:** check the Git remote's credentials. SSH and HTTPS
   remotes can require separate setup from the hosting provider's API access.
+- **macOS asks for the login keychain password after a Git upgrade:** background upstream
+  refresh stops for that remote after repeated timeouts, and Git actions report that upstream
+  status needs attention. Pull the branch — the action is available even when the branch does
+  not look behind — so Git can show the prompt long enough to choose Always Allow. A keychain
+  item that unlocks without a prompt keeps updating.
 - **A review cannot load:** open it on the host website while resolving connectivity, permissions,
   or rate limits.
 

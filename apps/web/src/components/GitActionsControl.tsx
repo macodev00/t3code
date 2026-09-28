@@ -4,6 +4,10 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import {
+  offersUpstreamAttentionPull,
+  upstreamStatusAttentionMessage,
+} from "@t3tools/client-runtime/state/vcs";
 import type {
   GitActionProgressEvent,
   GitRunStackedActionResult,
@@ -942,6 +946,11 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   );
 }
 
+/**
+ * Git actions for the active thread. When background upstream refresh has
+ * stopped, the menu explains that and offers Pull even if the cached branch
+ * is not behind.
+ */
 export default function GitActionsControl({
   presentation = "toolbar",
   gitCwd,
@@ -1081,6 +1090,7 @@ export default function GitActionsControl({
   const isRepo = gitStatus?.isRepo ?? true;
   const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
   const gitStatusForActions = gitStatus;
+  const upstreamAttention = upstreamStatusAttentionMessage(gitStatusForActions);
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
@@ -1138,6 +1148,8 @@ export default function GitActionsControl({
   const quickActionDisabledReason = quickAction.disabled
     ? (quickAction.hint ?? "This action is currently unavailable.")
     : null;
+  const showUpstreamAttentionPull =
+    offersUpstreamAttentionPull(gitStatusForActions) && quickAction.kind !== "run_pull";
   const pendingDefaultBranchActionCopy = pendingDefaultBranchAction
     ? resolveDefaultBranchActionDialogCopy({
         action: pendingDefaultBranchAction.action,
@@ -1504,6 +1516,53 @@ export default function GitActionsControl({
     });
   };
 
+  /**
+   * Pulls the current branch and reports the result. Used by the primary button
+   * and by the menu item shown when upstream refresh has stopped.
+   */
+  const runPull = () => {
+    const toastId = toastManager.add({
+      type: "loading",
+      title: "Pulling...",
+      timeout: 0,
+      data: threadToastData,
+    });
+    void (async () => {
+      const result = await pullAction.run();
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) {
+          toastManager.close(toastId);
+          return;
+        }
+        const error = squashAtomCommandFailure(result);
+        toastManager.update(
+          toastId,
+          stackedThreadToast({
+            type: "error",
+            title: "Pull failed",
+            description: error instanceof Error ? error.message : "An error occurred.",
+            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+          }),
+        );
+        return;
+      }
+
+      const pullResult = result.value;
+      toastManager.update(toastId, {
+        type: "success",
+        title: pullResult.status === "pulled" ? "Pulled" : "Already up to date",
+        description:
+          pullResult.status === "pulled"
+            ? `Updated ${pullResult.refName} from ${pullResult.upstreamRef ?? "upstream"}`
+            : `${pullResult.refName} is already synchronized.`,
+        data: threadToastData,
+      });
+    })();
+  };
+
+  /**
+   * Runs the primary git button, including Pull when upstream refresh has stopped.
+   */
   const runQuickAction = () => {
     if (quickAction.kind === "open_pr") {
       void openExistingPr();
@@ -1514,43 +1573,7 @@ export default function GitActionsControl({
       return;
     }
     if (quickAction.kind === "run_pull") {
-      const toastId = toastManager.add({
-        type: "loading",
-        title: "Pulling...",
-        timeout: 0,
-        data: threadToastData,
-      });
-      void (async () => {
-        const result = await pullAction.run();
-        if (result._tag === "Failure") {
-          if (isAtomCommandInterrupted(result)) {
-            toastManager.close(toastId);
-            return;
-          }
-          const error = squashAtomCommandFailure(result);
-          toastManager.update(
-            toastId,
-            stackedThreadToast({
-              type: "error",
-              title: "Pull failed",
-              description: error instanceof Error ? error.message : "An error occurred.",
-              ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-            }),
-          );
-          return;
-        }
-
-        const pullResult = result.value;
-        toastManager.update(toastId, {
-          type: "success",
-          title: pullResult.status === "pulled" ? "Pulled" : "Already up to date",
-          description:
-            pullResult.status === "pulled"
-              ? `Updated ${pullResult.refName} from ${pullResult.upstreamRef ?? "upstream"}`
-              : `${pullResult.refName} is already synchronized.`,
-          data: threadToastData,
-        });
-      })();
+      runPull();
       return;
     }
     if (quickAction.kind === "show_hint") {
@@ -1731,6 +1754,21 @@ export default function GitActionsControl({
         gitStatusForActions.aheadCount === 0 && (
           <p className="px-2 py-1.5 text-xs text-warning">Behind upstream. Pull/rebase first.</p>
         )}
+      {upstreamAttention ? (
+        <p className="px-2 py-1.5 text-xs text-warning">{upstreamAttention}</p>
+      ) : null}
+      {showUpstreamAttentionPull ? (
+        <MenuItem
+          density={presentation === "menu" ? "touch" : "default"}
+          disabled={isGitActionRunning}
+          onClick={() => {
+            runPull();
+          }}
+        >
+          <CloudDownloadIcon className="size-4" />
+          <MenuItemLabel>Pull</MenuItemLabel>
+        </MenuItem>
+      ) : null}
       {gitStatusError && <p className="px-2 py-1.5 text-xs text-destructive">{gitStatusError}</p>}
     </>
   );
@@ -1834,7 +1872,18 @@ export default function GitActionsControl({
             }}
           >
             <MenuTrigger
-              render={<Button aria-label="Git action options" size="icon-xs" variant="outline" />}
+              render={
+                <Button
+                  aria-label={
+                    upstreamAttention
+                      ? `Git action options. ${upstreamAttention}`
+                      : "Git action options"
+                  }
+                  size="icon-xs"
+                  title={upstreamAttention ?? undefined}
+                  variant="outline"
+                />
+              }
               disabled={isGitActionRunning}
             >
               <ChevronDownIcon aria-hidden="true" className="size-4" />

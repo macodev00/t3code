@@ -309,6 +309,21 @@ describe("when: ref is clean, up to date, and has no open PR", () => {
     assert.deepInclude(quick, { kind: "show_hint", label: "Commit", disabled: true });
   });
 
+  it("resolveQuickAction pulls when upstream refresh stopped on an up-to-date branch", () => {
+    const quick = resolveQuickAction(
+      status({
+        aheadCount: 0,
+        behindCount: 0,
+        hasUpstream: true,
+        hasWorkingTreeChanges: false,
+        pr: null,
+        upstreamNeedsAttention: true,
+      }),
+      false,
+    );
+    assert.deepInclude(quick, { kind: "run_pull", label: "Pull", disabled: false });
+  });
+
   it("buildMenuItems disables commit, push, and create PR", () => {
     const items = buildMenuItems(status({ aheadCount: 0, behindCount: 0, pr: null }), false);
     assert.deepEqual(items, [

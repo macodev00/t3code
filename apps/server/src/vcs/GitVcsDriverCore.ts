@@ -64,6 +64,11 @@ const REVIEW_DIFF_FILE_MAX_OUTPUT_BYTES = 1024 * 1024;
 export const PATCH_RENDER_PREFIX_ARGS = ["--src-prefix=a/", "--dst-prefix=b/"] as const;
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
+const GIT_COMMAND_TIMED_OUT_DETAIL = "Git command timed out.";
+// One slow fetch is not enough to stop. Three consecutive kills at the status
+// timeout match a credential helper blocked on a GUI prompt: each attempt can
+// raise a macOS keychain dialog and ends before Always Allow can be stored.
+const STATUS_UPSTREAM_REFRESH_TIMEOUT_STOP_AFTER = 3;
 
 const STATUS_UPSTREAM_REFRESH_FAILURE_BASE_COOLDOWN = Duration.seconds(30);
 const STATUS_UPSTREAM_REFRESH_FAILURE_MAX_COOLDOWN = Duration.minutes(15);
@@ -78,6 +83,10 @@ const LIST_REFS_REFRESH_COALESCE_TTL = Duration.seconds(5);
 const LIST_REFS_REFRESH_FAILURE_COOLDOWN = Duration.seconds(30);
 const STATUS_DEFAULT_BRANCH_CACHE_TTL = Duration.minutes(5);
 const STATUS_ORIGIN_EXISTS_CACHE_TTL = Duration.minutes(5);
+// Suppress Git Credential Manager, terminal prompts, and OpenSSH askpass.
+// credential.helper stays intact so a silent osxkeychain or `gh auth git-credential`
+// lookup can still succeed. A helper that blocks on a GUI is stopped after
+// repeated timeouts instead of being disabled on every fetch.
 const STATUS_UPSTREAM_REFRESH_ENV = Object.freeze({
   GCM_INTERACTIVE: "never",
   GIT_ASKPASS: "",
@@ -110,6 +119,7 @@ const NON_REPOSITORY_REMOTE_STATUS_DETAILS = Object.freeze<GitVcsDriver.GitRemot
   aheadCount: 0,
   behindCount: 0,
   aheadOfDefaultCount: 0,
+  upstreamNeedsAttention: false,
 });
 
 type TraceTailState = {
@@ -122,11 +132,23 @@ class StatusRemoteRefreshCacheKey extends Data.Class<{
   remoteName: string;
 }> {}
 
+/**
+ * Backs off a failed background upstream fetch. The first failure waits 30s and
+ * each later failure doubles that, capped at 15 minutes.
+ */
 function statusUpstreamRefreshFailureCooldown(consecutiveFailures: number): Duration.Duration {
   const exponent = Math.max(0, consecutiveFailures - 1);
   const cooldownMs =
     Duration.toMillis(STATUS_UPSTREAM_REFRESH_FAILURE_BASE_COOLDOWN) * Math.pow(2, exponent);
   return Duration.min(Duration.millis(cooldownMs), STATUS_UPSTREAM_REFRESH_FAILURE_MAX_COOLDOWN);
+}
+
+/**
+ * Distinguishes a killed background fetch from a fast Git error.
+ * Timeouts are what leave `git-credential-osxkeychain` blocked on a password dialog.
+ */
+function isStatusUpstreamRefreshTimeout(error: GitCommandError): boolean {
+  return error.detail === GIT_COMMAND_TIMED_OUT_DETAIL;
 }
 
 class GitRefsSnapshotCacheKey extends Data.Class<{
@@ -824,6 +846,10 @@ const collectOutput = Effect.fnUntraced(function* (
   };
 });
 
+/**
+ * Builds the Git driver. Background upstream refresh stops after repeated
+ * timeouts and resumes after an explicit pull, push, or fetch.
+ */
 export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -831,6 +857,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const { worktreesDir } = yield* ServerConfig;
   const crypto = yield* Crypto.Crypto;
 
+  /**
+   * Spawns Git for driver operations. Callers pass a timeout and env; a timeout
+   * fails with the detail background status refresh uses to detect a hung prompt.
+   */
   const executeRaw: GitVcsDriver.GitVcsDriver["Service"]["execute"] = Effect.fnUntraced(
     function* (input) {
       const commandInput = {
@@ -841,6 +871,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
       const appendTruncationMarker = input.appendTruncationMarker ?? false;
 
+      /**
+       * Runs one Git process and fails with `GIT_COMMAND_TIMED_OUT_DETAIL` when
+       * the command outlives its timeout. Background status fetches use that
+       * detail to tell a hung credential prompt from other Git failures.
+       */
       const runGitCommand = Effect.fn("runGitCommand")(function* () {
         const trace2Monitor = yield* createTrace2Monitor(commandInput, input.progress).pipe(
           Effect.provideService(Path.Path, path),
@@ -953,7 +988,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             () =>
               new GitCommandError({
                 ...gitCommandContext(commandInput),
-                detail: "Git command timed out.",
+                detail: GIT_COMMAND_TIMED_OUT_DETAIL,
               }),
           ),
         ),
@@ -1330,30 +1365,138 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     });
   });
 
-  const statusRemoteRefreshFailureCounts = new Map<string, number>();
+  interface StatusRemoteRefreshFailure {
+    readonly consecutiveFailures: number;
+    readonly consecutiveTimeouts: number;
+  }
+  const statusRemoteRefreshFailures = new Map<string, StatusRemoteRefreshFailure>();
+  // Bumped when an explicit pull, push, or fetch resumes refresh, so a background
+  // timeout that finishes later cannot put the remote back into the stopped state.
+  const statusRemoteRefreshGeneration = new Map<string, number>();
+  /**
+   * Keys failure state by repository and remote. Linked worktrees share a Git
+   * common directory, so they share one backoff.
+   */
   const statusRemoteRefreshFailureKey = (cacheKey: StatusRemoteRefreshCacheKey) =>
     `${cacheKey.gitCommonDir}\0${cacheKey.remoteName}`;
-  const recordStatusRemoteRefreshFailure = (cacheKey: StatusRemoteRefreshCacheKey) => {
-    const key = statusRemoteRefreshFailureKey(cacheKey);
-    const nextCount = (statusRemoteRefreshFailureCounts.get(key) ?? 0) + 1;
-    statusRemoteRefreshFailureCounts.delete(key);
-    statusRemoteRefreshFailureCounts.set(key, nextCount);
-    if (statusRemoteRefreshFailureCounts.size > STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY) {
-      const oldestKey = statusRemoteRefreshFailureCounts.keys().next().value;
+  /**
+   * Remembers the latest failure for a remote and drops the oldest entry once
+   * the map exceeds the status-refresh cache capacity.
+   */
+  const rememberStatusRemoteRefreshFailure = (key: string, failure: StatusRemoteRefreshFailure) => {
+    statusRemoteRefreshFailures.delete(key);
+    statusRemoteRefreshFailures.set(key, failure);
+    if (statusRemoteRefreshFailures.size > STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY) {
+      const oldestKey = statusRemoteRefreshFailures.keys().next().value;
       if (oldestKey !== undefined) {
-        statusRemoteRefreshFailureCounts.delete(oldestKey);
+        statusRemoteRefreshFailures.delete(oldestKey);
+        statusRemoteRefreshGeneration.delete(oldestKey);
       }
     }
   };
-  const clearStatusRemoteRefreshFailures = (cacheKey: StatusRemoteRefreshCacheKey) => {
-    statusRemoteRefreshFailureCounts.delete(statusRemoteRefreshFailureKey(cacheKey));
+  /**
+   * Returns the recovery generation for a remote. A late fetch compares against
+   * the generation it started with and ignores itself after recovery.
+   */
+  const currentStatusRemoteRefreshGeneration = (key: string) =>
+    statusRemoteRefreshGeneration.get(key) ?? 0;
+  /**
+   * Counts a finished background fetch failure. A timeout continues the streak
+   * that stops polling; any other failure clears that streak and keeps the
+   * existing backoff. Returns null when recovery already superseded this attempt.
+   */
+  const recordStatusRemoteRefreshFailure = (
+    cacheKey: StatusRemoteRefreshCacheKey,
+    error: GitCommandError,
+    generation: number,
+  ) => {
+    const key = statusRemoteRefreshFailureKey(cacheKey);
+    if (currentStatusRemoteRefreshGeneration(key) !== generation) {
+      return null;
+    }
+    const previous = statusRemoteRefreshFailures.get(key);
+    const consecutiveTimeouts = isStatusUpstreamRefreshTimeout(error)
+      ? (previous?.consecutiveTimeouts ?? 0) + 1
+      : 0;
+    rememberStatusRemoteRefreshFailure(key, {
+      consecutiveFailures: (previous?.consecutiveFailures ?? 0) + 1,
+      consecutiveTimeouts,
+    });
+    return consecutiveTimeouts;
   };
+  /**
+   * Forgets backoff for a remote after a fetch that should resume polling.
+   */
+  const clearStatusRemoteRefreshFailures = (cacheKey: StatusRemoteRefreshCacheKey) => {
+    statusRemoteRefreshFailures.delete(statusRemoteRefreshFailureKey(cacheKey));
+  };
+  /**
+   * Clears backoff and invalidates in-flight failure accounting for one remote.
+   */
+  const bumpStatusRemoteRefreshGeneration = (cacheKey: StatusRemoteRefreshCacheKey) => {
+    const key = statusRemoteRefreshFailureKey(cacheKey);
+    statusRemoteRefreshGeneration.set(key, currentStatusRemoteRefreshGeneration(key) + 1);
+    clearStatusRemoteRefreshFailures(cacheKey);
+  };
+  /**
+   * Reports whether background polling has stopped for this remote.
+   */
+  const upstreamStatusNeedsAttention = (cacheKey: StatusRemoteRefreshCacheKey) =>
+    (statusRemoteRefreshFailures.get(statusRemoteRefreshFailureKey(cacheKey))
+      ?.consecutiveTimeouts ?? 0) >= STATUS_UPSTREAM_REFRESH_TIMEOUT_STOP_AFTER;
+  /**
+   * How long a cached background fetch stays fresh. Repeated timeouts do not
+   * expire, so a credential helper blocked on a GUI prompt is not spawned again.
+   */
+  const statusRemoteRefreshCacheTtl = (
+    exit: Exit.Exit<boolean, GitCommandError>,
+    cacheKey: StatusRemoteRefreshCacheKey,
+  ) => {
+    if (Exit.isSuccess(exit)) return STATUS_UPSTREAM_REFRESH_INTERVAL;
+    const failure = statusRemoteRefreshFailures.get(statusRemoteRefreshFailureKey(cacheKey));
+    if ((failure?.consecutiveTimeouts ?? 0) >= STATUS_UPSTREAM_REFRESH_TIMEOUT_STOP_AFTER) {
+      return Duration.infinity;
+    }
+    return statusUpstreamRefreshFailureCooldown(failure?.consecutiveFailures ?? 1);
+  };
+  /**
+   * Fetches one remote for status. A success clears its backoff. The timeout
+   * that reaches the stop threshold is logged once.
+   */
   const refreshStatusRemoteCacheEntry = Effect.fn("refreshStatusRemoteCacheEntry")(function* (
     cacheKey: StatusRemoteRefreshCacheKey,
   ) {
+    const generation = currentStatusRemoteRefreshGeneration(
+      statusRemoteRefreshFailureKey(cacheKey),
+    );
     return yield* fetchRemoteForStatus(cacheKey.gitCommonDir, cacheKey.remoteName).pipe(
-      Effect.tap(() => Effect.sync(() => clearStatusRemoteRefreshFailures(cacheKey))),
-      Effect.tapError(() => Effect.sync(() => recordStatusRemoteRefreshFailure(cacheKey))),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          if (
+            currentStatusRemoteRefreshGeneration(statusRemoteRefreshFailureKey(cacheKey)) !==
+            generation
+          ) {
+            return;
+          }
+          clearStatusRemoteRefreshFailures(cacheKey);
+        }),
+      ),
+      Effect.tapError((error) =>
+        Effect.sync(() => recordStatusRemoteRefreshFailure(cacheKey, error, generation)).pipe(
+          Effect.flatMap((consecutiveTimeouts) =>
+            consecutiveTimeouts === STATUS_UPSTREAM_REFRESH_TIMEOUT_STOP_AFTER
+              ? Effect.logWarning(
+                  "Stopped background Git fetch after repeated timeouts; upstream status needs attention",
+                ).pipe(
+                  Effect.annotateLogs({
+                    remoteName: cacheKey.remoteName,
+                    consecutiveTimeouts,
+                  }),
+                )
+              : Effect.void,
+          ),
+        ),
+      ),
       Effect.tapCause((cause) => Effect.logWarning("Background Git fetch failed", cause)),
       Effect.as(true as const),
     );
@@ -1361,32 +1504,59 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
   const statusRemoteRefreshCache = yield* Cache.makeWith(refreshStatusRemoteCacheEntry, {
     capacity: STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY,
-    // A failed background fetch is intentionally cached and exponentially
-    // backed off. Status reads swallow this failure and use the last fetched
-    // refs, so repeated thread mounts cannot turn a slow or unavailable remote
-    // into a repository-wide Git subprocess storm.
-    timeToLive: (exit, cacheKey) =>
-      Exit.isSuccess(exit)
-        ? STATUS_UPSTREAM_REFRESH_INTERVAL
-        : statusUpstreamRefreshFailureCooldown(
-            statusRemoteRefreshFailureCounts.get(statusRemoteRefreshFailureKey(cacheKey)) ?? 1,
-          ),
+    // A failed background fetch is cached and exponentially backed off. After
+    // repeated timeouts the entry does not expire, so a credential helper that
+    // blocks on a GUI prompt is not spawned again. Status reads keep the last
+    // fetched refs. A successful explicit pull, push, or fetch clears that stop.
+    timeToLive: statusRemoteRefreshCacheTtl,
   });
 
+  /**
+   * Lets background refresh poll a remote again after an explicit fetch of it.
+   */
+  const releaseStatusUpstreamRefresh = Effect.fn("releaseStatusUpstreamRefresh")(function* (
+    cwd: string,
+    remoteName: string,
+  ) {
+    const gitCommonDir = yield* resolveGitCommonDir(cwd).pipe(
+      Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
+    );
+    if (gitCommonDir === null) return;
+    const cacheKey = new StatusRemoteRefreshCacheKey({ gitCommonDir, remoteName });
+    bumpStatusRemoteRefreshGeneration(cacheKey);
+    yield* Cache.invalidate(statusRemoteRefreshCache, cacheKey);
+  });
+
+  /**
+   * Lets background refresh poll the current branch's upstream after pull or push.
+   */
+  const releaseTrackedUpstreamStatusRefresh = Effect.fn("releaseTrackedUpstreamStatusRefresh")(
+    function* (cwd: string) {
+      const upstream = yield* resolveCurrentUpstream(cwd).pipe(
+        Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
+      );
+      if (!upstream) return;
+      yield* releaseStatusUpstreamRefresh(cwd, upstream.remoteName);
+    },
+  );
+
+  /**
+   * Refreshes upstream refs when the cached fetch is stale. A remote that has
+   * already stopped on repeated timeouts is left alone.
+   */
   const refreshStatusUpstreamIfStale = Effect.fn("refreshStatusUpstreamIfStale")(function* (
     cwd: string,
   ) {
     const upstream = yield* resolveCurrentUpstream(cwd);
     if (!upstream) return;
     const gitCommonDir = yield* resolveGitCommonDir(cwd);
+    const cacheKey = new StatusRemoteRefreshCacheKey({
+      gitCommonDir,
+      remoteName: upstream.remoteName,
+    });
+    if (upstreamStatusNeedsAttention(cacheKey)) return;
     // The cache loader logs failed attempts; cache hits keep using the last fetched refs.
-    yield* Cache.get(
-      statusRemoteRefreshCache,
-      new StatusRemoteRefreshCacheKey({
-        gitCommonDir,
-        remoteName: upstream.remoteName,
-      }),
-    ).pipe(Effect.ignore);
+    yield* Cache.get(statusRemoteRefreshCache, cacheKey).pipe(Effect.ignore);
   });
 
   const resolveDefaultBranchName = (
@@ -1598,6 +1768,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
   });
 
+  /**
+   * Reads ahead/behind for the current upstream without scanning the worktree.
+   * Includes whether background refresh has stopped after repeated timeouts.
+   */
   const readStatusDetailsRemote = Effect.fn("readStatusDetailsRemote")(function* (cwd: string) {
     const branchResult = yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.statusDetailsRemote.branch",
@@ -1679,6 +1853,20 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ? aheadCount
           : yield* computeAheadCountAgainstBase(cwd, branch).pipe(Effect.orElseSucceed(() => 0))
         : 0;
+    const upstreamNeedsAttention =
+      upstream === null
+        ? false
+        : yield* resolveGitCommonDir(cwd).pipe(
+            Effect.map((gitCommonDir) =>
+              upstreamStatusNeedsAttention(
+                new StatusRemoteRefreshCacheKey({
+                  gitCommonDir,
+                  remoteName: upstream.remoteName,
+                }),
+              ),
+            ),
+            Effect.catchTags({ GitCommandError: () => Effect.succeed(false) }),
+          );
 
     return {
       isRepo: true,
@@ -1690,6 +1878,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       aheadCount,
       behindCount,
       aheadOfDefaultCount,
+      upstreamNeedsAttention,
     };
   });
 
@@ -3665,6 +3854,69 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ),
     );
 
+  /**
+   * Resumes background upstream refresh when a push updated the remote.
+   * A skipped push did not replace remote refs, so polling stays where it was.
+   */
+  const resumeUpstreamRefreshIfPushed = (cwd: string, result: GitVcsDriver.GitPushResult) =>
+    result.status === "pushed" ? releaseTrackedUpstreamStatusRefresh(cwd) : Effect.void;
+  /**
+   * Pushes the current branch. A completed push lets background status fetch
+   * that upstream again, which is how a keychain prompt can be approved.
+   */
+  const pushCurrentBranchAndResumeRefresh: GitVcsDriver.GitVcsDriver["Service"]["pushCurrentBranch"] =
+    (cwd, fallbackBranch, options) =>
+      withListRefsInvalidation(
+        cwd,
+        pushCurrentBranch(cwd, fallbackBranch, options).pipe(
+          Effect.tap((result) => resumeUpstreamRefreshIfPushed(cwd, result)),
+        ),
+      );
+  /**
+   * Pulls the current branch with the interactive Git timeout, then lets
+   * background status fetch run again.
+   */
+  const pullCurrentBranchAndResumeRefresh: GitVcsDriver.GitVcsDriver["Service"]["pullCurrentBranch"] =
+    (cwd) =>
+      withListRefsInvalidation(
+        cwd,
+        pullCurrentBranch(cwd).pipe(Effect.tap(() => releaseTrackedUpstreamStatusRefresh(cwd))),
+      );
+  /**
+   * Fetches a remote outside the status poll, then lets that poll run again.
+   */
+  const fetchRemoteAndResumeRefresh: GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"] = (
+    input,
+  ) =>
+    withListRefsInvalidation(
+      input.cwd,
+      fetchRemote(input).pipe(
+        Effect.tap(() => releaseStatusUpstreamRefresh(input.cwd, input.remoteName)),
+      ),
+    );
+  /**
+   * Fetches one remote branch, then lets background status refresh poll that remote.
+   */
+  const fetchRemoteBranchAndResumeRefresh: GitVcsDriver.GitVcsDriver["Service"]["fetchRemoteBranch"] =
+    (input) =>
+      withListRefsInvalidation(
+        input.cwd,
+        fetchRemoteBranch(input).pipe(
+          Effect.tap(() => releaseStatusUpstreamRefresh(input.cwd, input.remoteName)),
+        ),
+      );
+  /**
+   * Fetches a remote-tracking branch, then lets background status refresh poll that remote.
+   */
+  const fetchRemoteTrackingBranchAndResumeRefresh: GitVcsDriver.GitVcsDriver["Service"]["fetchRemoteTrackingBranch"] =
+    (input) =>
+      withListRefsInvalidation(
+        input.cwd,
+        fetchRemoteTrackingBranch(input).pipe(
+          Effect.tap(() => releaseStatusUpstreamRefresh(input.cwd, input.remoteName)),
+        ),
+      );
+
   return GitVcsDriver.GitVcsDriver.of({
     execute,
     status,
@@ -3674,9 +3926,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     prepareCommitContext,
     commit: (cwd, subject, body, options) =>
       withListRefsInvalidation(cwd, commit(cwd, subject, body, options)),
-    pushCurrentBranch: (cwd, fallbackBranch, options) =>
-      withListRefsInvalidation(cwd, pushCurrentBranch(cwd, fallbackBranch, options)),
-    pullCurrentBranch: (cwd) => withListRefsInvalidation(cwd, pullCurrentBranch(cwd)),
+    pushCurrentBranch: pushCurrentBranchAndResumeRefresh,
+    pullCurrentBranch: pullCurrentBranchAndResumeRefresh,
     readRangeContext,
     getReviewDiffPreview,
     getReviewDiffFileContents,
@@ -3693,13 +3944,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     ensureRemote: (input) => withListRefsInvalidation(input.cwd, ensureRemote(input)),
     resolvePrimaryRemoteName,
     resolveDefaultBranchName,
-    fetchRemote: (input) => withListRefsInvalidation(input.cwd, fetchRemote(input)),
+    fetchRemote: fetchRemoteAndResumeRefresh,
     remoteExists,
     remoteBranchExists,
     resolveRemoteTrackingCommit,
-    fetchRemoteBranch: (input) => withListRefsInvalidation(input.cwd, fetchRemoteBranch(input)),
-    fetchRemoteTrackingBranch: (input) =>
-      withListRefsInvalidation(input.cwd, fetchRemoteTrackingBranch(input)),
+    fetchRemoteBranch: fetchRemoteBranchAndResumeRefresh,
+    fetchRemoteTrackingBranch: fetchRemoteTrackingBranchAndResumeRefresh,
     setBranchUpstream: (input) => withListRefsInvalidation(input.cwd, setBranchUpstream(input)),
     removeWorktree: (input) => withListRefsInvalidation(input.cwd, removeWorktree(input)),
     pruneWorktrees: (input) => withListRefsInvalidation(input.cwd, pruneWorktrees(input)),
