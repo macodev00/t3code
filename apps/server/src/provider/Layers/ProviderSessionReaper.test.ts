@@ -25,6 +25,11 @@ import { ProviderSessionReaper } from "../Services/ProviderSessionReaper.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import { makeProviderSessionReaperLive } from "./ProviderSessionReaper.ts";
+import {
+  clearOpenCodeThreadChildSessions,
+  noteOpenCodeChildSessionLiveness,
+  resetOpenCodeChildSessionLiveness,
+} from "../OpenCodeChildSessionLiveness.ts";
 
 const defaultModelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -56,13 +61,20 @@ const drainFibers = Effect.forEach(Array.from({ length: 10 }), () => Effect.yiel
 
 const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
 
+/**
+ * Build a shell snapshot for the reaper tests.
+ *
+ * Session timestamps and provider names are the inputs the inactivity sweep
+ * reads. `opencode` is included so a live child can be distinguished from
+ * Claude and Codex bindings.
+ */
 function makeReadModel(
   threads: ReadonlyArray<{
     readonly id: ThreadId;
     readonly session: {
       readonly threadId: ThreadId;
       readonly status: "starting" | "running" | "ready" | "interrupted" | "stopped" | "error";
-      readonly providerName: "codex" | "claudeAgent";
+      readonly providerName: "codex" | "claudeAgent" | "opencode";
       readonly runtimeMode: "approval-required" | "full-access" | "auto-accept-edits";
       readonly activeTurnId: TurnId | null;
       readonly lastError: string | null;
@@ -128,6 +140,7 @@ describe("ProviderSessionReaper", () => {
   let scope: Scope.Closeable | null = null;
 
   afterEach(async () => {
+    resetOpenCodeChildSessionLiveness();
     if (scope) {
       await Effect.runPromise(Scope.close(scope, Exit.void));
     }
@@ -732,6 +745,114 @@ describe("ProviderSessionReaper", () => {
     expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
       defectThreadId,
       reapedThreadId,
+    ]);
+  });
+
+  it("does not reap a stale OpenCode session while a child session is still live" /**
+   * Hold a stale OpenCode binding while a child is live, and still reap the others.
+   *
+   * Claude is never held by this signal. Idle of one child leaves its sibling
+   * holding the binding. Clearing the thread lets the next sweep reap it.
+   */, async function reapSkipsLiveOpenCodeChildSession() {
+    const liveThreadId = ThreadId.make("thread-reaper-opencode-child-live");
+    const settledOpenCodeThreadId = ThreadId.make("thread-reaper-opencode-settled");
+    const claudeThreadId = ThreadId.make("thread-reaper-claude-not-held");
+    const updatedAt = "2026-04-14T00:00:00.000Z";
+    /**
+     * Settled thread shell whose session timestamp is already past the idle window.
+     */
+    function shell(threadId: ThreadId, providerName: "opencode" | "claudeAgent") {
+      return {
+        id: threadId,
+        session: {
+          threadId,
+          status: "ready" as const,
+          providerName,
+          runtimeMode: "full-access" as const,
+          activeTurnId: null,
+          lastError: null,
+          updatedAt,
+        },
+      };
+    }
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        shell(claudeThreadId, "claudeAgent"),
+        shell(liveThreadId, "opencode"),
+        shell(settledOpenCodeThreadId, "opencode"),
+      ]),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+    /**
+     * Persist a live binding old enough for the next sweep to consider it idle.
+     */
+    function seed(threadId: ThreadId, providerName: "opencode" | "claudeAgent") {
+      return runtime!.runPromise(
+        repository.upsert({
+          threadId,
+          providerName,
+          providerInstanceId: null,
+          adapterKey: providerName,
+          runtimeMode: "full-access",
+          status: "running",
+          lastSeenAt: updatedAt,
+          resumeCursor: { opaque: `resume-${threadId}` },
+          runtimePayload: null,
+        }),
+      );
+    }
+    await seed(claudeThreadId, "claudeAgent");
+    await seed(liveThreadId, "opencode");
+    await seed(settledOpenCodeThreadId, "opencode");
+
+    // busy and retry both record "running". A second child stays held after
+    // its sibling goes idle. Claude is not held by this OpenCode-only signal.
+    noteOpenCodeChildSessionLiveness(liveThreadId, "ses_a", "running");
+    noteOpenCodeChildSessionLiveness(liveThreadId, "ses_b", "running");
+    noteOpenCodeChildSessionLiveness(claudeThreadId, "ses_claude", "running");
+
+    await sweepAt(Date.parse(updatedAt) + 1_000);
+    expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+      claudeThreadId,
+      settledOpenCodeThreadId,
+    ]);
+
+    /**
+     * Mark a binding stopped so a later sweep does not stop it again.
+     */
+    function markStopped(threadId: ThreadId, providerName: "opencode" | "claudeAgent") {
+      return runtime!.runPromise(
+        repository.upsert({
+          threadId,
+          providerName,
+          providerInstanceId: null,
+          adapterKey: providerName,
+          runtimeMode: "full-access",
+          status: "stopped",
+          lastSeenAt: updatedAt,
+          resumeCursor: { opaque: `resume-${threadId}` },
+          runtimePayload: null,
+        }),
+      );
+    }
+    await markStopped(claudeThreadId, "claudeAgent");
+    await markStopped(settledOpenCodeThreadId, "opencode");
+
+    noteOpenCodeChildSessionLiveness(liveThreadId, "ses_a", "idle");
+    await sweepAt(Date.parse(updatedAt) + 1_000);
+    expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+      claudeThreadId,
+      settledOpenCodeThreadId,
+    ]);
+
+    clearOpenCodeThreadChildSessions(liveThreadId);
+    await sweepAt(Date.parse(updatedAt) + 1_000);
+    expect(harness.stopSession.mock.calls.map(([request]) => request.threadId)).toEqual([
+      claudeThreadId,
+      settledOpenCodeThreadId,
+      liveThreadId,
     ]);
   });
 });

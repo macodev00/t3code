@@ -12,6 +12,7 @@ import {
   type ProviderSessionReaperShape,
 } from "../Services/ProviderSessionReaper.ts";
 import { forkParked } from "../../serverActivation.ts";
+import { openCodeInactivityHeldByChildSession } from "../OpenCodeChildSessionLiveness.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
@@ -22,6 +23,15 @@ export interface ProviderSessionReaperLiveOptions {
   readonly sweepIntervalMs?: number;
 }
 
+/**
+ * Build the provider-session reaper.
+ *
+ * A sweep stops a live binding once user-facing activity is older than the
+ * idle window, unless the thread still has an active turn, background-task
+ * liveness, or a live OpenCode child session. Child `session.status` holds
+ * the binding quietly: inactivity has to ignore it, and it does not add task
+ * activity.
+ */
 const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =>
   Effect.gen(function* () {
     const providerService = yield* ProviderService;
@@ -34,6 +44,13 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
 
+    /**
+     * Stop live bindings whose user-facing activity is past the idle window.
+     *
+     * A binding stays up while its turn is active, while background-task
+     * liveness is set, or while an OpenCode child session bound to the
+     * thread is still alive.
+     */
     const sweep = Effect.gen(function* () {
       // Stopped rows stay for their resume cursors and far outnumber live
       // ones, so the query skips them.
@@ -87,6 +104,23 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           yield* Effect.logDebug("provider.session.reaper.skipped-background-work", {
             threadId: binding.threadId,
             backgroundLiveness: thread.backgroundLiveness,
+            idleDurationMs,
+          });
+          continue;
+        }
+
+        // OpenCode child sessions keep the provider process working after the
+        // parent turn settles. They never emit task lifecycle events, so
+        // backgroundLiveness stays empty and the idle clock keeps advancing
+        // from the last user-facing activity. Inactivity has to ignore that
+        // clock while a related child session.status is still busy or retry:
+        // stopping the session aborts those children. Idle, deletion, and
+        // session teardown release the hold. The signal is quiet reaper state,
+        // separate from task rows and the sidebar liveness pill.
+        if (openCodeInactivityHeldByChildSession(binding.provider, binding.threadId)) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-opencode-child-session", {
+            threadId: binding.threadId,
+            provider: binding.provider,
             idleDurationMs,
           });
           continue;

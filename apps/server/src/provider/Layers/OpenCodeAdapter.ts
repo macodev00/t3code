@@ -59,6 +59,12 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
+import {
+  clearOpenCodeChildSession,
+  clearOpenCodeThreadChildSessions,
+  noteOpenCodeChildSessionLiveness,
+  openCodeChildSessionLivenessStatus,
+} from "../OpenCodeChildSessionLiveness.ts";
 import * as Option from "effect/Option";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
@@ -2175,6 +2181,13 @@ export function makeOpenCodeAdapter(
       yield* run.pipe(Effect.forkIn(context.sessionScope));
     });
 
+    /**
+     * Route one OpenCode subscription event into runtime events.
+     *
+     * Parent `session.status` still owns turn admission and completion.
+     * Related child `session.status` updates quiet reaper liveness only.
+     * That update leaves the parent turn untouched and emits no task activity.
+     */
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
@@ -2227,7 +2240,13 @@ export function makeOpenCodeAdapter(
           addRelatedOpenCodeSession(context, session.id);
         }
       } else if (event.type === "session.deleted") {
-        context.relatedSessionIds.delete(event.properties.info.id);
+        const deletedSessionId = event.properties.info.id;
+        if (
+          context.relatedSessionIds.delete(deletedSessionId) &&
+          deletedSessionId !== context.openCodeSessionId
+        ) {
+          clearOpenCodeChildSession(context.session.threadId, deletedSessionId);
+        }
       }
 
       const payloadSessionId = openCodeEventSessionId(event);
@@ -2260,6 +2279,21 @@ export function makeOpenCodeAdapter(
         payloadSessionId !== undefined &&
         isOpenCodeChildRequestEvent(event) &&
         (context.relatedSessionIds.has(payloadSessionId) || isKnownPendingTerminalEvent);
+      // Related child session.status is the quiet liveness signal for OpenCode
+      // background subagents. It must not fall through into parent turn
+      // admission or completion, and it must not emit task activity.
+      if (
+        event.type === "session.status" &&
+        payloadSessionId !== undefined &&
+        !isParentEvent &&
+        context.relatedSessionIds.has(payloadSessionId)
+      ) {
+        const liveness = openCodeChildSessionLivenessStatus(event.properties.status.type);
+        if (liveness !== undefined) {
+          noteOpenCodeChildSessionLiveness(context.session.threadId, payloadSessionId, liveness);
+        }
+        return;
+      }
       if (!isParentEvent && !isChildRequestEvent) {
         return;
       }
@@ -2725,7 +2759,25 @@ export function makeOpenCodeAdapter(
       }
     });
 
+    /**
+     * Subscribe to the OpenCode event stream for one session.
+     *
+     * The session scope owns quiet child-session liveness. Closing it on
+     * stop, unexpected exit, or layer shutdown releases every child held
+     * for the thread, because those children die with the provider process.
+     */
     const startEventPump = Effect.fn("startEventPump")(function* (context: OpenCodeSessionContext) {
+      /**
+       * Release quiet child liveness when this session scope closes.
+       *
+       * Stop, unexpected exit, and layer shutdown close the scope. Those
+       * children die with the provider process, so they must not keep the
+       * inactivity reaper holding the thread.
+       */
+      function releaseOpenCodeChildLiveness() {
+        clearOpenCodeThreadChildSessions(context.session.threadId);
+      }
+      yield* Scope.addFinalizer(context.sessionScope, Effect.sync(releaseOpenCodeChildLiveness));
       // One AbortController per session scope. The finalizer fires when
       // the scope closes (explicit stop, unexpected exit, or layer
       // shutdown) and cancels the in-flight `event.subscribe` fetch so
@@ -3912,6 +3964,12 @@ export function makeOpenCodeAdapter(
       },
     );
 
+    /**
+     * Rewind the thread by forking a new OpenCode session at the retained boundary.
+     *
+     * Children of the session being replaced are released from quiet liveness.
+     * They belong to the discarded session and must not keep the replacement alive.
+     */
     const rollbackThread: OpenCodeAdapterShape["rollbackThread"] = Effect.fn("rollbackThread")(
       function* (threadId, numTurns) {
         const context = yield* ensureSessionContext(sessions, threadId);
@@ -3972,6 +4030,7 @@ export function makeOpenCodeAdapter(
             }),
           ).pipe(Effect.mapError(toRequestError));
           yield* clearPendingOpenCodeRequests(context, { type: "session.fork" });
+          clearOpenCodeThreadChildSessions(threadId);
           context.openCodeSessionId = forkedSessionId;
           context.relatedSessionIds.clear();
           context.relatedSessionIds.add(forkedSessionId);

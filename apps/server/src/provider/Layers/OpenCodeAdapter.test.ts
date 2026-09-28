@@ -12,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -29,6 +30,7 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -42,6 +44,10 @@ import {
   OpenCodeRuntimeError,
   type OpenCodeRuntimeShape,
 } from "../opencodeRuntime.ts";
+import {
+  hasLiveOpenCodeChildSessions,
+  resetOpenCodeChildSessionLiveness,
+} from "../OpenCodeChildSessionLiveness.ts";
 import {
   isOpenCodeNotFound,
   isSameOpenCodeDirectory,
@@ -618,6 +624,7 @@ const OpenCodeAdapterTestLayer = Layer.effect(
 
 beforeEach(() => {
   runtimeMock.reset();
+  resetOpenCodeChildSessionLiveness();
 });
 
 const advanceTestClock = (ms: number) =>
@@ -654,6 +661,84 @@ const permissionRequest = (id: string, sessionID: string): PermissionRequest => 
   always: [],
 });
 
+const OPENCODE_PARENT_SESSION_ID = "http://127.0.0.1:9999/session";
+
+/**
+ * Single consumer for one thread's runtime events.
+ *
+ * Child `session.status` writes quiet liveness and emits no runtime event, so
+ * a following parent title is the barrier that proves those updates landed.
+ * One consumer owns the adapter queue; a second subscriber would drop events.
+ */
+function collectOpenCodeThreadEvents(adapter: OpenCodeAdapterShape, threadId: ThreadId) {
+  /**
+   * Subscribe once and expose title and turn-completion barriers.
+   *
+   * The parent title is the barrier because quiet child status emits nothing.
+   */
+  function* subscribe() {
+    const seen: Array<ProviderRuntimeEvent> = [];
+    const titles = yield* Queue.unbounded<string>();
+    const completedTurnIds = yield* Queue.unbounded<string | undefined>();
+    yield* adapter.streamEvents.pipe(
+      Stream.filter((event) => event.threadId === threadId),
+      Stream.runForEach((event) =>
+        Effect.gen(
+          /**
+           * Record one runtime event and publish the barriers tests wait on.
+           */
+          function* recordRuntimeEvent() {
+            seen.push(event);
+            if (event.type === "thread.metadata.updated" && event.payload.name) {
+              yield* Queue.offer(titles, event.payload.name);
+            }
+            if (event.type === "turn.completed") {
+              yield* Queue.offer(completedTurnIds, event.turnId);
+            }
+          },
+        ),
+      ),
+      Effect.forkChild,
+    );
+
+    /**
+     * Wait until a parent session title has been mirrored onto the thread.
+     */
+    const waitForTitle = (title: string) =>
+      Stream.fromQueue(titles).pipe(
+        Stream.filter((candidate) => candidate === title),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.timeout("2 seconds"),
+      );
+
+    /**
+     * Wait until the parent turn completes and return that turn id.
+     */
+    const waitForTurnCompleted = () =>
+      Queue.take(completedTurnIds).pipe(Effect.timeout("2 seconds"));
+
+    return { seen, waitForTitle, waitForTurnCompleted };
+  }
+
+  return Effect.gen(subscribe);
+}
+
+/**
+ * Parent `session.updated` used as a processing barrier after quiet child events.
+ */
+function openCodeParentTitle(sessionId: string, title: string) {
+  return {
+    type: "session.updated" as const,
+    properties: {
+      info: {
+        id: sessionId,
+        title,
+      },
+    },
+  };
+}
+
 const questionRequest = (id: string, sessionID: string): QuestionRequest => ({
   id,
   sessionID,
@@ -667,6 +752,308 @@ const questionRequest = (id: string, sessionID: string): QuestionRequest => ({
 });
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  /**
+   * Assert related child `session.status` updates quiet reaper liveness only.
+   *
+   * Unrelated sessions are ignored. Busy, retry, and paused must not emit
+   * task activity or complete a parent turn. Idle and deletion release only
+   * that child, and stopping the session releases the thread.
+   */
+  function* recordRelatedChildSessionLiveness() {
+    const adapter = yield* OpenCodeAdapter;
+    const threadId = asThreadId("thread-opencode-child-liveness");
+    const enqueue = makeOpenCodeEventQueue();
+    const { seen, waitForTitle } = yield* collectOpenCodeThreadEvents(adapter, threadId);
+
+    yield* adapter.startSession({
+      provider: ProviderDriverKind.make("opencode"),
+      threadId,
+      runtimeMode: "full-access",
+    });
+
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_research", status: { type: "busy" } },
+    });
+    enqueue({
+      type: "session.created",
+      properties: {
+        info: {
+          id: "ses_research",
+          parentID: OPENCODE_PARENT_SESSION_ID,
+          title: "Research agent",
+        },
+      },
+    });
+    enqueue({
+      type: "session.created",
+      properties: {
+        info: {
+          id: "ses_unrelated",
+          parentID: "ses_other_parent",
+          title: "Someone else",
+        },
+      },
+    });
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_unrelated", status: { type: "busy" } },
+    });
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_research", status: { type: "busy" } },
+    });
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_research", status: { type: "busy" } },
+    });
+    enqueue({
+      type: "session.status",
+      properties: {
+        sessionID: "ses_research",
+        status: { type: "retry", attempt: 2, message: "rate limit", next: 10 },
+      },
+    });
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_research", status: { type: "paused" } },
+    });
+    enqueue({
+      type: "session.created",
+      properties: {
+        info: {
+          id: "ses_nested",
+          parentID: "ses_research",
+          title: "Child session - 2026-09-24T21:48:38.700Z",
+        },
+      },
+    });
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_nested", status: { type: "busy" } },
+    });
+    enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Children are running"));
+
+    yield* waitForTitle("Children are running");
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), true);
+    const session = (yield* adapter.listSessions()).find(
+      (candidate) => candidate.threadId === threadId,
+    );
+    NodeAssert.equal(session?.activeTurnId, undefined);
+    NodeAssert.notEqual(session?.status, "running");
+
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_research", status: { type: "idle" } },
+    });
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_research", status: { type: "idle" } },
+    });
+    enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Nested child still running"));
+    yield* waitForTitle("Nested child still running");
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), true);
+
+    enqueue({
+      type: "session.deleted",
+      properties: { info: { id: "ses_nested" } },
+    });
+    enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Nested child deleted"));
+    yield* waitForTitle("Nested child deleted");
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), false);
+
+    enqueue({
+      type: "session.status",
+      properties: {
+        sessionID: "ses_research",
+        status: { type: "retry", attempt: 3, message: "again", next: 20 },
+      },
+    });
+    enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Research resumed"));
+    yield* waitForTitle("Research resumed");
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), true);
+    NodeAssert.deepEqual(
+      seen.filter((event) => event.type.startsWith("task.")),
+      [],
+    );
+
+    yield* adapter.stopSession(threadId);
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), false);
+  }
+
+  it.effect(
+    "records related child session.status as quiet reaper liveness without task activity",
+    /**
+     * Run the quiet-liveness regression against the OpenCode adapter layer.
+     */
+    () => Effect.gen(recordRelatedChildSessionLiveness),
+  );
+
+  /**
+   * Assert a child going idle does not complete the parent turn.
+   *
+   * The parent stays running until its own `session.status` is idle, and the
+   * child transition emits no task activity.
+   */
+  function* keepParentTurnRunningWhileChildGoesIdle() {
+    const adapter = yield* OpenCodeAdapter;
+    const threadId = asThreadId("thread-opencode-child-liveness-turn");
+    runtimeMock.state.sessionStatus = "busy";
+    const enqueue = makeOpenCodeEventQueue();
+    const { seen, waitForTitle, waitForTurnCompleted } = yield* collectOpenCodeThreadEvents(
+      adapter,
+      threadId,
+    );
+
+    yield* adapter.startSession({
+      provider: ProviderDriverKind.make("opencode"),
+      threadId,
+      runtimeMode: "full-access",
+    });
+    const turn = yield* adapter.sendTurn({
+      threadId,
+      input: "Run the suite in the background",
+      modelSelection: createModelSelection(ProviderInstanceId.make("opencode"), "opencode/kimi-k3"),
+    });
+    enqueue({
+      type: "session.created",
+      properties: {
+        info: {
+          id: "ses_live",
+          parentID: OPENCODE_PARENT_SESSION_ID,
+          title: "Browser run",
+        },
+      },
+    });
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_live", status: { type: "busy" } },
+    });
+    enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Child is busy"));
+    yield* waitForTitle("Child is busy");
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), true);
+    NodeAssert.equal(
+      seen.some((event) => event.type === "turn.completed"),
+      false,
+    );
+
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_live", status: { type: "idle" } },
+    });
+    enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Child is idle"));
+    yield* waitForTitle("Child is idle");
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), false);
+    NodeAssert.equal(
+      seen.some((event) => event.type === "turn.completed"),
+      false,
+    );
+    NodeAssert.equal(
+      (yield* adapter.listSessions()).find((candidate) => candidate.threadId === threadId)
+        ?.activeTurnId,
+      turn.turnId,
+    );
+
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: OPENCODE_PARENT_SESSION_ID, status: { type: "idle" } },
+    });
+    NodeAssert.equal(yield* waitForTurnCompleted(), turn.turnId);
+    NodeAssert.deepEqual(
+      seen.filter((event) => event.type.startsWith("task.")),
+      [],
+    );
+
+    yield* adapter.stopSession(threadId);
+  }
+
+  it.effect(
+    "keeps the parent turn running when a related child session goes idle",
+    /**
+     * Run the parent-turn regression against the OpenCode adapter layer.
+     */
+    () => Effect.gen(keepParentTurnRunningWhileChildGoesIdle),
+  );
+
+  /**
+   * Assert rewind and stop release quiet child liveness.
+   *
+   * Children of the replaced session must not hold the forked session, and
+   * a child of the replacement can hold it again until stop.
+   */
+  function* dropQuietChildLivenessOnRewindOrStop() {
+    const adapter = yield* OpenCodeAdapter;
+    const threadId = asThreadId("thread-opencode-child-liveness-teardown");
+    const enqueue = makeOpenCodeEventQueue();
+    const { waitForTitle } = yield* collectOpenCodeThreadEvents(adapter, threadId);
+
+    yield* adapter.startSession({
+      provider: ProviderDriverKind.make("opencode"),
+      threadId,
+      runtimeMode: "full-access",
+    });
+    enqueue({
+      type: "session.created",
+      properties: {
+        info: {
+          id: "ses_old",
+          parentID: OPENCODE_PARENT_SESSION_ID,
+          title: "Old child",
+        },
+      },
+    });
+    enqueue({
+      type: "session.status",
+      properties: { sessionID: "ses_old", status: { type: "busy" } },
+    });
+    enqueue(openCodeParentTitle(OPENCODE_PARENT_SESSION_ID, "Old child is live"));
+    yield* waitForTitle("Old child is live");
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), true);
+
+    runtimeMock.state.messages = [
+      { info: { id: "user-1", role: "user" }, parts: [] },
+      {
+        info: { id: "assistant-1", role: "assistant" },
+        parts: [{ id: "part-1", type: "text", text: "answer" }],
+      },
+    ];
+    yield* adapter.rollbackThread(threadId, 1);
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), false);
+
+    const forkedSessionId = `${OPENCODE_PARENT_SESSION_ID}_fork`;
+    enqueue({
+      type: "session.created",
+      properties: {
+        info: {
+          id: "ses_new",
+          parentID: forkedSessionId,
+          title: "Replacement child",
+        },
+      },
+    });
+    enqueue({
+      type: "session.status",
+      properties: {
+        sessionID: "ses_new",
+        status: { type: "retry", attempt: 1, message: "again", next: 5 },
+      },
+    });
+    enqueue(openCodeParentTitle(forkedSessionId, "Replacement child is live"));
+    yield* waitForTitle("Replacement child is live");
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), true);
+
+    yield* adapter.stopSession(threadId);
+    NodeAssert.equal(hasLiveOpenCodeChildSessions(threadId), false);
+  }
+
+  it.effect(
+    "drops quiet child liveness when the OpenCode session is rewound or stopped",
+    /**
+     * Run the rewind and stop regression against the OpenCode adapter layer.
+     */
+    () => Effect.gen(dropQuietChildLivenessOnRewindOrStop),
+  );
+
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
