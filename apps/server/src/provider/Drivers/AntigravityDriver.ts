@@ -134,7 +134,8 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         );
       }
       // Pre-#12008 probes unpacked into the host TEMP. Profile isolation does
-      // not reclaim those. Windows-only: Unix can delete a live unpack.
+      // not reclaim those. Windows-only: Unix can delete a live unpack. The
+      // sweep still skips an extract a live process has open before removal.
       if (platform === "win32") {
         for (const systemTempDirectory of resolveAntigravityLegacySystemTempDirectories(
           yield* HostProcessEnvironment,

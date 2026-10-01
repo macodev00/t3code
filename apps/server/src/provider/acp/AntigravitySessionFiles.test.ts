@@ -1,10 +1,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import { HostProcessExecutablePath } from "@t3tools/shared/hostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Stream from "effect/Stream";
+import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import {
   ANTIGRAVITY_LEGACY_SYSTEM_TEMP_MIN_AGE_MS,
@@ -14,6 +19,36 @@ import {
 
 const STALE_SECONDS = 1;
 const NOW_MS = Date.UTC(2026, 8, 20);
+const LIVE_EXTRACT_HOLDER = [
+  "const fs = require('node:fs');",
+  "fs.openSync(process.env.T3_HOLD_FILE, 'r');",
+  "process.stdout.write('ready\\n');",
+  "setInterval(() => {}, 1_000_000);",
+].join("");
+
+/** Keeps one file open and publishes PyInstaller's `_MEIPASS`. The sweep must see it before removal. */
+const holdLiveExtract = (directory: string, filePath: string) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const nodePath = yield* HostProcessExecutablePath;
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(nodePath, ["-e", LIVE_EXTRACT_HOLDER], {
+        env: { _MEIPASS: directory, T3_HOLD_FILE: filePath },
+        extendEnv: true,
+        stdin: "ignore",
+        stderr: "ignore",
+      }),
+    );
+    const ready = yield* handle.stdout.pipe(
+      Stream.decodeText,
+      Stream.splitLines,
+      Stream.filter((entry) => entry.trim() === "ready"),
+      Stream.runHead,
+    );
+    if (Option.isNone(ready)) {
+      return yield* Effect.die("Live Antigravity extract holder exited before opening the file.");
+    }
+  }).pipe(Effect.timeout("5 seconds"));
 
 it("dedupes TEMP and TMP and ignores empty host temp values", () => {
   expect(
@@ -152,6 +187,57 @@ it.layer(NodeServices.layer)("cleanOrphanedAntigravitySystemTempDirs", (it) => {
 
       expect(yield* fs.exists(boundary)).toBe(true);
       expect(yield* fs.exists(older)).toBe(false);
+    }),
+  );
+
+  it.effect("preserves the contents of a marked _MEI directory a live process still has open", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-antigravity-mei-live-" });
+      const live = yield* makeDir(
+        root,
+        "_MEIlive",
+        [
+          { relative: ["agy_acp_licenses.txt"], body: "agy-live-license" },
+          { relative: ["payload.bin"], body: "open-handle" },
+          { relative: ["notes.txt"], body: "untouched-sibling" },
+          {
+            relative: ["google3", "third_party", "jetski_prod", "localharness"],
+            body: "nested-harness",
+          },
+        ],
+        false,
+      );
+      const orphan = yield* makeDir(
+        root,
+        "_MEIorphan",
+        [{ relative: ["agy_acp_licenses.txt"], body: "orphan" }],
+        false,
+      );
+      const held = path.join(live, "payload.bin");
+      // Only payload.bin is held open. The sibling and nested files are the
+      // ones a recursive delete would unlink before it ever hit a lock.
+      yield* holdLiveExtract(live, held);
+      const pastCutoff = DateTime.toDateUtc(
+        DateTime.makeUnsafe(NOW_MS - ANTIGRAVITY_LEGACY_SYSTEM_TEMP_MIN_AGE_MS - 1000),
+      );
+      yield* fs.utimes(live, pastCutoff, pastCutoff);
+      yield* fs.utimes(orphan, pastCutoff, pastCutoff);
+
+      yield* sweep(root);
+
+      expect(yield* fs.readFileString(path.join(live, "agy_acp_licenses.txt"))).toBe(
+        "agy-live-license",
+      );
+      expect(yield* fs.readFileString(held)).toBe("open-handle");
+      expect(yield* fs.readFileString(path.join(live, "notes.txt"))).toBe("untouched-sibling");
+      expect(
+        yield* fs.readFileString(
+          path.join(live, "google3", "third_party", "jetski_prod", "localharness"),
+        ),
+      ).toBe("nested-harness");
+      expect(yield* fs.exists(orphan)).toBe(false);
     }),
   );
 
