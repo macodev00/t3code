@@ -488,9 +488,15 @@ export const makePendingOpenCodeProvider = (
     });
   });
 
+/**
+ * Checks OpenCode once and returns its provider snapshot. A local install
+ * runs `--version` under `resolveOpenCodeVersionProbeTimeout` before loading
+ * inventory; a timeout is reported with `openCodeVersionProbeTimeoutDetail`.
+ * A configured server URL skips that CLI probe and connects directly.
+ */
 export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatus")(
   /**
-   * Checks OpenCode once and returns its provider snapshot. A local install
+   * Generator passed to `Effect.fn` for that status check. A local install
    * runs `--version` under `resolveOpenCodeVersionProbeTimeout` before loading
    * inventory; a timeout is reported with `openCodeVersionProbeTimeoutDetail`.
    * A configured server URL skips that CLI probe and connects directly.
