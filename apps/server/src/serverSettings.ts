@@ -374,14 +374,16 @@ function configuredCustomModelSlugs(
  * unusable. Commit, PR, branch, and title generation all read this value.
  *
  * The product slug (`DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER`, Claude's
- * `claude-haiku-4-5`) stays the fallback unless this instance configured a
- * custom model that slug is not. A built-in `defaultModelSelection` does not
- * replace it: title, branch, and commit generation keep the cheap product
- * default for users who only picked a chat model.
+ * `claude-haiku-4-5`) stays the fallback when this instance has no custom
+ * model, when that slug is itself configured, or when `defaultModelSelection`
+ * for this instance is a built-in chat model. Title, branch, and commit
+ * generation keep the cheap product default for users who only picked a chat
+ * model.
  *
- * On that broken fallback, a `defaultModelSelection` whose model is one of the
- * instance's custom models wins, options included. Otherwise the first custom
- * slug is used. The product slug remains the last resort.
+ * The hardcoded slug is replaced only on the broken fallback: the instance
+ * has custom models that do not include the product slug, and it did not pin
+ * a built-in thread default. A matching custom `defaultModelSelection` wins,
+ * options included; otherwise the first custom slug is used.
  */
 function fallbackTextGenerationModelSelection(
   settings: ServerSettings,
