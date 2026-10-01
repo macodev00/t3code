@@ -54,6 +54,11 @@ const OPENCODE_VERSION_PROBE_TIMEOUT_UNITS = {
   h: "hours",
 } as const;
 
+/**
+ * Duration label placed in the `--version` timeout message. Whole seconds
+ * render as "1 second" or "N seconds"; every other duration renders as
+ * "N millis". The registry only treats those shapes as a probe timeout.
+ */
 const formatOpenCodeVersionProbeTimeout = (duration: Duration.Duration): string => {
   const millis = Duration.toMillis(duration);
   if (Number.isInteger(millis) && millis % 1000 === 0) {
@@ -79,6 +84,12 @@ const openCodeVersionProbeTimeoutDetail = (timeoutLabel: string): string =>
 export const openCodeVersionProbeTimeoutMessage = (timeoutLabel: string): string =>
   `${OPENCODE_VERSION_PROBE_TIMEOUT_MESSAGE_PREFIX}${timeoutLabel}.`;
 
+/**
+ * Parses `T3CODE_OPENCODE_VERSION_PROBE_TIMEOUT`. Empty or unparseable text
+ * returns undefined so the 4 second default stands. `ms`, `s`, `m`, and `h`
+ * shorthand is accepted. Finite values clamp to 1-60 seconds; non-positive
+ * values are ignored and an infinite value uses the 60 second cap.
+ */
 const parseOpenCodeVersionProbeTimeout = (
   raw: string | undefined,
 ): Duration.Duration | undefined => {
@@ -157,6 +168,11 @@ function normalizedErrorMessage(cause: unknown): string | undefined {
   return normalizeProbeMessage(cause.message);
 }
 
+/**
+ * Maps a version or inventory probe failure onto the snapshot fields the UI
+ * shows. Local `--version` failures use `OPENCODE_CLI_HEALTH_CHECK_FAILURE`,
+ * so a timeout stays identical to `openCodeVersionProbeTimeoutMessage`.
+ */
 function formatOpenCodeProbeError(input: {
   readonly cause: unknown;
   readonly isExternalServer: boolean;
@@ -472,6 +488,12 @@ export const makePendingOpenCodeProvider = (
     });
   });
 
+/**
+ * Checks OpenCode once and returns its provider snapshot. A local install
+ * runs `--version` under `resolveOpenCodeVersionProbeTimeout` before loading
+ * inventory; a timeout is reported with `openCodeVersionProbeTimeoutDetail`.
+ * A configured server URL skips that CLI probe and connects directly.
+ */
 export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatus")(function* (
   openCodeSettings: OpenCodeSettings,
   cwd: string,

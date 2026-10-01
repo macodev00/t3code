@@ -201,6 +201,12 @@ const readOpenCodeVersionProbeTimeoutLabel = (message: string | undefined): stri
   return message === openCodeVersionProbeTimeoutMessage(label) ? label : undefined;
 };
 
+/**
+ * True when `provider` is an installed OpenCode instance whose snapshot failed
+ * with the exact `--version` timeout message and no version. A launch error
+ * that only contains that phrase, including a `binaryPath` with the words, is
+ * not a timeout.
+ */
 const isOpenCodeVersionProbeTimeout = (provider: ServerProvider): boolean => {
   const label = readOpenCodeVersionProbeTimeoutLabel(provider.message);
   if (label === undefined) {
@@ -276,6 +282,13 @@ const carrySavedAntigravityAccount = (
   return { auth: previousProvider.auth, status };
 };
 
+/**
+ * Folds a fresh probe into the previous snapshot. Carries Antigravity account
+ * state forward, and keeps a ready OpenCode version, status, and auth across
+ * an exact `--version` timeout. Models, workspace snapshots, and empty
+ * OpenCode skills or slash commands stay when the new probe did not replace
+ * them.
+ */
 export const mergeProviderSnapshot = (
   previousProvider: ServerProvider | undefined,
   nextProvider: ServerProvider,
