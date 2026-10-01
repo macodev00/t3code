@@ -973,6 +973,65 @@ it.layer(Layer.mergeAll(TestNodeServices, ServerSettingsModule.layerTest(), Test
         assert.deepStrictEqual(merged.skills, previousProvider.skills);
         assert.equal(merged.message, timedOutProvider.message);
         assert.equal(merged.checkedAt, timedOutProvider.checkedAt);
+
+        for (const message of [
+          "Failed to execute OpenCode CLI health check: OpenCode CLI version probe timed out after 1 second.",
+          "Failed to execute OpenCode CLI health check: OpenCode CLI version probe timed out after 60 seconds.",
+          "Failed to execute OpenCode CLI health check: OpenCode CLI version probe timed out after 1500 millis.",
+        ]) {
+          const variant = mergeProviderSnapshot(previousProvider, { ...timedOutProvider, message });
+          assert.equal(variant.status, "ready", message);
+          assert.equal(variant.version, previousProvider.version, message);
+          assert.deepStrictEqual(variant.auth, previousProvider.auth, message);
+        }
+      });
+
+      it("does not treat a launch failure that only contains the timeout phrase as a version-probe timeout", () => {
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make("opencode"),
+          driver: ProviderDriverKind.make("opencode"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated", type: "opencode" },
+          checkedAt: "2026-07-17T00:00:00.000Z",
+          version: "1.18.19",
+          models: [
+            {
+              slug: "github/gpt-5",
+              name: "GPT-5",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const binaryPath = "/opt/version probe timed out/opencode";
+        const messages = [
+          `Failed to execute OpenCode CLI health check: Failed to execute '${binaryPath} --version': spawn ${binaryPath} ENOENT`,
+          "version probe timed out",
+          "Failed to execute OpenCode CLI health check: OpenCode CLI version probe timed out after 4 seconds. See the binary path.",
+          "Note: Failed to execute OpenCode CLI health check: OpenCode CLI version probe timed out after 4 seconds.",
+          "Failed to execute OpenCode CLI health check: OpenCode CLI version probe timed out after 4 seconds",
+        ];
+
+        for (const message of messages) {
+          const failedProvider = {
+            ...previousProvider,
+            status: "error",
+            auth: { status: "unknown" },
+            checkedAt: "2026-07-17T00:01:00.000Z",
+            version: null,
+            models: [],
+            message,
+          } satisfies ServerProvider;
+          const merged = mergeProviderSnapshot(previousProvider, failedProvider);
+          assert.equal(merged.status, "error", message);
+          assert.equal(merged.version, null, message);
+          assert.deepStrictEqual(merged.auth, { status: "unknown" }, message);
+          assert.equal(merged.message, message);
+        }
       });
 
       it("does not keep last-known-good OpenCode state without a ready versioned snapshot", () => {

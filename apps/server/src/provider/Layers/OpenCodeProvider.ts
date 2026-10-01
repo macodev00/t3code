@@ -63,6 +63,22 @@ const formatOpenCodeVersionProbeTimeout = (duration: Duration.Duration): string 
   return `${millis} millis`;
 };
 
+const OPENCODE_CLI_HEALTH_CHECK_FAILURE = "Failed to execute OpenCode CLI health check";
+
+/** Text before the duration label in the exact `--version` timeout message. */
+export const OPENCODE_VERSION_PROBE_TIMEOUT_MESSAGE_PREFIX = `${OPENCODE_CLI_HEALTH_CHECK_FAILURE}: OpenCode CLI version probe timed out after `;
+
+/** Detail text for a `--version` probe that reached its cap. */
+const openCodeVersionProbeTimeoutDetail = (timeoutLabel: string): string =>
+  `OpenCode CLI version probe timed out after ${timeoutLabel}.`;
+
+/**
+ * Exact provider message for that timeout. Snapshot merging must compare this
+ * with `===`; a launch error that only contains the phrase is a different failure.
+ */
+export const openCodeVersionProbeTimeoutMessage = (timeoutLabel: string): string =>
+  `${OPENCODE_VERSION_PROBE_TIMEOUT_MESSAGE_PREFIX}${timeoutLabel}.`;
+
 const parseOpenCodeVersionProbeTimeout = (
   raw: string | undefined,
 ): Duration.Duration | undefined => {
@@ -210,7 +226,7 @@ function formatOpenCodeProbeError(input: {
   const failureLabel =
     input.phase === "inventory"
       ? "Failed to load OpenCode provider inventory"
-      : "Failed to execute OpenCode CLI health check";
+      : OPENCODE_CLI_HEALTH_CHECK_FAILURE;
   return {
     installed: true,
     message: detail ? `${failureLabel}: ${detail}` : `${failureLabel}.`,
@@ -536,7 +552,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
             orElse: () =>
               Effect.fail(
                 new OpenCodeProbeError({
-                  detail: `OpenCode CLI version probe timed out after ${versionProbeTimeoutLabel}.`,
+                  detail: openCodeVersionProbeTimeoutDetail(versionProbeTimeoutLabel),
                 }),
               ),
           }),

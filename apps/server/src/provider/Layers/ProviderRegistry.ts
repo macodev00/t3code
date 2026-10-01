@@ -56,6 +56,10 @@ import {
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
+import {
+  OPENCODE_VERSION_PROBE_TIMEOUT_MESSAGE_PREFIX,
+  openCodeVersionProbeTimeoutMessage,
+} from "./OpenCodeProvider.ts";
 
 const loadProviders = (
   providerSources: ReadonlyArray<ProviderSnapshotSource>,
@@ -173,15 +177,44 @@ const mergeProviderModels = (
     : mergedModels;
 };
 
-// Matches the detail produced by `checkOpenCodeProviderStatus`.
-const OPENCODE_VERSION_PROBE_TIMEOUT_MARKER = "version probe timed out";
+// Labels `formatOpenCodeVersionProbeTimeout` can emit: "1 second", "N seconds",
+// or "N millis" when the cap is not a whole number of seconds.
+const OPENCODE_VERSION_PROBE_TIMEOUT_LABEL = /^(?:1 second|[1-9]\d* seconds|[1-9]\d* millis)$/;
 
-const isOpenCodeVersionProbeTimeout = (provider: ServerProvider): boolean =>
-  provider.driver === ProviderDriverKind.make("opencode") &&
-  provider.installed &&
-  provider.status === "error" &&
-  provider.version === null &&
-  (provider.message?.includes(OPENCODE_VERSION_PROBE_TIMEOUT_MARKER) ?? false);
+/**
+ * Duration label inside the exact `--version` timeout message. A launch
+ * failure whose text merely contains "version probe timed out" — including a
+ * configured `binaryPath` with that phrase — does not match.
+ */
+const readOpenCodeVersionProbeTimeoutLabel = (message: string | undefined): string | undefined => {
+  if (
+    message === undefined ||
+    !message.startsWith(OPENCODE_VERSION_PROBE_TIMEOUT_MESSAGE_PREFIX) ||
+    !message.endsWith(".")
+  ) {
+    return undefined;
+  }
+  const label = message.slice(OPENCODE_VERSION_PROBE_TIMEOUT_MESSAGE_PREFIX.length, -1);
+  if (!OPENCODE_VERSION_PROBE_TIMEOUT_LABEL.test(label)) {
+    return undefined;
+  }
+  return message === openCodeVersionProbeTimeoutMessage(label) ? label : undefined;
+};
+
+const isOpenCodeVersionProbeTimeout = (provider: ServerProvider): boolean => {
+  const label = readOpenCodeVersionProbeTimeoutLabel(provider.message);
+  if (label === undefined) {
+    return false;
+  }
+  const OPENCODE_VERSION_PROBE_TIMEOUT_MARKER = openCodeVersionProbeTimeoutMessage(label);
+  return (
+    provider.driver === ProviderDriverKind.make("opencode") &&
+    provider.installed &&
+    provider.status === "error" &&
+    provider.version === null &&
+    provider.message === OPENCODE_VERSION_PROBE_TIMEOUT_MARKER
+  );
+};
 
 /**
  * A slow OpenCode `--version` must not mark a provider Unavailable after it
