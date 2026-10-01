@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { RuntimeMode } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, type RuntimeMode } from "@t3tools/contracts";
 
 const testState = vi.hoisted(() => {
   let completeProjectFileRead: (value: null) => void = () => undefined;
@@ -259,6 +259,11 @@ import { derivePhysicalProjectKey } from "../logicalProject";
 import { buildPhysicalToLogicalProjectKeyMap } from "../sidebarProjectGrouping";
 import { useNewThreadHandler } from "./useHandleNewThread";
 
+const groupingSettings = {
+  sidebarProjectGroupingMode: "repository" as const,
+  sidebarProjectGroupingOverrides: {},
+};
+
 /** Logical key New Chat should register: the group key from `buildProjectGroups`, not a re-derivation. */
 function expectedLogicalProjectKey(project: {
   environmentId: string;
@@ -266,10 +271,19 @@ function expectedLogicalProjectKey(project: {
 }): string {
   return (
     buildPhysicalToLogicalProjectKeyMap({
-      projects: testState.projects,
-      settings: {},
-      primaryEnvironmentId: "environment-primary",
-    }).get(derivePhysicalProjectKey(project)) ?? "remote-project"
+      projects: testState.projects.map((entry) => ({
+        ...entry,
+        id: ProjectId.make(entry.id),
+        environmentId: EnvironmentId.make(entry.environmentId),
+      })),
+      settings: groupingSettings,
+      primaryEnvironmentId: EnvironmentId.make("environment-primary"),
+    }).get(
+      derivePhysicalProjectKey({
+        environmentId: EnvironmentId.make(project.environmentId),
+        workspaceRoot: project.workspaceRoot,
+      }),
+    ) ?? "remote-project"
   );
 }
 
