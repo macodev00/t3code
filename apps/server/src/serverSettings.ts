@@ -333,6 +333,11 @@ function restoreUsedProviders(
   };
 }
 
+/**
+ * Keep an already-enabled text-generation selection. Commit, PR, branch, and
+ * title generation read `textGenerationModelSelection` after this step, so a
+ * disabled instance is replaced by `fallbackTextGenerationProvider`.
+ */
 function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
   return isModelSelectionProviderEnabled(settings, settings.textGenerationModelSelection)
     ? settings
@@ -414,15 +419,39 @@ function fallbackTextGenerationModelSelection(
     : createModelSelection(instanceId, customModel);
 }
 
+/**
+ * Whether this driver is the text-generation fallback.
+ *
+ * An explicit provider instance wins over the legacy providers map, which
+ * decodes to defaults (codex enabled) when the Providers UI has only written
+ * `providerInstances`.
+ */
+function isEnabledTextGenerationFallback(
+  settings: ServerSettings,
+  driver: string,
+  provider: ServerSettings["providers"][keyof ServerSettings["providers"]],
+): boolean {
+  const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
+  return instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
+}
+
+/**
+ * First enabled provider, and the model one-shot text generation should use
+ * when the stored selection's instance is unusable.
+ *
+ * Walks the legacy providers map in key order and keeps the first driver
+ * `isEnabledTextGenerationFallback` accepts. The model comes from
+ * `fallbackTextGenerationModelSelection`.
+ */
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  // Same precedence as isModelSelectionProviderEnabled: an explicit provider
-  // instance wins over the legacy providers map, which decodes to defaults
-  // (codex enabled) when the Providers UI has only written providerInstances.
-  const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
-    const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
-    return instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
-  });
-  const fallback = fallbackEntry ? ProviderDriverKind.make(fallbackEntry[0]) : undefined;
+  let fallbackDriver: string | undefined;
+  for (const [driver, provider] of Object.entries(settings.providers)) {
+    if (isEnabledTextGenerationFallback(settings, driver, provider)) {
+      fallbackDriver = driver;
+      break;
+    }
+  }
+  const fallback = fallbackDriver ? ProviderDriverKind.make(fallbackDriver) : undefined;
   if (!fallback) {
     return settings;
   }
