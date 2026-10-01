@@ -744,13 +744,14 @@ describe("ApnsDeliveries", () => {
         },
       ],
     };
+    const waitingAggregateJson = JSON.stringify(waitingAggregate);
 
     return Effect.gen(function* () {
       const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
       const result = yield* deliveries.sendForTarget({
         target: {
           ...target,
-          last_aggregate_json: JSON.stringify(waitingAggregate),
+          last_aggregate_json: waitingAggregateJson,
           last_live_activity_delivery_at: "1970-01-01T00:00:04.000Z",
         },
         aggregate: laterWaitingAggregate,
@@ -787,13 +788,14 @@ describe("ApnsDeliveries", () => {
       ...waitingAggregate,
       activities: [runningRow, waitingRow],
     };
+    const waitingAggregateJson = JSON.stringify(waitingAggregate);
 
     return Effect.gen(function* () {
       const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
       const result = yield* deliveries.sendForTarget({
         target: {
           ...target,
-          last_aggregate_json: JSON.stringify(waitingAggregate),
+          last_aggregate_json: waitingAggregateJson,
           last_live_activity_delivery_at: "1970-01-01T00:00:04.000Z",
         },
         aggregate: reorderedAggregate,
@@ -839,13 +841,14 @@ describe("ApnsDeliveries", () => {
       updatedAt: "1970-01-01T00:00:04.000Z",
       activities: [waitingRow, newWaitingRow],
     };
+    const previousAggregateJson = JSON.stringify(previousAggregate);
 
     return Effect.gen(function* () {
       const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
       const result = yield* deliveries.sendForTarget({
         target: {
           ...target,
-          last_aggregate_json: JSON.stringify(previousAggregate),
+          last_aggregate_json: previousAggregateJson,
           last_live_activity_delivery_at: "1970-01-01T00:00:04.000Z",
         },
         aggregate: nextAggregate,
@@ -906,13 +909,14 @@ describe("ApnsDeliveries", () => {
         updatedAt: "1970-01-01T00:00:04.000Z",
         activities: [waitingRow, replacementRunningRow],
       };
+      const previousAggregateJson = JSON.stringify(previousAggregate);
 
       return Effect.gen(function* () {
         const deliveries = yield* ApnsDeliveries.ApnsDeliveries;
         const result = yield* deliveries.sendForTarget({
           target: {
             ...target,
-            last_aggregate_json: JSON.stringify(previousAggregate),
+            last_aggregate_json: previousAggregateJson,
             last_live_activity_delivery_at: "1970-01-01T00:00:04.000Z",
           },
           aggregate: nextAggregate,
