@@ -547,7 +547,7 @@ describe("ModelManifest service", () => {
     ),
   );
 
-  it.live("does not fetch when provider update checks are disabled", () =>
+  it.live("fetches the remote manifest when provider update checks are disabled", () =>
     Effect.gen(function* () {
       let fetchCount = 0;
       const service = yield* make.pipe(
@@ -558,9 +558,12 @@ describe("ModelManifest service", () => {
           }),
         ),
       );
-      assert.deepStrictEqual(yield* service.refresh, BUNDLED_MODEL_MANIFEST);
-      assert.deepStrictEqual(yield* service.forceRefresh, BUNDLED_MODEL_MANIFEST);
-      assert.strictEqual(fetchCount, 0);
+      assert.deepStrictEqual(yield* service.refresh, REMOTE_MANIFEST);
+      assert.strictEqual(fetchCount, 1);
+      // Explicit refresh (Settings → Providers → Refresh provider status)
+      // uses the same path and must stay independent of the CLI check switch.
+      assert.deepStrictEqual(yield* service.forceRefresh, REMOTE_MANIFEST);
+      assert.strictEqual(fetchCount, 2);
     }).pipe(
       Effect.scoped,
       Effect.provide(
