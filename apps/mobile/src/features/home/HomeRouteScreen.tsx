@@ -21,6 +21,7 @@ import { useHomeThreadSelection } from "./home-thread-navigation";
 import { buildHomeProjectScopes } from "./homeThreadList";
 import { usePendingTaskListActions } from "./usePendingTaskListActions";
 import { useThreadListActions } from "./useThreadListActions";
+import { compactHomeNativeHeaderShown } from "./compact-home-header";
 import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle";
 
 /* ─── Route screen ───────────────────────────────────────────────────── */
@@ -150,8 +151,10 @@ export function HomeRouteScreen() {
     >
       <>
         {/* Restore the header after leaving split view; screen options are
-            shallow-merged. The brand slot also doubles as the connection
-            status surface while an environment reconnects. */}
+            shallow-merged. Android compact Home draws its own toolbar, so the
+            native bar stays hidden across those width changes. The brand slot
+            also doubles as the connection status surface while an environment
+            reconnects. */}
         <NativeStackScreenOptions
           optionsVersion={windowWidth}
           options={{
@@ -163,7 +166,7 @@ export function HomeRouteScreen() {
                   params: { screen: "SettingsEnvironments" },
                 }),
             }),
-            headerShown: true,
+            headerShown: compactHomeNativeHeaderShown(Platform.OS),
           }}
         />
         <HomeHeader
