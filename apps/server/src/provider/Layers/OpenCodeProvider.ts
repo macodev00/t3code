@@ -142,6 +142,10 @@ class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
   readonly detail: string;
 }> {}
 
+/**
+ * Drops blank text and Effect's generic `try` / `tryPromise` wrappers so a
+ * probe failure keeps the detail the snapshot can show.
+ */
 function normalizeProbeMessage(message: string): string | undefined {
   const trimmed = message.trim();
   if (trimmed.length === 0) {
@@ -156,6 +160,11 @@ function normalizeProbeMessage(message: string): string | undefined {
   return trimmed;
 }
 
+/**
+ * Detail string for a probe failure. `OpenCodeProbeError` contributes its
+ * `detail`; any other `Error` contributes `message`. Both go through
+ * `normalizeProbeMessage`.
+ */
 function normalizedErrorMessage(cause: unknown): string | undefined {
   if (cause instanceof OpenCodeProbeError) {
     return normalizeProbeMessage(cause.detail);
