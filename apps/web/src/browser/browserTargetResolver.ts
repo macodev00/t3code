@@ -22,12 +22,14 @@ interface PreviewEnvironmentConnection {
   readonly target?: ConnectionTarget | undefined;
 }
 
+/** Prepared connection for an environment, including the target used for host selection. */
 const readEnvironmentConnection = (environmentId: EnvironmentId): PreviewEnvironmentConnection => {
   const connection = readPreparedConnection(environmentId);
   if (!connection) throw new Error(`Environment ${environmentId} is not connected.`);
   return connection;
 };
 
+/** True in the desktop renderer, which shares loopback with a local primary backend. */
 const isDesktopRenderer = (): boolean =>
   typeof window !== "undefined" && window.desktopBridge !== undefined;
 
@@ -45,6 +47,11 @@ const prefersClientLoopback = (connection: PreviewEnvironmentConnection): boolea
   return target._tag === "PrimaryConnectionTarget" && isDesktopRenderer();
 };
 
+/**
+ * Builds the preview URL for an environment port. Loopback and desktop-local
+ * connections stay on localhost; other private-network hosts keep the
+ * environment address.
+ */
 const resolveEnvironmentPortTarget = (
   environmentId: EnvironmentId,
   target: Extract<BrowserNavigationTarget, { readonly kind: "environment-port" }>,
@@ -86,6 +93,11 @@ const resolveEnvironmentPortTarget = (
   };
 };
 
+/**
+ * Resolves a browser navigation target against the environment connection.
+ * Explicit URLs are returned unchanged; environment ports are mapped to
+ * localhost or the environment host.
+ */
 export function resolveBrowserNavigationTarget(
   environmentId: EnvironmentId,
   target: BrowserNavigationTarget,
@@ -105,6 +117,11 @@ export function resolveBrowserNavigationTarget(
   );
 }
 
+/**
+ * Rewrites a discovered loopback server onto the environment host, or keeps
+ * localhost when that connection shares the client's loopback namespace.
+ * Non-loopback URLs and values that fail to parse are returned unchanged.
+ */
 export function resolveDiscoveredServerUrl(environmentId: EnvironmentId, rawUrl: string): string {
   try {
     const normalizedUrl = normalizePreviewUrl(rawUrl);
