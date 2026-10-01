@@ -231,7 +231,7 @@ function assistantCompletionDelta(input: {
   if (input.bufferedText.length > 0) {
     return input.bufferedText;
   }
-  if (input.projectedText.length === 0 && (detail?.trim().length ?? 0) > 0) {
+  if (input.projectedText.length === 0 && detail !== undefined && detail.trim().length > 0) {
     return detail;
   }
   return "";
