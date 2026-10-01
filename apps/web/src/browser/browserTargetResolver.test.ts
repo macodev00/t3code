@@ -1,12 +1,33 @@
+import {
+  BearerConnectionTarget,
+  PrimaryConnectionTarget,
+} from "@t3tools/client-runtime/connection";
 import { EnvironmentId } from "@t3tools/contracts";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { desktopLocalConnectionId } from "~/connection/desktopLocal";
 
 const readPreparedConnection = vi.fn();
 
 vi.mock("~/state/session", () => ({ readPreparedConnection }));
 
+const environmentId = EnvironmentId.make("environment-1");
+
+const wslDesktopConnection = {
+  httpBaseUrl: "http://172.24.66.27:3773",
+  target: new BearerConnectionTarget({
+    connectionId: desktopLocalConnectionId("wsl:Ubuntu"),
+    environmentId,
+    label: "WSL (Ubuntu)",
+  }),
+};
+
 describe("browser target resolver", () => {
   beforeEach(() => readPreparedConnection.mockReset());
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
   it("maps environment ports onto a private network host", async () => {
     readPreparedConnection.mockReturnValue({ httpBaseUrl: "http://192.168.1.25:3773" });
@@ -158,6 +179,99 @@ describe("browser target resolver", () => {
     expect(
       resolveDiscoveredServerUrl(EnvironmentId.make("environment-1"), "localhost:3000/app"),
     ).toBe("http://192.168.1.25:3000/app");
+  });
+
+  it("keeps discovered loopback servers on localhost for a desktop-local WSL environment", async () => {
+    readPreparedConnection.mockReturnValue(wslDesktopConnection);
+    const { resolveDiscoveredServerUrl, resolveBrowserNavigationTarget } =
+      await import("./browserTargetResolver");
+    expect(resolveDiscoveredServerUrl(environmentId, "localhost:3001")).toBe(
+      "http://localhost:3001/",
+    );
+    expect(resolveDiscoveredServerUrl(environmentId, "http://127.0.0.1:3001/app?x=1#top")).toBe(
+      "http://localhost:3001/app?x=1#top",
+    );
+    expect(resolveDiscoveredServerUrl(environmentId, "0.0.0.0:3000/app")).toBe(
+      "http://localhost:3000/app",
+    );
+    expect(
+      resolveBrowserNavigationTarget(environmentId, {
+        kind: "environment-port",
+        port: 3001,
+        path: "/",
+      }),
+    ).toMatchObject({
+      resolvedUrl: "http://localhost:3001/",
+      resolutionKind: "direct",
+    });
+  });
+
+  it("maps loopback discoveries onto a private primary host opened outside the desktop app", async () => {
+    readPreparedConnection.mockReturnValue({
+      httpBaseUrl: "http://172.24.66.27:3773",
+      target: new PrimaryConnectionTarget({
+        environmentId,
+        label: "LAN",
+        httpBaseUrl: "http://172.24.66.27:3773",
+        wsBaseUrl: "ws://172.24.66.27:3773",
+      }),
+    });
+    const { resolveDiscoveredServerUrl } = await import("./browserTargetResolver");
+    expect(resolveDiscoveredServerUrl(environmentId, "localhost:3001")).toBe(
+      "http://172.24.66.27:3001/",
+    );
+  });
+
+  it("keeps discovered loopback servers on localhost for a wsl-only desktop primary", async () => {
+    vi.stubGlobal("window", { desktopBridge: {} });
+    readPreparedConnection.mockReturnValue({
+      httpBaseUrl: "http://172.24.66.27:3773",
+      target: new PrimaryConnectionTarget({
+        environmentId,
+        label: "WSL",
+        httpBaseUrl: "http://172.24.66.27:3773",
+        wsBaseUrl: "ws://172.24.66.27:3773",
+      }),
+    });
+    const { resolveDiscoveredServerUrl } = await import("./browserTargetResolver");
+    expect(resolveDiscoveredServerUrl(environmentId, "http://localhost:3001/")).toBe(
+      "http://localhost:3001/",
+    );
+  });
+
+  it("still maps loopback discoveries onto a saved remote host from the desktop renderer", async () => {
+    vi.stubGlobal("window", { desktopBridge: {} });
+    readPreparedConnection.mockReturnValue({
+      httpBaseUrl: "http://192.168.1.25:3773",
+      target: new BearerConnectionTarget({
+        connectionId: "saved-lan",
+        environmentId,
+        label: "LAN",
+      }),
+    });
+    const { resolveDiscoveredServerUrl, resolveBrowserNavigationTarget } =
+      await import("./browserTargetResolver");
+    expect(resolveDiscoveredServerUrl(environmentId, "localhost:3000/app")).toBe(
+      "http://192.168.1.25:3000/app",
+    );
+    expect(
+      resolveBrowserNavigationTarget(environmentId, {
+        kind: "environment-port",
+        port: 3000,
+        path: "/app",
+      }).resolvedUrl,
+    ).toBe("http://192.168.1.25:3000/app");
+  });
+
+  it("leaves non-loopback server URLs on their own host for a desktop-local WSL environment", async () => {
+    readPreparedConnection.mockReturnValue(wslDesktopConnection);
+    const { resolveDiscoveredServerUrl } = await import("./browserTargetResolver");
+    expect(resolveDiscoveredServerUrl(environmentId, "http://192.168.1.50:3001/docs")).toBe(
+      "http://192.168.1.50:3001/docs",
+    );
+    expect(resolveDiscoveredServerUrl(environmentId, "http://172.24.66.27:3001/")).toBe(
+      "http://172.24.66.27:3001/",
+    );
   });
 
   it("preserves localhost server-picker values when the prepared base is 127.0.0.1", async () => {

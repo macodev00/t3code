@@ -1,3 +1,4 @@
+import type { ConnectionTarget } from "@t3tools/client-runtime/connection";
 import type {
   BrowserNavigationTarget,
   EnvironmentId,
@@ -6,6 +7,7 @@ import type {
 import { isLoopbackHost, normalizePreviewUrl } from "@t3tools/shared/preview";
 import { isLocalLoopbackHost, isPrivateNetworkHost } from "@t3tools/shared/hostClassification";
 
+import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { readPreparedConnection } from "~/state/session";
 
 export {
@@ -15,19 +17,42 @@ export {
   isPublicFaviconHost,
 } from "@t3tools/shared/hostClassification";
 
-const readEnvironmentUrl = (environmentId: EnvironmentId): URL => {
+interface PreviewEnvironmentConnection {
+  readonly httpBaseUrl: string;
+  readonly target?: ConnectionTarget | undefined;
+}
+
+const readEnvironmentConnection = (environmentId: EnvironmentId): PreviewEnvironmentConnection => {
   const connection = readPreparedConnection(environmentId);
   if (!connection) throw new Error(`Environment ${environmentId} is not connected.`);
-  return new URL(connection.httpBaseUrl);
+  return connection;
+};
+
+const isDesktopRenderer = (): boolean =>
+  typeof window !== "undefined" && window.desktopBridge !== undefined;
+
+/**
+ * Desktop-local backends share the renderer's loopback namespace. WSL2 NAT
+ * advertises the distro eth0 address for the T3 server, which is bound on
+ * 0.0.0.0 because wslhost forwarding is flaky for that process. A dev server
+ * bound only to 127.0.0.1 is reached from the Windows webview at localhost.
+ * Saved remote hosts keep their own address.
+ */
+const prefersClientLoopback = (connection: PreviewEnvironmentConnection): boolean => {
+  const target = connection.target;
+  if (!target) return false;
+  if (isDesktopLocalConnectionTarget(target)) return true;
+  return target._tag === "PrimaryConnectionTarget" && isDesktopRenderer();
 };
 
 const resolveEnvironmentPortTarget = (
   environmentId: EnvironmentId,
   target: Extract<BrowserNavigationTarget, { readonly kind: "environment-port" }>,
-  environmentUrl: URL,
+  connection: PreviewEnvironmentConnection,
   requestedUrl?: string,
   sourceUrl?: URL,
 ): PreviewUrlResolution => {
+  const environmentUrl = new URL(connection.httpBaseUrl);
   if (!isPrivateNetworkHost(environmentUrl.hostname)) {
     throw new Error(
       "This environment port needs the planned authenticated preview gateway; its server address is not directly private-network reachable.",
@@ -36,9 +61,12 @@ const resolveEnvironmentPortTarget = (
   const protocol = target.protocol ?? "http";
   const path = target.path?.startsWith("/") ? target.path : `/${target.path ?? ""}`;
   const normalizedEnvironmentHost = environmentUrl.hostname.replace(/^\[|\]$/g, "");
-  // Local loopback environments should advertise `localhost` so Chromium
-  // dual-stack lookup can reach a Vite server bound only to ::1 or 127.0.0.1.
-  const resolvedHost = isLocalLoopbackHost(normalizedEnvironmentHost)
+  // Loopback environments, and desktop-local ones reached through a
+  // non-loopback advertisement, use `localhost` so Chromium's dual-stack
+  // lookup can reach a server bound only to ::1 or 127.0.0.1.
+  const preserveLoopback =
+    prefersClientLoopback(connection) || isLocalLoopbackHost(normalizedEnvironmentHost);
+  const resolvedHost = preserveLoopback
     ? "localhost"
     : normalizedEnvironmentHost.includes(":")
       ? `[${normalizedEnvironmentHost}]`
@@ -53,9 +81,7 @@ const resolveEnvironmentPortTarget = (
   return {
     requestedUrl: requestedUrl ?? `${protocol}://localhost:${target.port}${path}`,
     resolvedUrl: resolved.toString(),
-    resolutionKind: isLocalLoopbackHost(normalizedEnvironmentHost)
-      ? "direct"
-      : "direct-private-network",
+    resolutionKind: preserveLoopback ? "direct" : "direct-private-network",
     environmentId,
   };
 };
@@ -72,7 +98,11 @@ export function resolveBrowserNavigationTarget(
       environmentId,
     };
   }
-  return resolveEnvironmentPortTarget(environmentId, target, readEnvironmentUrl(environmentId));
+  return resolveEnvironmentPortTarget(
+    environmentId,
+    target,
+    readEnvironmentConnection(environmentId),
+  );
 }
 
 export function resolveDiscoveredServerUrl(environmentId: EnvironmentId, rawUrl: string): string {
@@ -88,7 +118,7 @@ export function resolveDiscoveredServerUrl(environmentId: EnvironmentId, rawUrl:
         protocol: parsed.protocol === "https:" ? "https" : "http",
         path: `${parsed.pathname}${parsed.search}${parsed.hash}`,
       },
-      readEnvironmentUrl(environmentId),
+      readEnvironmentConnection(environmentId),
       rawUrl,
       parsed,
     ).resolvedUrl;
