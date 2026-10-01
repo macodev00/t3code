@@ -173,6 +173,44 @@ const mergeProviderModels = (
     : mergedModels;
 };
 
+// Matches the detail produced by `checkOpenCodeProviderStatus`.
+const OPENCODE_VERSION_PROBE_TIMEOUT_MARKER = "version probe timed out";
+
+const isOpenCodeVersionProbeTimeout = (provider: ServerProvider): boolean =>
+  provider.driver === ProviderDriverKind.make("opencode") &&
+  provider.installed &&
+  provider.status === "error" &&
+  provider.version === null &&
+  (provider.message?.includes(OPENCODE_VERSION_PROBE_TIMEOUT_MARKER) ?? false);
+
+/**
+ * A slow OpenCode `--version` must not mark a provider Unavailable after it
+ * has already reported a version. The probe still dies at its cap. Only a
+ * timeout against a previous ready, versioned snapshot keeps status, version,
+ * and auth. A first probe, a missing binary, and any other failure replace
+ * the snapshot.
+ */
+const carryLastKnownOpenCodeOnVersionProbeTimeout = (
+  previousProvider: ServerProvider,
+  nextProvider: ServerProvider,
+): Pick<ServerProvider, "auth" | "status" | "version"> | undefined => {
+  if (
+    !isOpenCodeVersionProbeTimeout(nextProvider) ||
+    previousProvider.driver !== ProviderDriverKind.make("opencode") ||
+    previousProvider.status !== "ready" ||
+    previousProvider.version === null ||
+    previousProvider.version.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    auth: previousProvider.auth,
+    status: previousProvider.status,
+    version: previousProvider.version,
+  };
+};
+
 /**
  * Antigravity's health check only initializes the agent, so after a server
  * restart it reports the account as unchecked. The saved Google login still
@@ -213,12 +251,17 @@ export const mergeProviderSnapshot = (
     return nextProvider;
   }
   const savedAccount = carrySavedAntigravityAccount(previousProvider, nextProvider);
+  const lastKnownOpenCode = carryLastKnownOpenCodeOnVersionProbeTimeout(
+    previousProvider,
+    nextProvider,
+  );
   // "Google account access is not checked yet" describes the probe, not the
   // account; it must not outlive the state it explained.
   const { message: _uncheckedMessage, ...nextWithoutMessage } = nextProvider;
   return {
     ...(savedAccount?.status === "ready" ? nextWithoutMessage : nextProvider),
     ...savedAccount,
+    ...lastKnownOpenCode,
     models: mergeProviderModels(nextProvider, previousProvider.models, nextProvider.models),
     ...(nextProvider.workspaceSnapshots !== undefined
       ? { workspaceSnapshots: nextProvider.workspaceSnapshots }

@@ -8,7 +8,9 @@ import {
 import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
@@ -33,7 +35,80 @@ const OPENCODE_PRESENTATION = {
   displayName: "OpenCode",
   showInteractionModeToggle: false,
 } as const;
-const OPENCODE_VERSION_PROBE_TIMEOUT = "4 seconds";
+
+/**
+ * Product default from #8750. It stays 4 seconds so a hung `--version` is
+ * still killed quickly (#8681). Slow hosts opt in with
+ * `T3CODE_OPENCODE_VERSION_PROBE_TIMEOUT` instead of changing it.
+ */
+const DEFAULT_OPENCODE_VERSION_PROBE_TIMEOUT = Duration.seconds(4);
+const MIN_OPENCODE_VERSION_PROBE_TIMEOUT = Duration.seconds(1);
+const MAX_OPENCODE_VERSION_PROBE_TIMEOUT = Duration.seconds(60);
+export const OPENCODE_VERSION_PROBE_TIMEOUT_ENV = "T3CODE_OPENCODE_VERSION_PROBE_TIMEOUT";
+const OPENCODE_VERSION_PROBE_TIMEOUT_SHORTHAND = /^(?<amount>\d+(?:\.\d+)?)\s*(?<unit>ms|s|m|h)$/i;
+
+const OPENCODE_VERSION_PROBE_TIMEOUT_UNITS = {
+  ms: "millis",
+  s: "seconds",
+  m: "minutes",
+  h: "hours",
+} as const;
+
+const formatOpenCodeVersionProbeTimeout = (duration: Duration.Duration): string => {
+  const millis = Duration.toMillis(duration);
+  if (Number.isInteger(millis) && millis % 1000 === 0) {
+    const seconds = millis / 1000;
+    return seconds === 1 ? "1 second" : `${seconds} seconds`;
+  }
+  return `${millis} millis`;
+};
+
+const parseOpenCodeVersionProbeTimeout = (
+  raw: string | undefined,
+): Duration.Duration | undefined => {
+  const trimmed = raw?.trim() ?? "";
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+
+  const shorthand = OPENCODE_VERSION_PROBE_TIMEOUT_SHORTHAND.exec(trimmed);
+  const shorthandAmount = shorthand?.groups?.amount;
+  const shorthandUnit = shorthand?.groups?.unit?.toLowerCase();
+  const normalized =
+    shorthandAmount !== undefined &&
+    shorthandUnit !== undefined &&
+    shorthandUnit in OPENCODE_VERSION_PROBE_TIMEOUT_UNITS
+      ? `${shorthandAmount} ${OPENCODE_VERSION_PROBE_TIMEOUT_UNITS[shorthandUnit as keyof typeof OPENCODE_VERSION_PROBE_TIMEOUT_UNITS]}`
+      : trimmed;
+  const decoded = Duration.fromInput(normalized as Duration.Input);
+  if (Option.isNone(decoded)) {
+    return undefined;
+  }
+
+  const millis = Duration.toMillis(decoded.value);
+  // Non-positive values fall through to the 4 second default. Infinity is
+  // finite-capped with the rest of the range.
+  if (!Number.isFinite(millis) || millis <= 0) {
+    return millis > 0 ? MAX_OPENCODE_VERSION_PROBE_TIMEOUT : undefined;
+  }
+  if (millis < Duration.toMillis(MIN_OPENCODE_VERSION_PROBE_TIMEOUT)) {
+    return MIN_OPENCODE_VERSION_PROBE_TIMEOUT;
+  }
+  if (millis > Duration.toMillis(MAX_OPENCODE_VERSION_PROBE_TIMEOUT)) {
+    return MAX_OPENCODE_VERSION_PROBE_TIMEOUT;
+  }
+  return decoded.value;
+};
+
+/**
+ * `T3CODE_OPENCODE_VERSION_PROBE_TIMEOUT` overrides the 4 second default.
+ * Invalid text is ignored. Accepted values are clamped to 1-60 seconds.
+ */
+export const resolveOpenCodeVersionProbeTimeout = (
+  environment?: NodeJS.ProcessEnv,
+): Duration.Duration =>
+  parseOpenCodeVersionProbeTimeout(environment?.[OPENCODE_VERSION_PROBE_TIMEOUT_ENV]) ??
+  DEFAULT_OPENCODE_VERSION_PROBE_TIMEOUT;
 
 class OpenCodeProbeError extends Data.TaggedError("OpenCodeProbeError")<{
   readonly cause?: unknown;
@@ -393,6 +468,8 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   const openCodeRuntime = yield* OpenCodeRuntime;
   const serverOwner = yield* OpenCodeServerOwner.OpenCodeServerOwner;
   const resolvedEnvironment = environment ?? process.env;
+  const versionProbeTimeout = resolveOpenCodeVersionProbeTimeout(resolvedEnvironment);
+  const versionProbeTimeoutLabel = formatOpenCodeVersionProbeTimeout(versionProbeTimeout);
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const customModels = openCodeSettings.customModels;
   const isExternalServer = openCodeSettings.serverUrl.trim().length > 0;
@@ -455,11 +532,11 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
             (cause) => new OpenCodeProbeError({ cause, detail: openCodeRuntimeErrorDetail(cause) }),
           ),
           Effect.timeoutOrElse({
-            duration: OPENCODE_VERSION_PROBE_TIMEOUT,
+            duration: versionProbeTimeout,
             orElse: () =>
               Effect.fail(
                 new OpenCodeProbeError({
-                  detail: `OpenCode CLI version probe timed out after ${OPENCODE_VERSION_PROBE_TIMEOUT}.`,
+                  detail: `OpenCode CLI version probe timed out after ${versionProbeTimeoutLabel}.`,
                 }),
               ),
           }),
