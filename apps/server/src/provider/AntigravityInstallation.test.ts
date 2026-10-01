@@ -23,7 +23,6 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 
 import {
   makeAntigravityInstallation,
@@ -754,9 +753,9 @@ it.layer(NodeServices.layer)("Antigravity installation", (it) => {
           source: "override",
           managedVersionDirectory: null,
         });
-        const relativeFromHome = NodePath.relative(NodeOS.homedir(), externalDirectory);
+        const relativeFromHome = path.relative(NodeOS.homedir(), externalDirectory);
         expect(
-          yield* installation.resolve(`~/${relativeFromHome.split(NodePath.sep).join("/")}`),
+          yield* installation.resolve(`~/${relativeFromHome.split(path.sep).join("/")}`),
         ).toMatchObject({
           executablePath: externalExecutable,
           source: "override",
