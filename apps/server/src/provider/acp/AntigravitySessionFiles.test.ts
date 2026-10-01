@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -138,8 +139,12 @@ it.layer(NodeServices.layer)("cleanOrphanedAntigravitySystemTempDirs", (it) => {
         [{ relative: ["agy_acp_licenses.txt"], body: "agy" }],
         false,
       );
-      const cutoff = new Date(NOW_MS - ANTIGRAVITY_LEGACY_SYSTEM_TEMP_MIN_AGE_MS);
-      const pastCutoff = new Date(NOW_MS - ANTIGRAVITY_LEGACY_SYSTEM_TEMP_MIN_AGE_MS - 1000);
+      const cutoff = DateTime.toDateUtc(
+        DateTime.makeUnsafe(NOW_MS - ANTIGRAVITY_LEGACY_SYSTEM_TEMP_MIN_AGE_MS),
+      );
+      const pastCutoff = DateTime.toDateUtc(
+        DateTime.makeUnsafe(NOW_MS - ANTIGRAVITY_LEGACY_SYSTEM_TEMP_MIN_AGE_MS - 1000),
+      );
       yield* fs.utimes(boundary, cutoff, cutoff);
       yield* fs.utimes(older, pastCutoff, pastCutoff);
 
