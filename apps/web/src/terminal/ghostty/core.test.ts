@@ -379,6 +379,7 @@ describe("GhosttyTerminalCore snapshots", () => {
   });
 });
 
+/** Keyboard event stub. Unset modifiers are false and locks are reported off. */
 function terminalKey(
   partial: Partial<KeyboardEvent> & Pick<KeyboardEvent, "code" | "key">,
 ): KeyboardEvent {
@@ -394,6 +395,11 @@ function terminalKey(
   } as KeyboardEvent;
 }
 
+/**
+ * Run `run` while `navigator.platform` is `platform`, then restore the previous
+ * own-property descriptor. `encodeKey` reads the platform when deciding whether
+ * Option produced a character.
+ */
 function withPlatform<T>(platform: string, run: () => T): T {
   const descriptor = Object.getOwnPropertyDescriptor(navigator, "platform");
   Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
@@ -409,6 +415,7 @@ function withPlatform<T>(platform: string, run: () => T): T {
 describe("GhosttyTerminalCore.encodeKey", () => {
   const cores = new Set<GhosttyTerminalCore>();
 
+  /** Small terminal used to assert the bytes `encodeKey` writes. */
   async function createCore() {
     const core = await GhosttyTerminalCore.create(
       12,

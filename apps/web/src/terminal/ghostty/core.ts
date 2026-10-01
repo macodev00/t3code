@@ -472,6 +472,14 @@ export class GhosttyTerminalCore {
     );
   }
 
+  /**
+   * Bytes libghostty-vt emits for one key event.
+   *
+   * On macOS, a lone Option that produced a character (German Option+L is `@`)
+   * is consumed and cleared from the raw modifier mask before encoding, so the
+   * character is written instead of an Alt sequence. Ctrl, Meta, Option+arrow,
+   * and a lone Shift stay intact.
+   */
   encodeKey(event: KeyboardEvent, action: "press" | "release" = "press"): string {
     this.ensureActive();
     this.runtime.call("ghostty_key_encoder_setopt_from_terminal", this.keyEncoder, this.terminal);

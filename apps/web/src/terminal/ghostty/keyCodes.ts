@@ -218,6 +218,11 @@ const shiftedToUnshiftedCharacter = new Map<string, string>([
 
 let keyboardLayoutMapPromise: Promise<GhosttyKeyboardLayoutMap | undefined> | undefined;
 
+/**
+ * Browser keyboard layout, cached for the page. Used to recover the unshifted
+ * base key of an Option-composed character such as German Option+L (`@`).
+ * Resolves to `undefined` when the Keyboard API is missing or rejects.
+ */
 export function loadGhosttyKeyboardLayoutMap(): Promise<GhosttyKeyboardLayoutMap | undefined> {
   if (keyboardLayoutMapPromise) return keyboardLayoutMapPromise;
   const browserNavigator = globalThis.navigator as
@@ -247,23 +252,35 @@ interface GhosttyKeyModState {
   getModifierState?(key: string): boolean;
 }
 
+/**
+ * `navigator.platform` for the current host, or `""` when there is no DOM.
+ * Callers pass an explicit platform in tests so Option handling can be checked
+ * without stubbing the browser.
+ */
 function ghosttyHostPlatform(): string {
   return typeof navigator === "undefined" ? "" : (navigator.platform ?? "");
 }
 
-// Same host check as isMacPlatform. Kept local so key encoding does not import
-// the app utility graph.
+/**
+ * True when `platform` is a macOS or iOS `navigator.platform` string.
+ * Same host check as `isMacPlatform`. Kept local so key encoding does not
+ * import the app utility graph. Option is only consumed on these hosts.
+ */
 function isGhosttyMacPlatform(platform: string): boolean {
   return /mac|iphone|ipad|ipod/i.test(platform);
 }
 
-// Browsers do not report which modifiers a layout consumed. A lone Shift is
-// consumed so a shifted character encodes as text. On macOS a lone Option is
-// consumed too: this WASM build is not Darwin, so it ignores macos-option-as-alt
-// and DEC 1036 turns Option+L (`@`) into `ESC @` (readline set-mark). Ctrl and
-// Meta stay unconsumed. Option+arrow is not one character, so word motion is
-// unchanged. There is no Option-as-Meta setting; this matches Terminal.app with
-// that option off.
+/**
+ * Modifiers the layout consumed to produce `event.key`, as a GhosttyMods bitmask.
+ *
+ * Browsers do not report which modifiers a layout consumed. A lone Shift is
+ * consumed so a shifted character encodes as text. On macOS a lone Option is
+ * consumed too: this WASM build is not Darwin, so it ignores macos-option-as-alt
+ * and DEC 1036 turns Option+L (`@`) into `ESC @` (readline set-mark). Ctrl and
+ * Meta stay unconsumed. Option+arrow is not one character, so word motion is
+ * unchanged. There is no Option-as-Meta setting; this matches Terminal.app with
+ * that option off.
+ */
 export function ghosttyConsumedMods(
   event: Pick<GhosttyKeyModState, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
   platform = ghosttyHostPlatform(),
@@ -280,14 +297,16 @@ export interface GhosttyEncoderMods {
   readonly consumedMods: number;
 }
 
-// Raw mods plus the consumed mask passed to libghostty-vt.
-//
-// Consuming Option is not enough on this build. modifyOtherKeys mode 2 and
-// Kitty report-all read the raw Alt bit and still emit an Alt sequence when
-// that bit is set, even if Alt is also consumed. Clear every modifier that
-// composed the Option character (Option, and Shift when it participated).
-// A lone Shift stays in the raw mask so modifyOtherKeys can still report
-// Shift+letter.
+/**
+ * Raw mods plus the consumed mask passed to libghostty-vt.
+ *
+ * Consuming Option is not enough on this build. modifyOtherKeys mode 2 and
+ * Kitty report-all read the raw Alt bit and still emit an Alt sequence when
+ * that bit is set, even if Alt is also consumed. Clear every modifier that
+ * composed the Option character (Option, and Shift when it participated).
+ * A lone Shift stays in the raw mask so modifyOtherKeys can still report
+ * Shift+letter.
+ */
 export function ghosttyEncoderMods(
   event: GhosttyKeyModState,
   platform = ghosttyHostPlatform(),
@@ -306,6 +325,14 @@ export function ghosttyEncoderMods(
   return { mods, consumedMods };
 }
 
+/**
+ * Unshifted codepoint for Kitty alternate-key encoding.
+ *
+ * Prefers the active layout map, then US letter and symbol pairs, then
+ * lowercasing. Returns 0 when the unshifted form cannot be known. Reporting
+ * the shifted character as unshifted corrupts Kitty alternate keys.
+ * Option-composed characters such as `@` still report their layout base key.
+ */
 export function ghosttyUnshiftedCodepoint(
   event: Pick<KeyboardEvent, "code" | "key" | "shiftKey">,
   layoutMap?: GhosttyKeyboardLayoutMap,
