@@ -233,13 +233,77 @@ export function loadGhosttyKeyboardLayoutMap(): Promise<GhosttyKeyboardLayoutMap
   return promise;
 }
 
-// Browsers do not expose consumed modifiers; treat Shift as consumed for
-// unchorded character input.
+const GHOSTTY_MOD_SHIFT = 1 << 0;
+const GHOSTTY_MOD_CTRL = 1 << 1;
+const GHOSTTY_MOD_ALT = 1 << 2;
+const GHOSTTY_MOD_SUPER = 1 << 3;
+
+interface GhosttyKeyModState {
+  readonly altKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly key: string;
+  readonly metaKey: boolean;
+  readonly shiftKey: boolean;
+  getModifierState?(key: string): boolean;
+}
+
+function ghosttyHostPlatform(): string {
+  return typeof navigator === "undefined" ? "" : (navigator.platform ?? "");
+}
+
+// Same host check as isMacPlatform. Kept local so key encoding does not import
+// the app utility graph.
+function isGhosttyMacPlatform(platform: string): boolean {
+  return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
+// Browsers do not report which modifiers a layout consumed. A lone Shift is
+// consumed so a shifted character encodes as text. On macOS a lone Option is
+// consumed too: this WASM build is not Darwin, so it ignores macos-option-as-alt
+// and DEC 1036 turns Option+L (`@`) into `ESC @` (readline set-mark). Ctrl and
+// Meta stay unconsumed. Option+arrow is not one character, so word motion is
+// unchanged. There is no Option-as-Meta setting; this matches Terminal.app with
+// that option off.
 export function ghosttyConsumedMods(
-  event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+  event: Pick<GhosttyKeyModState, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+  platform = ghosttyHostPlatform(),
 ): number {
-  if (!event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return 0;
-  return [...event.key].length === 1 ? 1 : 0;
+  if ([...event.key].length !== 1 || event.ctrlKey || event.metaKey) return 0;
+  const shift = event.shiftKey ? GHOSTTY_MOD_SHIFT : 0;
+  if (event.altKey && isGhosttyMacPlatform(platform)) return shift | GHOSTTY_MOD_ALT;
+  if (!event.shiftKey || event.altKey) return 0;
+  return GHOSTTY_MOD_SHIFT;
+}
+
+export interface GhosttyEncoderMods {
+  readonly mods: number;
+  readonly consumedMods: number;
+}
+
+// Raw mods plus the consumed mask passed to libghostty-vt.
+//
+// Consuming Option is not enough on this build. modifyOtherKeys mode 2 and
+// Kitty report-all read the raw Alt bit and still emit an Alt sequence when
+// that bit is set, even if Alt is also consumed. Clear every modifier that
+// composed the Option character (Option, and Shift when it participated).
+// A lone Shift stays in the raw mask so modifyOtherKeys can still report
+// Shift+letter.
+export function ghosttyEncoderMods(
+  event: GhosttyKeyModState,
+  platform = ghosttyHostPlatform(),
+): GhosttyEncoderMods {
+  const consumedMods = ghosttyConsumedMods(event, platform);
+  let mods =
+    (event.shiftKey ? GHOSTTY_MOD_SHIFT : 0) |
+    (event.ctrlKey ? GHOSTTY_MOD_CTRL : 0) |
+    (event.altKey ? GHOSTTY_MOD_ALT : 0) |
+    (event.metaKey ? GHOSTTY_MOD_SUPER : 0) |
+    (event.getModifierState?.("CapsLock") ? 1 << 4 : 0) |
+    (event.getModifierState?.("NumLock") ? 1 << 5 : 0);
+  if ((consumedMods & GHOSTTY_MOD_ALT) !== 0) {
+    mods &= ~consumedMods;
+  }
+  return { mods, consumedMods };
 }
 
 export function ghosttyUnshiftedCodepoint(
