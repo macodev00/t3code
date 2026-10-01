@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DEFAULT_SERVER_SETTINGS,
+  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   ModelSelection,
   ProjectId,
   ProjectScript,
@@ -688,6 +689,90 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const settings = yield* serverSettings.getSettings;
 
       assert.equal(settings.textGenerationModelSelection.instanceId, "claudeAgent");
+      assert.equal(
+        settings.textGenerationModelSelection.model,
+        DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[ProviderDriverKind.make("claudeAgent")],
+      );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect(
+    "keeps the product text-generation model when the thread default is a built-in slug",
+    () =>
+      Effect.gen(function* () {
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+        // A built-in chat model must not replace the cheap text-generation slug.
+        yield* fileSystem.writeFileString(
+          serverConfig.settingsPath,
+          '{"providerInstances":{"codex":{"driver":"codex","enabled":false,"config":{}},"claudeAgent":{"driver":"claudeAgent","config":{"customModels":["z-ai/glm-5.3-flash"]}}},"defaultModelSelection":{"instanceId":"claudeAgent","model":"claude-opus-4-6","options":[{"id":"effort","value":"high"}]}}',
+        );
+
+        const settings = yield* serverSettings.getSettings;
+        const productModel =
+          DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[ProviderDriverKind.make("claudeAgent")];
+
+        assert.isDefined(productModel);
+        assert.deepEqual(
+          settings.textGenerationModelSelection,
+          createModelSelection(ProviderInstanceId.make("claudeAgent"), productModel),
+        );
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("uses a custom thread default when falling back for text generation", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        '{"providerInstances":{"codex":{"driver":"codex","enabled":false,"config":{}},"claudeAgent":{"driver":"claudeAgent","config":{"customModels":["z-ai/glm-5.3-flash"]}}},"defaultModelSelection":{"instanceId":"claudeAgent","model":"z-ai/glm-5.3-flash","options":[{"id":"effort","value":"low"}]}}',
+      );
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.deepEqual(
+        settings.textGenerationModelSelection,
+        createModelSelection(ProviderInstanceId.make("claudeAgent"), "z-ai/glm-5.3-flash", [
+          { id: "effort", value: "low" },
+        ]),
+      );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("uses a configured custom model when falling back for text generation", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        '{"providerInstances":{"codex":{"driver":"codex","enabled":false,"config":{}},"claudeAgent":{"driver":"claudeAgent","config":{"customModels":["z-ai/glm-5.3-flash"]}}}}',
+      );
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.equal(settings.textGenerationModelSelection.instanceId, "claudeAgent");
+      assert.equal(settings.textGenerationModelSelection.model, "z-ai/glm-5.3-flash");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("uses a legacy custom model when falling back for text generation", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        '{"providerInstances":{"codex":{"driver":"codex","enabled":false,"config":{}}},"providers":{"claudeAgent":{"customModels":["z-ai/glm-5.3-flash"]}}}',
+      );
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.equal(settings.textGenerationModelSelection.instanceId, "claudeAgent");
+      assert.equal(settings.textGenerationModelSelection.model, "z-ai/glm-5.3-flash");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 

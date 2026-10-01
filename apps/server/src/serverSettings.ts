@@ -49,6 +49,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import * as ServerConfig from "./config.ts";
+import { createModelSelection, readCustomModelEntries } from "@t3tools/shared/model";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
@@ -338,6 +339,79 @@ function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings
     : fallbackTextGenerationProvider(settings);
 }
 
+/**
+ * Custom-model slugs configured on this instance.
+ *
+ * An explicit `providerInstances[id].config.customModels` array wins, including
+ * an empty one. Otherwise the legacy `providers[driver].customModels` list is
+ * used for the default instance only, matching the Settings UI.
+ */
+function configuredCustomModelSlugs(
+  settings: ServerSettings,
+  driver: ProviderDriverKind,
+  instanceId: ProviderInstanceId,
+): ReadonlyArray<string> {
+  const instanceConfig = settings.providerInstances[instanceId]?.config;
+  if (
+    instanceConfig !== null &&
+    typeof instanceConfig === "object" &&
+    "customModels" in instanceConfig
+  ) {
+    const value = (instanceConfig as { customModels?: unknown }).customModels;
+    if (Array.isArray(value)) {
+      return readCustomModelEntries(value).map((entry) => entry.slug);
+    }
+  }
+  if (instanceId !== ProviderInstanceId.make(driver)) {
+    return [];
+  }
+  const legacy = Object.entries(settings.providers).find(([key]) => key === driver)?.[1];
+  return readCustomModelEntries(legacy?.customModels).map((entry) => entry.slug);
+}
+
+/**
+ * Model for one-shot text generation when the stored selection's instance is
+ * unusable. Commit, PR, branch, and title generation all read this value.
+ *
+ * The product slug (`DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER`, Claude's
+ * `claude-haiku-4-5`) stays the fallback unless this instance configured a
+ * custom model that slug is not. A built-in `defaultModelSelection` does not
+ * replace it: title, branch, and commit generation keep the cheap product
+ * default for users who only picked a chat model.
+ *
+ * On that broken fallback, a `defaultModelSelection` whose model is one of the
+ * instance's custom models wins, options included. Otherwise the first custom
+ * slug is used. The product slug remains the last resort.
+ */
+function fallbackTextGenerationModelSelection(
+  settings: ServerSettings,
+  driver: ProviderDriverKind,
+  instanceId: ProviderInstanceId,
+): ModelSelection {
+  const productModel =
+    DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[driver] ??
+    DEFAULT_MODEL_BY_PROVIDER[driver] ??
+    DEFAULT_TEXT_GENERATION_MODEL;
+  const productSelection = createModelSelection(instanceId, productModel);
+  const customModels = configuredCustomModelSlugs(settings, driver, instanceId);
+  if (customModels.length === 0 || customModels.includes(productModel)) {
+    return productSelection;
+  }
+
+  const threadDefault = settings.defaultModelSelection;
+  if (threadDefault?.instanceId === instanceId) {
+    if (!customModels.includes(threadDefault.model)) {
+      return productSelection;
+    }
+    return createModelSelection(instanceId, threadDefault.model, threadDefault.options);
+  }
+
+  const customModel = customModels[0];
+  return customModel === undefined
+    ? productSelection
+    : createModelSelection(instanceId, customModel);
+}
+
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
   // Same precedence as isModelSelectionProviderEnabled: an explicit provider
   // instance wins over the legacy providers map, which decodes to defaults
@@ -353,13 +427,11 @@ function fallbackTextGenerationProvider(settings: ServerSettings): ServerSetting
 
   return {
     ...settings,
-    textGenerationModelSelection: {
-      instanceId: ProviderInstanceId.make(fallback),
-      model:
-        DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ??
-        DEFAULT_MODEL_BY_PROVIDER[fallback] ??
-        DEFAULT_TEXT_GENERATION_MODEL,
-    } satisfies ModelSelection,
+    textGenerationModelSelection: fallbackTextGenerationModelSelection(
+      settings,
+      fallback,
+      ProviderInstanceId.make(fallback),
+    ),
   };
 }
 
