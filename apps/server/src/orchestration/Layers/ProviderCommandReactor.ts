@@ -97,6 +97,14 @@ const isCompactCommandMessage = (message: ThreadTitleMessage): boolean =>
   message.role === "user" &&
   (message.attachments?.length ?? 0) === 0 &&
   message.text.trim().toLowerCase() === "/compact";
+
+const GOAL_CLEAR_TIMEOUT = "30 seconds";
+const GOAL_CLEAR_FAILURE_DETAIL = "The provider could not clear the goal.";
+
+const isGoalClearCommandMessage = (message: ThreadTitleMessage): boolean =>
+  message.role === "user" &&
+  (message.attachments?.length ?? 0) === 0 &&
+  message.text.trim().toLowerCase().replace(/\s+/g, " ") === "/goal clear";
 function mapProviderSessionStatusToOrchestrationStatus(
   status: "connecting" | "ready" | "running" | "error" | "closed",
 ): OrchestrationSession["status"] {
@@ -1345,7 +1353,38 @@ const make = Effect.gen(function* () {
     yield* ensureThreadWorktree(thread);
 
     const isCompactCommand = isCompactCommandMessage(message);
-    if (!hasOtherUserMessages && !isCompactCommand) {
+    // A stopped session still carries the previous provider. Reusing it would
+    // clear a Codex goal after the user switched models, instead of sending
+    // the text to the provider the next turn actually starts.
+    const goalClearInstanceId =
+      thread.session !== null &&
+      thread.session.status !== "stopped" &&
+      thread.session.providerInstanceId !== undefined
+        ? thread.session.providerInstanceId
+        : (event.payload.modelSelection?.instanceId ?? thread.modelSelection.instanceId);
+    const goalClearDriver = isGoalClearCommandMessage(message)
+      ? yield* providerService.getInstanceInfo(goalClearInstanceId).pipe(
+          Effect.map((info) => info.driverKind),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            (cause) =>
+              Effect.logWarning("provider command reactor failed to resolve goal clear provider", {
+                threadId: event.payload.threadId,
+                cause: Cause.pretty(cause),
+              }).pipe(
+                Effect.andThen(
+                  appendTurnStartFailure("Could not clear the goal", GOAL_CLEAR_FAILURE_DETAIL),
+                ),
+                Effect.as(null),
+              ),
+          ),
+        )
+      : null;
+    if (isGoalClearCommandMessage(message) && goalClearDriver === null) {
+      return;
+    }
+    const handleGoalClear = goalClearDriver === ProviderDriverKind.make("codex");
+    if (!hasOtherUserMessages && !isCompactCommand && !handleGoalClear) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
         resolveThreadWorkspaceCwd({
@@ -1488,6 +1527,126 @@ const make = Effect.gen(function* () {
       const queued = turnsAfterCompaction.get(event.payload.threadId) ?? [];
       queued.push(event);
       turnsAfterCompaction.set(event.payload.threadId, queued);
+      return;
+    }
+    if (handleGoalClear) {
+      const latestThread = yield* resolveThreadShell(event.payload.threadId);
+      if (
+        latestThread?.session?.status === "starting" ||
+        latestThread?.session?.status === "running"
+      ) {
+        yield* appendTurnStartFailure(
+          "Could not clear the goal",
+          "Goal clear is unavailable while a provider turn is running.",
+        );
+        return;
+      }
+
+      const goalClearModelSelection =
+        event.payload.modelSelection?.instanceId === goalClearInstanceId
+          ? event.payload.modelSelection
+          : thread.modelSelection.instanceId === goalClearInstanceId
+            ? thread.modelSelection
+            : { ...thread.modelSelection, instanceId: goalClearInstanceId };
+      // Forked so a wedged thread/goal/clear cannot stall the shared worker.
+      // The RPC itself is bounded; the transport otherwise waits forever.
+      yield* Effect.gen(function* () {
+        const cleared = yield* Effect.gen(function* () {
+          yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
+            modelSelection: goalClearModelSelection,
+          });
+          const timed = yield* providerService
+            .clearGoal(event.payload.threadId)
+            .pipe(Effect.timeoutOption(GOAL_CLEAR_TIMEOUT));
+          if (Option.isNone(timed)) {
+            return { _tag: "timeout" as const };
+          }
+          return { _tag: "cleared" as const, result: timed.value };
+        }).pipe(
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) {
+              return Effect.failCause(cause);
+            }
+            return Effect.logWarning("provider command reactor failed to clear goal", {
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(cause),
+            }).pipe(
+              Effect.andThen(
+                appendTurnStartFailure("Could not clear the goal", GOAL_CLEAR_FAILURE_DETAIL),
+              ),
+              Effect.as({ _tag: "failed" as const }),
+            );
+          }),
+        );
+        if (cleared._tag === "failed") {
+          return;
+        }
+        if (cleared._tag === "timeout") {
+          yield* Effect.logWarning("provider command reactor timed out clearing goal", {
+            threadId: event.payload.threadId,
+          });
+          yield* appendTurnStartFailure("Could not clear the goal", GOAL_CLEAR_FAILURE_DETAIL);
+          return;
+        }
+        const result = cleared.result;
+        const createdAt = event.payload.createdAt;
+        yield* Effect.all({
+          commandId: serverCommandId("provider-goal-clear"),
+          eventId: serverEventId(),
+        }).pipe(
+          Effect.flatMap(({ commandId, eventId }) =>
+            orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId,
+              threadId: event.payload.threadId,
+              activity: {
+                id: eventId,
+                tone: "info",
+                kind: "provider.goal.cleared",
+                summary: result.cleared ? "Goal cleared" : "No goal to clear",
+                payload: {
+                  cleared: result.cleared,
+                  requestId: event.payload.messageId,
+                },
+                turnId: null,
+                createdAt,
+              },
+              createdAt,
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider command reactor failed to record goal clear", {
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+        const settledThread = yield* resolveThreadShell(event.payload.threadId);
+        const session = settledThread?.session;
+        if (session && session.status !== "running" && session.status !== "stopped") {
+          yield* setThreadSession({
+            threadId: event.payload.threadId,
+            session: {
+              ...session,
+              status: "ready",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "provider command reactor failed to settle session after goal clear",
+                {
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(cause),
+                },
+              ),
+            ),
+          );
+        }
+      }).pipe(Effect.forkScoped);
       return;
     }
     const sendTurnRequest = yield* buildSendTurnRequestForThread({

@@ -208,6 +208,20 @@ describe("detectComposerTrigger", () => {
     expect(trigger).toBeNull();
   });
 
+  it("detects the multi-word /goal clear command", () => {
+    const text = "/goal clear";
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "slash-command",
+      query: "goal clear",
+      rangeStart: 0,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("ends a multi-word slash command when a trailing space dismisses the menu", () => {
+    expect(detectComposerTrigger("/goal clear ", "/goal clear ".length)).toBeNull();
+  });
+
   it("detects non-model slash commands while typing", () => {
     const text = "/pl";
     const trigger = detectComposerTrigger(text, text.length);

@@ -86,6 +86,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   public readonly compactThread = Effect.void;
 
+  public readonly clearGoalImpl = vi.fn(() => Promise.resolve({ cleared: true }));
+
+  clearGoal = Effect.promise(() => this.clearGoalImpl());
+
   public readonly interruptTurnImpl = vi.fn((_turnId?: TurnId): Promise<void> =>
     Promise.resolve(undefined),
   );
@@ -375,6 +379,26 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       const event = Option.getOrThrow(yield* Fiber.join(compactedEventFiber));
       NodeAssert.ok(event.type === "thread.state.changed");
       NodeAssert.equal(event.payload.state, "compacted");
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("clears the persisted goal through the Codex app-server", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-goal-clear");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+
+      const result = yield* adapter.clearGoal!(threadId);
+
+      NodeAssert.deepStrictEqual(result, { cleared: true });
+      NodeAssert.equal(runtime.clearGoalImpl.mock.calls.length, 1);
       yield* adapter.stopSession(threadId);
     }),
   );

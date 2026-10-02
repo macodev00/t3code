@@ -231,6 +231,21 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
         rangeEnd: cursor,
       };
     }
+
+    // Multi-word provider commands (`/goal clear`). A trailing space still ends
+    // the trigger so choosing the command dismisses the menu. `/model` arguments
+    // stay closed; that line belongs to the model picker.
+    if (!/^\/model(?:\s|$)/i.test(linePrefix)) {
+      const spacedMatch = /^\/(\S+(?:\s+\S+)+)$/.exec(linePrefix);
+      if (spacedMatch) {
+        return {
+          kind: "slash-command",
+          query: spacedMatch[1] ?? "",
+          rangeStart: lineStart,
+          rangeEnd: cursor,
+        };
+      }
+    }
   }
 
   const tokenStart = tokenStartForCursor(text, cursor);

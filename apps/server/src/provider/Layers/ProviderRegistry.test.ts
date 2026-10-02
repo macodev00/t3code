@@ -433,6 +433,10 @@ it.layer(Layer.mergeAll(TestNodeServices, ServerSettingsModule.layerTest(), Test
               description: "Send this thread and Codex logs to OpenAI",
               input: { hint: "Describe the issue (optional)" },
             },
+            {
+              name: "goal clear",
+              description: "Remove the persisted goal",
+            },
           ]);
         }),
       );

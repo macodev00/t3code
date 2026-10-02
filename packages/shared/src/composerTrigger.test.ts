@@ -3,6 +3,22 @@ import { describe, expect, it } from "vite-plus/test";
 import { detectComposerTrigger, serializeComposerFileLink } from "./composerTrigger.ts";
 
 describe("detectComposerTrigger", () => {
+  it("detects a multi-word slash command and leaves /model arguments as model search", () => {
+    expect(detectComposerTrigger("/goal clear", "/goal clear".length)).toEqual({
+      kind: "slash-command",
+      query: "goal clear",
+      rangeStart: 0,
+      rangeEnd: "/goal clear".length,
+    });
+    expect(detectComposerTrigger("/goal clear ", "/goal clear ".length)).toBeNull();
+    expect(detectComposerTrigger("/model spark", "/model spark".length)).toEqual({
+      kind: "slash-model",
+      query: "spark",
+      rangeStart: 0,
+      rangeEnd: "/model spark".length,
+    });
+  });
+
   it.each(["$", "€", "£", "¥", "₹", "₩", "₿", "𑿝"])(
     "detects %s skill prefixes and their source range",
     (prefix) => {

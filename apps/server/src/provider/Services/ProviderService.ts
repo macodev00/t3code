@@ -61,6 +61,14 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
+   * Clear a persisted provider goal. Fails when the bound adapter has no goal channel.
+   * Recovers a stopped session when the binding still has resume state.
+   */
+  readonly clearGoal: (
+    threadId: ThreadId,
+  ) => Effect.Effect<{ readonly cleared: boolean }, ProviderServiceError>;
+
+  /**
    * Interrupt a running provider turn.
    */
   readonly interruptTurn: (

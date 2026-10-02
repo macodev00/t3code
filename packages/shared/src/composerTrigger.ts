@@ -90,6 +90,18 @@ export function detectComposerTrigger(
         rangeEnd: cursor,
       };
     }
+
+    // Multi-word provider commands (`/goal clear`). A trailing space still ends
+    // the trigger so choosing the command dismisses the menu.
+    const spacedMatch = /^\/(\S+(?:\s+\S+)+)$/.exec(linePrefix);
+    if (spacedMatch) {
+      return {
+        kind: "slash-command",
+        query: spacedMatch[1] ?? "",
+        rangeStart: lineStart,
+        rangeEnd: cursor,
+      };
+    }
   }
 
   const wsCheck = isWhitespaceChar ?? isWhitespace;

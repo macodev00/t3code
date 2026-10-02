@@ -1961,6 +1961,29 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const clearGoal: ProviderServiceMethod<"clearGoal"> = Effect.fn("clearGoal")(
+    function* (threadId) {
+      const routed = yield* resolveRoutableSession({
+        threadId,
+        operation: "ProviderService.clearGoal",
+        allowRecovery: true,
+      });
+      const clearGoalForAdapter = routed.adapter.clearGoal;
+      if (clearGoalForAdapter === undefined) {
+        return yield* toValidationError(
+          "ProviderService.clearGoal",
+          `Provider '${routed.adapter.provider}' does not support clearing a goal.`,
+        );
+      }
+      yield* Effect.annotateCurrentSpan({
+        "provider.operation": "clear-goal",
+        "provider.kind": routed.adapter.provider,
+        "provider.thread_id": threadId,
+      });
+      return yield* clearGoalForAdapter(routed.threadId);
+    },
+  );
+
   const interruptTurn: ProviderServiceMethod<"interruptTurn"> = Effect.fn("interruptTurn")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -2453,6 +2476,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     startSession,
     sendTurn,
     compactThread,
+    clearGoal,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
