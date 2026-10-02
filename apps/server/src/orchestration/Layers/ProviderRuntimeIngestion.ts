@@ -144,14 +144,20 @@ type RuntimeIngestionInput =
       event: ProviderDiffEvent;
     };
 
+/** Provider events spell turn ids as strings or branded ids. Both become a `TurnId`. */
 function toTurnId(value: TurnId | string | undefined): TurnId | undefined {
   return value === undefined ? undefined : TurnId.make(String(value));
 }
 
+/** Provider events spell approval request ids as strings. Absent stays absent. */
 function toApprovalRequestId(value: string | undefined): ApprovalRequestId | undefined {
   return value === undefined ? undefined : ApprovalRequestId.make(value);
 }
 
+/**
+ * Missing ids are not equal, even to each other. A turn event with no id must
+ * not match a session that also has no active turn.
+ */
 function sameId(left: string | null | undefined, right: string | null | undefined): boolean {
   if (left === null || left === undefined || right === null || right === undefined) {
     return false;
@@ -159,6 +165,7 @@ function sameId(left: string | null | undefined, right: string | null | undefine
   return left === right;
 }
 
+/** Whether this turn already has a checkpoint row in the thread summary. */
 function hasCheckpointForTurn(
   checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
   turnId: TurnId,
@@ -171,6 +178,7 @@ function hasCheckpointForTurn(
   return false;
 }
 
+/** Highest `checkpointTurnCount` already stored for the thread, or zero. */
 function maxCheckpointTurnCount(
   checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
 ): number {
@@ -184,10 +192,12 @@ function maxCheckpointTurnCount(
   return maxTurnCount;
 }
 
+/** Bounds provider detail text before it is written into an activity summary. */
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
 }
 
+/** Drops a proposed plan that is empty after trimming. */
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
   const trimmed = planMarkdown?.trim();
   if (!trimmed) {
@@ -196,6 +206,11 @@ function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string
   return trimmed;
 }
 
+/**
+ * Whitespace-only assistant or reasoning text is not a reply. Callers use
+ * this to skip projecting a buffer or completion that would otherwise become
+ * an empty message.
+ */
 function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
 }
@@ -1525,6 +1540,13 @@ const make = Effect.gen(function* () {
       return flushedMessageIds;
     });
 
+  /**
+   * Writes any assistant or reasoning text still held for this message, then
+   * completes it. `fallbackText` is the provider's full completion snapshot.
+   * When that snapshot extends text already projected, only the missing suffix
+   * is appended, including one that is only whitespace. A snapshot that is
+   * only whitespace does not open a message that was never shown.
+   */
   const finalizeAssistantMessage = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
@@ -1814,6 +1836,11 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * Turns one provider runtime event into orchestration commands: session and
+   * turn lifecycle, streamed assistant and reasoning text, tool activity, and
+   * completion snapshots.
+   */
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       if (
