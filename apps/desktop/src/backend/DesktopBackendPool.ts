@@ -79,6 +79,7 @@
 //   10. CommandPalette enables file-manager picker for desktop-local
 //       envs, routes pickFolder by env id. (38e8477a)
 
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -102,8 +103,24 @@ import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 
-const { logWarning: logBackendPoolWarning } =
+const { annotate: annotatePoolLog, logWarning: logBackendPoolWarning } =
   DesktopObservability.makeComponentLogger("desktop-backend-pool");
+
+const startupFailureDialogBody = (
+  failure: DesktopBackendManager.StartupFailure,
+  distro: string,
+): string => {
+  const subject = `The WSL backend (${distro})`;
+  const next =
+    "T3 Code will use the Windows backend for this launch and retry WSL the next time the app starts.";
+  if (failure.kind === "exited" && failure.exitCode !== undefined) {
+    return `${subject} exited before it was ready (exit code ${failure.exitCode}).\n\n${next}`;
+  }
+  if (failure.kind === "exited") {
+    return `${subject} exited before it was ready.\n\n${next}`;
+  }
+  return `${subject} did not become ready.\n\n${next}`;
+};
 
 export type BackendInstanceId = DesktopBackendManager.BackendInstanceId;
 export const BackendInstanceId = DesktopBackendManager.BackendInstanceId;
@@ -277,6 +294,43 @@ export const layer = Layer.effect(
       },
     );
 
+    // Preflight passed, but the primary still never became ready. The connecting
+    // splash has no controls, so wsl-only mode would sit there until the process
+    // is killed. Use Windows for this launch only — the same in-memory fallback
+    // as a bounded preflight failure — and try WSL again on the next launch.
+    // A run that already resolved to Windows has no distro and keeps restarting.
+    const handlePrimaryStartupFailure = Effect.fn("desktop.backendPool.primaryStartupFailed")(
+      function* (failure: DesktopBackendManager.StartupFailure, runningDistro: string | undefined) {
+        if (runningDistro === undefined) {
+          return Option.none<Effect.Effect<void>>();
+        }
+        yield* logBackendPoolWarning(
+          "primary WSL backend did not become ready; using Windows for this launch",
+          {
+            failure: failure.kind,
+            ...(failure.exitCode === undefined ? {} : { exitCode: failure.exitCode }),
+            distro: runningDistro,
+          },
+        );
+        const dialog = yield* electronDialog
+          .showErrorBox(
+            "WSL backend isn't responding",
+            startupFailureDialogBody(failure, runningDistro),
+          )
+          .pipe(Effect.exit);
+        if (Exit.isFailure(dialog)) {
+          if (Cause.hasInterruptsOnly(dialog.cause)) {
+            return yield* Effect.interrupt;
+          }
+          yield* annotatePoolLog(
+            Effect.logError("desktop backend startup failure dialog failed", dialog.cause),
+            { failure: failure.kind },
+          );
+        }
+        return Option.some(appSettings.applyWslWindowsFallbackInMemory.pipe(Effect.asVoid));
+      },
+    );
+
     const primary = yield* DesktopBackendManager.makeBackendInstance({
       id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
       // Keep this lazy. The pool layer is initialized before startup loads
@@ -301,6 +355,7 @@ export const layer = Layer.effect(
         ),
       onShutdown: () => desktopWindow.handleBackendNotReady,
       onPreflightFailed: handlePrimaryPreflightFailure,
+      onStartupFailed: handlePrimaryStartupFailure,
     });
 
     const instancesRef = yield* SynchronizedRef.make<

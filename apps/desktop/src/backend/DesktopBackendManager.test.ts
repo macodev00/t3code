@@ -126,6 +126,11 @@ interface MakeInstanceInput {
   readonly onPreflightFailed?: (
     failure: DesktopBackendManager.PreflightFailure,
   ) => Effect.Effect<boolean>;
+  readonly onStartupFailed?: (
+    failure: DesktopBackendManager.StartupFailure,
+    runningDistro: string | undefined,
+  ) => Effect.Effect<Option.Option<Effect.Effect<void>>>;
+  readonly readinessTimeout?: Duration.Duration;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
   readonly configResolve?: Effect.Effect<
     DesktopBackendManager.DesktopBackendStartConfig,
@@ -185,6 +190,8 @@ function makeTestInstance(input: MakeInstanceInput) {
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
     ...(input.onShutdown ? { onShutdown: () => input.onShutdown! } : {}),
     ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
+    ...(input.onStartupFailed ? { onStartupFailed: input.onStartupFailed } : {}),
+    ...(input.readinessTimeout === undefined ? {} : { readinessTimeout: input.readinessTimeout }),
   });
 
   return instance.pipe(Effect.provide(servicesLayer));
@@ -777,6 +784,7 @@ describe("DesktopBackendManager", () => {
             onReadinessFailure: () =>
               Effect.sync(() => {
                 readinessTimeoutCount += 1;
+                return false;
               }),
           }).pipe(Effect.provide(Layer.merge(spawnerLayer, httpLayer)), Effect.forkChild);
 
@@ -1574,5 +1582,342 @@ describe("DesktopBackendManager", () => {
         assert.deepEqual(finished.toSorted(), ["instance1", "instance2"]);
       }).pipe(Effect.provide(TestClock.layer())),
     ),
+  );
+
+  it.effect(
+    "uses the startup failure hook after three pre-ready exits and does not restart while it is pending",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const starts = yield* Queue.unbounded<string>();
+          const failures = yield* Queue.unbounded<string>();
+          const hooks = yield* Queue.unbounded<DesktopBackendManager.StartupFailure>();
+          const gate = yield* Deferred.make<void>();
+          const mode = yield* Ref.make<"wsl" | "windows">("wsl");
+          const wslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+            ...baseConfig,
+            runningDistro: "Ubuntu-22.04",
+            httpBaseUrl: new URL("http://10.0.0.8:3773"),
+          };
+          const windowsConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+            ...baseConfig,
+            httpBaseUrl: new URL("http://127.0.0.1:3773"),
+          };
+
+          const spawnerLayer = Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.gen(function* () {
+                const kind = yield* Ref.get(mode);
+                return makeProcess({
+                  exitCode: Queue.offer(starts, kind).pipe(
+                    Effect.as(ChildProcessSpawner.ExitCode(1)),
+                  ),
+                });
+              }),
+            ),
+          );
+
+          const instance = yield* makeTestInstance({
+            spawnerLayer,
+            httpClientLayer: httpClientLayer(() => Effect.never),
+            configResolve: Ref.get(mode).pipe(
+              Effect.map((kind) => (kind === "wsl" ? wslConfig : windowsConfig)),
+            ),
+            backendOutputLog: {
+              persistFailure: ({ details }) => Queue.offer(failures, details).pipe(Effect.asVoid),
+            },
+            onStartupFailed: (failure) =>
+              Effect.gen(function* () {
+                yield* Queue.offer(hooks, failure);
+                yield* Deferred.await(gate);
+                yield* Ref.set(mode, "windows");
+                return Option.some(Effect.void);
+              }),
+          });
+
+          yield* instance.start;
+          assert.equal(yield* Queue.take(starts), "wsl");
+          assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+          yield* TestClock.adjust(Duration.millis(500));
+          assert.equal(yield* Queue.take(starts), "wsl");
+          assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+          yield* TestClock.adjust(Duration.seconds(1));
+          assert.equal(yield* Queue.take(starts), "wsl");
+          assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+
+          const failure = yield* Queue.take(hooks);
+          assert.deepEqual(failure, { kind: "exited", exitCode: 1 });
+          yield* TestClock.adjust(Duration.seconds(30));
+          assert.equal(yield* Queue.size(starts), 0);
+
+          yield* Deferred.succeed(gate, undefined);
+          assert.equal(yield* Queue.take(starts), "windows");
+          const running = yield* instance.snapshot;
+          assert.equal(running.desiredRunning, true);
+        }).pipe(Effect.provide(TestClock.layer())),
+      ),
+  );
+
+  it.effect("keeps restarting when the startup failure hook declines recovery", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const failures = yield* Queue.unbounded<string>();
+        const hooks = yield* Queue.unbounded<number>();
+        let startCount = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.sync(() => {
+              startCount += 1;
+              return makeProcess({
+                exitCode: Queue.offer(starts, startCount).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer(() => Effect.never),
+          backendOutputLog: {
+            persistFailure: ({ details }) => Queue.offer(failures, details).pipe(Effect.asVoid),
+          },
+          onStartupFailed: () =>
+            Effect.sync(() => {
+              return Option.none<Effect.Effect<void>>();
+            }).pipe(Effect.tap(() => Queue.offer(hooks, startCount))),
+        });
+
+        yield* instance.start;
+        assert.equal(yield* Queue.take(starts), 1);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        yield* TestClock.adjust(Duration.millis(500));
+        assert.equal(yield* Queue.take(starts), 2);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(yield* Queue.take(starts), 3);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        assert.equal(yield* Queue.take(hooks), 3);
+        yield* TestClock.adjust(Duration.seconds(2));
+        assert.equal(yield* Queue.take(starts), 4);
+        assert.equal(yield* Queue.size(hooks), 0);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("does not run the startup failure hook for exits after the backend was ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const readies = yield* Queue.unbounded<number>();
+        const exited = yield* Queue.unbounded<number>();
+        const release = yield* Queue.unbounded<void>();
+        let startCount = 0;
+        let hookCalls = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.sync(() => {
+              startCount += 1;
+              const pid = startCount;
+              return makeProcess({
+                exitCode: Queue.offer(starts, pid).pipe(
+                  Effect.andThen(Queue.take(release)),
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          onReady: Effect.sync(() => startCount).pipe(
+            Effect.flatMap((pid) => Queue.offer(readies, pid)),
+            Effect.asVoid,
+          ),
+          backendOutputLog: {
+            persistFailure: () => Queue.offer(exited, startCount).pipe(Effect.asVoid),
+          },
+          onStartupFailed: () =>
+            Effect.sync(() => {
+              hookCalls += 1;
+              return Option.none<Effect.Effect<void>>();
+            }),
+        });
+
+        yield* instance.start;
+        for (const delay of [
+          Duration.zero,
+          Duration.millis(500),
+          Duration.seconds(1),
+          Duration.seconds(2),
+          Duration.seconds(4),
+        ]) {
+          if (Duration.toMillis(delay) > 0) {
+            yield* TestClock.adjust(delay);
+          }
+          const pid = yield* Queue.take(starts);
+          assert.equal(yield* Queue.take(readies), pid);
+          yield* Queue.offer(release, undefined);
+          assert.equal(yield* Queue.take(exited), pid);
+        }
+        assert.equal(hookCalls, 0);
+        assert.equal(startCount, 5);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("does not apply startup recovery when stop interrupts the pending hook", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const failures = yield* Queue.unbounded<string>();
+        const hooks = yield* Queue.unbounded<string>();
+        const gate = yield* Deferred.make<void>();
+        let startCount = 0;
+        let applied = false;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.sync(() => {
+              startCount += 1;
+              return makeProcess({
+                exitCode: Queue.offer(starts, startCount).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer(() => Effect.never),
+          backendOutputLog: {
+            persistFailure: ({ details }) => Queue.offer(failures, details).pipe(Effect.asVoid),
+          },
+          onStartupFailed: () =>
+            Effect.gen(function* () {
+              yield* Queue.offer(hooks, "entered");
+              yield* Deferred.await(gate);
+              return Option.some(
+                Effect.sync(() => {
+                  applied = true;
+                }),
+              );
+            }),
+        });
+
+        yield* instance.start;
+        assert.equal(yield* Queue.take(starts), 1);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        yield* TestClock.adjust(Duration.millis(500));
+        assert.equal(yield* Queue.take(starts), 2);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(yield* Queue.take(starts), 3);
+        assert.equal(yield* Queue.take(hooks), "entered");
+
+        yield* instance.stop();
+        yield* Deferred.succeed(gate, undefined);
+        assert.equal(applied, false);
+        yield* TestClock.adjust(Duration.seconds(30));
+        assert.equal(yield* Queue.size(starts), 0);
+        const stopped = yield* instance.snapshot;
+        assert.equal(stopped.desiredRunning, false);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect(
+    "falls back when a live backend exhausts three readiness budgets and does not restart early",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const starts = yield* Queue.unbounded<string>();
+          const timeouts = yield* Queue.unbounded<string>();
+          const hooks = yield* Queue.unbounded<DesktopBackendManager.StartupFailure>();
+          const gate = yield* Deferred.make<void>();
+          const mode = yield* Ref.make<"wsl" | "windows">("wsl");
+          const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+          const wslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+            ...baseConfig,
+            runningDistro: "Ubuntu-22.04",
+          };
+
+          const spawnerLayer = Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.gen(function* () {
+                const kind = yield* Ref.get(mode);
+                if (kind === "windows") {
+                  return makeProcess({
+                    exitCode: Queue.offer(starts, kind).pipe(Effect.andThen(Effect.never)),
+                  });
+                }
+                return makeProcess({
+                  exitCode: Queue.offer(starts, kind).pipe(Effect.andThen(Deferred.await(exit))),
+                  kill: () =>
+                    Deferred.succeed(exit, ChildProcessSpawner.ExitCode(1)).pipe(Effect.asVoid),
+                });
+              }),
+            ),
+          );
+
+          const instance = yield* makeTestInstance({
+            spawnerLayer,
+            readinessTimeout: Duration.millis(50),
+            httpClientLayer: httpClientLayer((request) =>
+              Effect.succeed(responseForRequest(request, 503)),
+            ),
+            configResolve: Ref.get(mode).pipe(
+              Effect.map((kind) =>
+                kind === "wsl"
+                  ? wslConfig
+                  : {
+                      ...baseConfig,
+                      httpBaseUrl: new URL("http://127.0.0.1:3773"),
+                    },
+              ),
+            ),
+            backendOutputLog: {
+              persistFailureSnapshot: ({ details }) =>
+                Queue.offer(timeouts, details).pipe(Effect.asVoid),
+            },
+            onStartupFailed: (failure) =>
+              Effect.gen(function* () {
+                yield* Queue.offer(hooks, failure);
+                yield* Deferred.await(gate);
+                yield* Ref.set(mode, "windows");
+                return Option.some(Effect.void);
+              }),
+          });
+
+          yield* instance.start;
+          assert.equal(yield* Queue.take(starts), "wsl");
+          yield* TestClock.adjust(Duration.millis(50));
+          assert.equal(yield* Queue.take(timeouts), "readiness-timeout");
+          yield* TestClock.adjust(Duration.millis(50));
+          assert.equal(yield* Queue.take(timeouts), "readiness-timeout");
+          yield* TestClock.adjust(Duration.millis(50));
+          assert.equal(yield* Queue.take(timeouts), "readiness-timeout");
+
+          const failure = yield* Queue.take(hooks);
+          assert.deepEqual(failure, { kind: "unreachable" });
+          yield* TestClock.adjust(Duration.seconds(30));
+          assert.equal(yield* Queue.size(starts), 0);
+
+          yield* Deferred.succeed(gate, undefined);
+          assert.equal(yield* Queue.take(starts), "windows");
+        }).pipe(Effect.provide(TestClock.layer())),
+      ),
   );
 });
