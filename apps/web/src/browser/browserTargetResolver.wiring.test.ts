@@ -29,6 +29,10 @@ vi.mock("~/connection/catalog", async () => {
 
 const environmentId = EnvironmentId.make("environment-1");
 
+/**
+ * Mounts catalog entries on the environment catalog atom.
+ * Host selection reads that atom when the prepared connection omits its target.
+ */
 function setCatalog(entries: ReadonlyArray<readonly [EnvironmentId, ConnectionCatalogEntry]>) {
   appAtomRegistry.set(
     environmentCatalog.catalogValueAtom as never,
