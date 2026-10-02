@@ -1,6 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ClaudeSettings,
+  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { HostProcessPlatform, isHostWindows } from "@t3tools/shared/hostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
@@ -23,6 +28,7 @@ import { sanitizeThreadTitle } from "./TextGenerationUtils.ts";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const ClaudeTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-claude-text-generation-test-",
@@ -43,7 +49,7 @@ function makeFakeClaudeBinary(dir: string) {
       source: [
         "const argv = process.argv.slice(2);",
         'const args = argv.join(" ");',
-        'const { realpathSync } = await import("node:fs");',
+        'const { appendFileSync, realpathSync } = await import("node:fs");',
         "",
         "function fail(message, code) {",
         '  process.stderr.write(message + "\\n");',
@@ -105,18 +111,35 @@ function makeFakeClaudeBinary(dir: string) {
         '  fail("CLAUDE_CONFIG_DIR was " + (process.env.CLAUDE_CONFIG_DIR ?? ""), 5);',
         "}",
         "",
-        "const stderrText = process.env.T3_FAKE_CLAUDE_STDERR;",
-        "if (stderrText) {",
-        '  process.stderr.write(stderrText + "\\n");',
+        'const modelIndex = argv.indexOf("--model");',
+        'const model = modelIndex === -1 ? "" : (argv[modelIndex + 1] ?? "");',
+        "const modelLog = process.env.T3_FAKE_CLAUDE_MODEL_LOG;",
+        'if (modelLog) appendFileSync(modelLog, model + "\\n");',
+        "const modelResponsesRaw = process.env.T3_FAKE_CLAUDE_MODEL_RESPONSES;",
+        "const modelResponse = modelResponsesRaw ? JSON.parse(modelResponsesRaw)[model] : undefined;",
+        "if (modelResponse) {",
+        '  if (modelResponse.stderr) process.stderr.write(modelResponse.stderr + "\\n");',
+        '  process.stdout.write(modelResponse.stdout ?? "");',
+        "  process.exitCode = Number(modelResponse.exitCode ?? 0);",
+        "} else {",
+        "  const stderrText = process.env.T3_FAKE_CLAUDE_STDERR;",
+        "  if (stderrText) {",
+        '    process.stderr.write(stderrText + "\\n");',
+        "  }",
+        '  process.stdout.write(process.env.T3_FAKE_CLAUDE_OUTPUT ?? "");',
+        "  process.exitCode = Number(process.env.T3_FAKE_CLAUDE_EXIT_CODE ?? 0);",
         "}",
-        "",
-        'process.stdout.write(process.env.T3_FAKE_CLAUDE_OUTPUT ?? "");',
-        "process.exitCode = Number(process.env.T3_FAKE_CLAUDE_EXIT_CODE ?? 0);",
         "",
       ].join("\n"),
     });
     return binDir;
   });
+}
+
+interface FakeClaudeModelResponse {
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly exitCode?: number;
 }
 
 function withFakeClaudeEnv<A, E, R>(
@@ -130,12 +153,18 @@ function withFakeClaudeEnv<A, E, R>(
     configDirMustBe?: string;
     cwdMustNotBe?: string;
     claudeConfig?: Partial<ClaudeSettings>;
+    modelResponses?: Readonly<Record<string, FakeClaudeModelResponse>>;
   },
-  effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
+  effectFn: (
+    textGeneration: TextGeneration.TextGeneration["Service"],
+    context: { readonly modelLogPath: string },
+  ) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
+    const modelLogPath = path.join(tempDir, "claude-models.log");
     const binDir = yield* makeFakeClaudeBinary(tempDir);
     const pathDelimiter = (yield* isHostWindows) ? ";" : ":";
     const previousPath = process.env.PATH;
@@ -147,6 +176,8 @@ function withFakeClaudeEnv<A, E, R>(
     const previousStdinMustContain = process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
     const previousConfigDirMustBe = process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
     const previousCwdMustNotBe = process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE;
+    const previousModelLog = process.env.T3_FAKE_CLAUDE_MODEL_LOG;
+    const previousModelResponses = process.env.T3_FAKE_CLAUDE_MODEL_RESPONSES;
 
     yield* Effect.acquireRelease(
       Effect.sync(() => {
@@ -193,6 +224,13 @@ function withFakeClaudeEnv<A, E, R>(
           process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE = input.configDirMustBe;
         } else {
           delete process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;
+        }
+
+        process.env.T3_FAKE_CLAUDE_MODEL_LOG = modelLogPath;
+        if (input.modelResponses !== undefined) {
+          process.env.T3_FAKE_CLAUDE_MODEL_RESPONSES = encodeUnknownJson(input.modelResponses);
+        } else {
+          delete process.env.T3_FAKE_CLAUDE_MODEL_RESPONSES;
         }
       }),
       () =>
@@ -246,6 +284,18 @@ function withFakeClaudeEnv<A, E, R>(
           } else {
             process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE = previousConfigDirMustBe;
           }
+
+          if (previousModelLog === undefined) {
+            delete process.env.T3_FAKE_CLAUDE_MODEL_LOG;
+          } else {
+            process.env.T3_FAKE_CLAUDE_MODEL_LOG = previousModelLog;
+          }
+
+          if (previousModelResponses === undefined) {
+            delete process.env.T3_FAKE_CLAUDE_MODEL_RESPONSES;
+          } else {
+            process.env.T3_FAKE_CLAUDE_MODEL_RESPONSES = previousModelResponses;
+          }
         }),
     );
 
@@ -255,7 +305,7 @@ function withFakeClaudeEnv<A, E, R>(
       undefined,
       Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
     );
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(textGeneration, { modelLogPath });
   }).pipe(Effect.scoped);
 }
 
@@ -579,4 +629,162 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
         }),
     ),
   );
+
+  const configuredProductModel =
+    DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[ProviderDriverKind.make("claudeAgent")];
+  if (configuredProductModel === undefined) {
+    throw new Error("Claude product text-generation model is not configured");
+  }
+  const productModel = configuredProductModel;
+  const customModel = "z-ai/glm-5.3-flash";
+  const wrapperStderr =
+    "Using the OpenRouter credential from the global credential ~/.ori/credentials.json.";
+  const guardrailStdout = JSON.stringify({
+    api_error_status: 400,
+    is_error: true,
+    result:
+      "API Error: 400 0 endpoints out of 4 requested are available matching your guardrail restrictions and data policy. Model blocked by guardrail: 4 endpoints excluded",
+  });
+  const readSpawnedModels = (modelLogPath: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return (yield* fs.readFileString(modelLogPath))
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+    });
+
+  it.effect("keeps the product text-generation model when that slug succeeds", () => {
+    expect(productModel).toBe("claude-haiku-4-5");
+    return withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: { subject: "Keep the product model", body: "" },
+        }),
+        claudeConfig: { customModels: [customModel] },
+      },
+      (textGeneration, { modelLogPath }) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "main",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: productModel,
+            },
+          });
+
+          expect(generated.subject).toBe("Keep the product model");
+          expect(yield* readSpawnedModels(modelLogPath)).toEqual([productModel]);
+        }),
+    );
+  });
+
+  it.effect("uses a configured custom model only after the product slug is unavailable", () => {
+    expect(productModel).toBe("claude-haiku-4-5");
+    return withFakeClaudeEnv(
+      {
+        output: "",
+        claudeConfig: { customModels: [customModel] },
+        modelResponses: {
+          [productModel]: {
+            exitCode: 1,
+            stderr: wrapperStderr,
+            stdout: guardrailStdout,
+          },
+          [customModel]: {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              structured_output: { subject: "Use the configured custom model", body: "" },
+            }),
+          },
+        },
+      },
+      (textGeneration, { modelLogPath }) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "main",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: productModel,
+            },
+          });
+
+          expect(generated.subject).toBe("Use the configured custom model");
+          expect(yield* readSpawnedModels(modelLogPath)).toEqual([productModel, customModel]);
+        }),
+    );
+  });
+
+  it.effect(
+    "does not substitute a custom model when the product slug fails for another reason",
+    () => {
+      expect(productModel).toBe("claude-haiku-4-5");
+      return withFakeClaudeEnv(
+        {
+          output: "",
+          exitCode: 1,
+          stderr: wrapperStderr,
+          claudeConfig: { customModels: [customModel] },
+        },
+        (textGeneration, { modelLogPath }) =>
+          Effect.gen(function* () {
+            const error = yield* Effect.flip(
+              textGeneration.generateCommitMessage({
+                cwd: process.cwd(),
+                branch: "main",
+                stagedSummary: "M README.md",
+                stagedPatch: "diff --git a/README.md b/README.md",
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("claudeAgent"),
+                  model: productModel,
+                },
+              }),
+            );
+
+            expect(error._tag).toBe("TextGenerationError");
+            expect(error.detail).toContain(wrapperStderr);
+            expect(yield* readSpawnedModels(modelLogPath)).toEqual([productModel]);
+          }),
+      );
+    },
+  );
+
+  it.effect("does not replace an explicit non-product model when that model is unavailable", () => {
+    expect(productModel).toBe("claude-haiku-4-5");
+    return withFakeClaudeEnv(
+      {
+        output: guardrailStdout,
+        exitCode: 1,
+        stderr: wrapperStderr,
+        claudeConfig: { customModels: [customModel] },
+      },
+      (textGeneration, { modelLogPath }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            textGeneration.generateCommitMessage({
+              cwd: process.cwd(),
+              branch: "main",
+              stagedSummary: "M README.md",
+              stagedPatch: "diff --git a/README.md b/README.md",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("claudeAgent"),
+                model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              },
+            }),
+          );
+
+          expect(error._tag).toBe("TextGenerationError");
+          const models = yield* readSpawnedModels(modelLogPath);
+          expect(models).toHaveLength(1);
+          expect(models[0]?.startsWith(SYNTHETIC_CLAUDE_STANDARD_MODEL)).toBe(true);
+          expect(models.some((model) => model.includes(customModel))).toBe(false);
+        }),
+    );
+  });
 });

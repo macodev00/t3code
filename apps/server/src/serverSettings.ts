@@ -342,6 +342,9 @@ function fallbackTextGenerationProvider(settings: ServerSettings): ServerSetting
   // Same precedence as isModelSelectionProviderEnabled: an explicit provider
   // instance wins over the legacy providers map, which decodes to defaults
   // (codex enabled) when the Providers UI has only written providerInstances.
+  // The model stays the product text-generation slug. A configured custom
+  // model is substituted only after that slug's one-shot attempt reports the
+  // model is unavailable.
   const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
     const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
     return instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
