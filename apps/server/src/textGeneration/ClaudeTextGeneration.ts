@@ -14,11 +14,16 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { type ClaudeSettings, type ModelSelection } from "@t3tools/contracts";
+import {
+  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  ProviderDriverKind,
+  TextGenerationError,
+  type ClaudeSettings,
+  type ModelSelection,
+} from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
-import { TextGenerationError } from "@t3tools/contracts";
 import * as TextGeneration from "./TextGeneration.ts";
 import {
   buildBranchNamePrompt,
@@ -49,8 +54,28 @@ import {
   scopeClaudeModelCatalog,
 } from "../provider/ClaudeModelCatalog.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
+import {
+  boundedCliApiErrorStatus,
+  customModelForBrokenTextGenerationFallback,
+  isBrokenProductTextGenerationFallback,
+  textGenerationCliFailureCategory,
+} from "./TextGenerationModelFallback.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
+const CLAUDE_PRODUCT_TEXT_GENERATION_MODEL =
+  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[ProviderDriverKind.make("claudeAgent")];
+
+/**
+ * Describe a non-zero Claude CLI exit with a bounded category and exit code.
+ * Stdout and stderr stay out of the string; they can carry credentials or
+ * arbitrary payloads. Callers attach the process exit as `cause`.
+ */
+function describeClaudeCliFailure(exitCode: number, stdout: string, stderr: string): string {
+  const category = textGenerationCliFailureCategory({ stdout, stderr });
+  const apiStatus = boundedCliApiErrorStatus(stdout);
+  const status = apiStatus === undefined ? "" : `, api_status ${apiStatus}`;
+  return `Claude CLI command failed (${category}, exit ${exitCode}${status}).`;
+}
 
 /**
  * Schema for the wrapper JSON returned by `claude -p --output-format json`.
@@ -70,6 +95,11 @@ const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
 
+/**
+ * Build the Claude text-generation service for one-shot commit, PR, branch,
+ * and title prompts. A configured custom model is tried only after the product
+ * slug reports that the model itself is unavailable.
+ */
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
   environment?: NodeJS.ProcessEnv,
@@ -119,7 +149,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
 
   /**
    * Spawn the Claude CLI with structured JSON output and return the parsed,
-   * schema-validated result.
+   * schema-validated result. Retries once with a configured custom model only
+   * when the product slug reports that the model itself is unavailable.
    */
   const runClaudeJson = Effect.fn("runClaudeJson")(function* <S extends Schema.Top>({
     operation,
@@ -139,52 +170,61 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     modelSelection: ModelSelection;
   }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
     const catalog = yield* scopedModelCatalog;
-    const resolvedModelSelection = {
-      ...modelSelection,
-      model: resolveClaudeModelSlug(catalog, modelSelection.model),
-    };
+    const requestedModel = resolveClaudeModelSlug(catalog, modelSelection.model);
     const jsonSchemaStr = yield* encodeJsonForOperation(
       operation,
       toJsonSchemaObject(outputSchemaJson),
       "Failed to encode structured output schema.",
     );
-    const caps = getClaudeCatalogModelCapabilities(catalog, resolvedModelSelection.model);
-    const descriptors = getProviderOptionDescriptors({
-      caps,
-      selections: resolvedModelSelection.options,
-    });
-    const findDescriptor = (id: string) => descriptors.find((descriptor) => descriptor.id === id);
-    const rawEffortSelection = getModelSelectionStringOptionValue(resolvedModelSelection, "effort");
-    const resolvedEffort = resolveClaudeCatalogEffort(
-      catalog,
-      resolvedModelSelection.model,
-      rawEffortSelection,
-    );
-    const cliEffort = normalizeClaudeCatalogEffort(
-      catalog,
-      resolvedEffort,
-      resolvedModelSelection.model,
-    );
-    const ultracode = isClaudeCatalogUltracodeEffort(resolvedEffort);
-    const thinkingDescriptor = findDescriptor("thinking");
-    const fastModeDescriptor = findDescriptor("fastMode");
-    const thinking =
-      thinkingDescriptor?.type === "boolean" ? thinkingDescriptor.currentValue : undefined;
-    const fastMode =
-      fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
-    const settings = {
-      disableAllHooks: true,
-      ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
-      ...(fastMode ? { fastMode: true } : {}),
-      ...(ultracode ? { ultracode: true } : {}),
-    };
-    const settingsJson = yield* encodeJsonForOperation(
-      operation,
-      settings,
-      "Failed to encode Claude CLI settings.",
-    );
 
-    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
+    /**
+     * Spawn one Claude CLI attempt for `selection` and return its output.
+     * A non-zero exit is returned to the caller so the failure can be classified
+     * before it becomes an error.
+     */
+    const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
+      selection: ModelSelection,
+    ) {
+      const resolvedSelection = {
+        ...selection,
+        model: resolveClaudeModelSlug(catalog, selection.model),
+      };
+      const caps = getClaudeCatalogModelCapabilities(catalog, resolvedSelection.model);
+      const descriptors = getProviderOptionDescriptors({
+        caps,
+        selections: resolvedSelection.options,
+      });
+      /** Look up one resolved Claude provider option by id. */
+      const findDescriptor = (id: string) => descriptors.find((descriptor) => descriptor.id === id);
+      const rawEffortSelection = getModelSelectionStringOptionValue(resolvedSelection, "effort");
+      const resolvedEffort = resolveClaudeCatalogEffort(
+        catalog,
+        resolvedSelection.model,
+        rawEffortSelection,
+      );
+      const cliEffort = normalizeClaudeCatalogEffort(
+        catalog,
+        resolvedEffort,
+        resolvedSelection.model,
+      );
+      const ultracode = isClaudeCatalogUltracodeEffort(resolvedEffort);
+      const thinkingDescriptor = findDescriptor("thinking");
+      const fastModeDescriptor = findDescriptor("fastMode");
+      const thinking =
+        thinkingDescriptor?.type === "boolean" ? thinkingDescriptor.currentValue : undefined;
+      const fastMode =
+        fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
+      const settings = {
+        disableAllHooks: true,
+        ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
+        ...(fastMode ? { fastMode: true } : {}),
+        ...(ultracode ? { ultracode: true } : {}),
+      };
+      const settingsJson = yield* encodeJsonForOperation(
+        operation,
+        settings,
+        "Failed to encode Claude CLI settings.",
+      );
       // Titles need only the supplied prompt, not configuration from the checkout.
       const workingDirectory =
         operation === "generateThreadTitle"
@@ -205,7 +245,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           "--json-schema",
           jsonSchemaStr,
           "--model",
-          resolveClaudeCatalogApiModelId(catalog, resolvedModelSelection),
+          resolveClaudeCatalogApiModelId(catalog, resolvedSelection),
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
           settingsJson,
@@ -249,35 +289,69 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         { concurrency: "unbounded" },
       );
 
-      if (exitCode !== 0) {
-        const stderrDetail = stderr.trim();
-        const stdoutDetail = stdout.trim();
-        const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
-        return yield* new TextGenerationError({
-          operation,
-          detail:
-            detail.length > 0
-              ? `Claude CLI command failed: ${detail}`
-              : `Claude CLI command failed with code ${exitCode}.`,
-        });
-      }
-
-      return stdout;
+      return { stdout, stderr, exitCode };
     });
 
-    const rawStdout = yield* runClaudeCommand().pipe(
-      Effect.scoped,
-      Effect.timeoutOption(CLAUDE_TIMEOUT_MS),
-      Effect.flatMap(
-        Option.match({
-          onNone: () =>
-            Effect.fail(
-              new TextGenerationError({ operation, detail: "Claude CLI request timed out." }),
-            ),
-          onSome: (value) => Effect.succeed(value),
-        }),
-      ),
-    );
+    /**
+     * Run one scoped Claude attempt, or none when it exceeds the timeout.
+     */
+    const runOnce = (selection: ModelSelection) =>
+      runClaudeCommand(selection).pipe(Effect.scoped, Effect.timeoutOption(CLAUDE_TIMEOUT_MS));
+
+    const first = yield* runOnce(modelSelection);
+    if (Option.isNone(first)) {
+      return yield* new TextGenerationError({ operation, detail: "Claude CLI request timed out." });
+    }
+
+    let outcome = first.value;
+    if (outcome.exitCode !== 0 && CLAUDE_PRODUCT_TEXT_GENERATION_MODEL !== undefined) {
+      const customModel = customModelForBrokenTextGenerationFallback(
+        claudeSettings.customModels,
+        CLAUDE_PRODUCT_TEXT_GENERATION_MODEL,
+      );
+      // The product slug was just attempted. A custom model is used only when
+      // that attempt says the model itself is unavailable.
+      if (
+        customModel !== null &&
+        isBrokenProductTextGenerationFallback({
+          productModel: CLAUDE_PRODUCT_TEXT_GENERATION_MODEL,
+          requestedModel,
+          stdout: outcome.stdout,
+          stderr: outcome.stderr,
+        })
+      ) {
+        yield* Effect.logInfo(
+          "Retrying one-shot text generation with a configured custom model after the product model was unavailable",
+          {
+            operation,
+            productModel: CLAUDE_PRODUCT_TEXT_GENERATION_MODEL,
+          },
+        );
+        const second = yield* runOnce({
+          instanceId: modelSelection.instanceId,
+          model: customModel,
+        });
+        if (Option.isNone(second)) {
+          return yield* new TextGenerationError({
+            operation,
+            detail: "Claude CLI request timed out.",
+          });
+        }
+        outcome = second.value;
+      }
+    }
+
+    if (outcome.exitCode !== 0) {
+      // Detail is a bounded category. The exit is the process failure; stdout
+      // and stderr are not copied because they can carry credentials.
+      return yield* new TextGenerationError({
+        operation,
+        detail: describeClaudeCliFailure(outcome.exitCode, outcome.stdout, outcome.stderr),
+        cause: new Error(`Claude CLI process exited with code ${outcome.exitCode}`),
+      });
+    }
+
+    const rawStdout = outcome.stdout;
 
     const output = yield* decodeClaudeOutput(rawStdout).pipe(
       Effect.catchTags({

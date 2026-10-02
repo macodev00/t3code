@@ -338,6 +338,12 @@ function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings
     : fallbackTextGenerationProvider(settings);
 }
 
+/**
+ * Pick an enabled provider when the stored text-generation selection cannot
+ * run. The model stays the product text-generation slug. A configured custom
+ * model is substituted only after that slug's one-shot attempt reports the
+ * model itself is unavailable.
+ */
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
   // Same precedence as isModelSelectionProviderEnabled: an explicit provider
   // instance wins over the legacy providers map, which decodes to defaults
