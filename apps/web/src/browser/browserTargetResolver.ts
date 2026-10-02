@@ -1,4 +1,4 @@
-import type { ConnectionTarget } from "@t3tools/client-runtime/connection";
+import type { ConnectionTarget, PreparedConnection } from "@t3tools/client-runtime/connection";
 import type {
   BrowserNavigationTarget,
   EnvironmentId,
@@ -17,13 +17,13 @@ export {
   isPublicFaviconHost,
 } from "@t3tools/shared/hostClassification";
 
-interface PreviewEnvironmentConnection {
-  readonly httpBaseUrl: string;
+/** True when the prepared connection still carries the catalog target. */
+const hasConnectionTarget = (connection: {
   readonly target?: ConnectionTarget | undefined;
-}
+}): connection is { readonly target: ConnectionTarget } => connection.target !== undefined;
 
-/** Prepared connection for an environment, including the target used for host selection. */
-const readEnvironmentConnection = (environmentId: EnvironmentId): PreviewEnvironmentConnection => {
+/** Prepared connection for an environment. Host selection reads its target. */
+const readEnvironmentConnection = (environmentId: EnvironmentId): PreparedConnection => {
   const connection = readPreparedConnection(environmentId);
   if (!connection) throw new Error(`Environment ${environmentId} is not connected.`);
   return connection;
@@ -40,9 +40,11 @@ const isDesktopRenderer = (): boolean =>
  * bound only to 127.0.0.1 is reached from the Windows webview at localhost.
  * Saved remote hosts keep their own address.
  */
-const prefersClientLoopback = (connection: PreviewEnvironmentConnection): boolean => {
+const prefersClientLoopback = (connection: PreparedConnection): boolean => {
+  if (!hasConnectionTarget(connection)) {
+    throw new Error("Prepared connection is missing its target.");
+  }
   const target = connection.target;
-  if (!target) return false;
   if (isDesktopLocalConnectionTarget(target)) return true;
   return target._tag === "PrimaryConnectionTarget" && isDesktopRenderer();
 };
@@ -55,7 +57,7 @@ const prefersClientLoopback = (connection: PreviewEnvironmentConnection): boolea
 const resolveEnvironmentPortTarget = (
   environmentId: EnvironmentId,
   target: Extract<BrowserNavigationTarget, { readonly kind: "environment-port" }>,
-  connection: PreviewEnvironmentConnection,
+  connection: PreparedConnection,
   requestedUrl?: string,
   sourceUrl?: URL,
 ): PreviewUrlResolution => {
@@ -139,7 +141,10 @@ export function resolveDiscoveredServerUrl(environmentId: EnvironmentId, rawUrl:
       rawUrl,
       parsed,
     ).resolvedUrl;
-  } catch {
+  } catch (error) {
+    // Host selection requires the catalog target. Surface that failure
+    // instead of opening the raw discovered URL.
+    if (error instanceof Error && error.message.includes("missing its target")) throw error;
     return rawUrl;
   }
 }

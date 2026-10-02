@@ -20,8 +20,15 @@ const mocks = vi.hoisted(() => ({
   readPreparedConnection: vi.fn(
     (): {
       httpBaseUrl: string;
-      target?: BearerConnectionTarget;
-    } => ({ httpBaseUrl: "http://172.25.85.75:3773" }),
+      target: BearerConnectionTarget;
+    } => ({
+      httpBaseUrl: "http://172.25.85.75:3773",
+      target: new BearerConnectionTarget({
+        connectionId: "saved-lan",
+        environmentId: EnvironmentId.make("environment-1"),
+        label: "LAN",
+      }),
+    }),
   ),
   submittedUrl: null as ((url: string) => void) | null,
   emptyStateUrl: null as ((url: string) => void) | null,
@@ -341,6 +348,11 @@ describe("PreviewView navigation", () => {
     mocks.readPreparedConnection.mockReset();
     mocks.readPreparedConnection.mockImplementation(() => ({
       httpBaseUrl: "http://172.25.85.75:3773",
+      target: new BearerConnectionTarget({
+        connectionId: "saved-lan",
+        environmentId: EnvironmentId.make("environment-1"),
+        label: "LAN",
+      }),
     }));
     mocks.submittedUrl = null;
     mocks.emptyStateUrl = null;
