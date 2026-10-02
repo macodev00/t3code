@@ -16,6 +16,7 @@ import {
   resolveExistingSnapShotTarget,
   resolveSnapShotTargetOnce,
   resolveSnapShotDeliveryTarget,
+  shouldReportUndeliverableSnapShot,
 } from "./SnapShotCoordinator";
 import {
   beginSnapShotAnimation,
@@ -130,6 +131,58 @@ describe("window capture failures", () => {
     expect(getPendingSnapShotAnimations()).toEqual([]);
     expect(soundedIds.size).toBe(0);
     expect(pendingStarts.size).toBe(0);
+  });
+});
+
+describe("undeliverable capture reporting", () => {
+  it("reports a pending capture once however often the drain meets it again", () => {
+    const reported = new Set<string>();
+
+    expect(shouldReportUndeliverableSnapShot("capture-1", reported)).toBe(true);
+    expect(shouldReportUndeliverableSnapShot("capture-1", reported)).toBe(false);
+    expect(shouldReportUndeliverableSnapShot("capture-2", reported)).toBe(true);
+
+    reported.delete("capture-1");
+    expect(shouldReportUndeliverableSnapShot("capture-1", reported)).toBe(true);
+  });
+});
+
+describe("delivery stops when the feature turns off", () => {
+  it("leaves the capture pending when the file read finishes after the feature is off", async () => {
+    const target = DraftId.make("snap-shot-draft");
+    const capture = {
+      id: "12345678-1234-1234-1234-123456789abc",
+      name: "window.png",
+      mimeType: "image/png" as const,
+      sizeBytes: 3,
+      dataUrl: "data:image/png;base64,AQID",
+      source: {
+        kind: "snap-shot" as const,
+        capturedAt: "2026-09-01T00:00:00.000Z",
+        appName: "Editor",
+        windowTitle: "main.ts",
+      },
+    };
+    let finishRead: (value: typeof capture) => void = () => undefined;
+    const acknowledgeSnapShot = vi.fn(async () => undefined);
+    const bridge = {
+      readSnapShot: vi.fn(
+        () =>
+          new Promise<typeof capture>((resolve) => {
+            finishRead = resolve;
+          }),
+      ),
+      acknowledgeSnapShot,
+    } as unknown as DesktopSnapShotBridge;
+    let enabled = true;
+
+    const delivery = deliverSnapShot(bridge, capture, target, () => enabled);
+    enabled = false;
+    finishRead(capture);
+
+    await expect(delivery).resolves.toBe(false);
+    expect(acknowledgeSnapShot).not.toHaveBeenCalled();
+    expect(useComposerDraftStore.getState().getComposerDraft(target)?.images ?? []).toHaveLength(0);
   });
 });
 
