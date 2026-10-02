@@ -126,6 +126,11 @@ interface MakeInstanceInput {
   readonly onPreflightFailed?: (
     failure: DesktopBackendManager.PreflightFailure,
   ) => Effect.Effect<boolean>;
+  readonly onStartupFailed?: (
+    reason: string,
+    config: DesktopBackendManager.DesktopBackendStartConfig,
+  ) => Effect.Effect<boolean>;
+  readonly readinessTimeout?: Duration.Duration;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
   readonly configResolve?: Effect.Effect<
     DesktopBackendManager.DesktopBackendStartConfig,
@@ -185,6 +190,8 @@ function makeTestInstance(input: MakeInstanceInput) {
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
     ...(input.onShutdown ? { onShutdown: () => input.onShutdown! } : {}),
     ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
+    ...(input.onStartupFailed ? { onStartupFailed: input.onStartupFailed } : {}),
+    ...(input.readinessTimeout === undefined ? {} : { readinessTimeout: input.readinessTimeout }),
   });
 
   return instance.pipe(Effect.provide(servicesLayer));
@@ -1395,6 +1402,460 @@ describe("DesktopBackendManager", () => {
 
         yield* TestClock.adjust(Duration.seconds(1));
         assert.deepEqual(failures, ["WSL toolchain probe timed out"]);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect(
+    "replaces a live run that never becomes reachable once startup failures hit the cap",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // wsl-only: the process stays up, but Windows cannot reach it (the
+          // iptables case). The hook swaps the resolved config to loopback.
+          const wslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+            ...baseConfig,
+            httpBaseUrl: new URL("http://172.17.0.1:3773"),
+            runningDistro: "Ubuntu-22.04",
+          };
+          const useFallback = yield* Ref.make(false);
+          const startupFailures: string[] = [];
+          const spawnedUrls = yield* Queue.unbounded<string>();
+          const ready = yield* Deferred.make<void>();
+          let currentUrl = "";
+
+          const spawnerLayer = Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              Effect.gen(function* () {
+                const scope = yield* Scope.Scope;
+                const exited = yield* Deferred.make<void>();
+                yield* Queue.offer(spawnedUrls, currentUrl);
+                yield* Scope.addFinalizer(scope, Deferred.succeed(exited, void 0));
+                return makeProcess({
+                  exitCode: Deferred.await(exited).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+                  kill: () => Deferred.succeed(exited, void 0).pipe(Effect.asVoid),
+                });
+              }),
+            ),
+          );
+
+          const instance = yield* makeTestInstance({
+            spawnerLayer,
+            readinessTimeout: Duration.seconds(1),
+            configResolve: Ref.get(useFallback).pipe(
+              Effect.map((fallback) => (fallback ? baseConfig : wslConfig)),
+              Effect.tap((config) =>
+                Effect.sync(() => {
+                  currentUrl = config.httpBaseUrl.href;
+                }),
+              ),
+            ),
+            httpClientLayer: httpClientLayer((request) =>
+              Effect.succeed(
+                responseForRequest(request, request.url.startsWith("http://127.0.0.1") ? 200 : 503),
+              ),
+            ),
+            onReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),
+            onStartupFailed: (reason) =>
+              Effect.sync(() => {
+                startupFailures.push(reason);
+              }).pipe(Effect.andThen(Ref.set(useFallback, true)), Effect.as(true)),
+          });
+
+          yield* instance.start;
+          assert.equal(yield* Queue.take(spawnedUrls), "http://172.17.0.1:3773/");
+
+          // Two unreachable readiness rounds are tolerated (slow WSL cold boot).
+          yield* TestClock.adjust(Duration.seconds(2));
+          assert.deepEqual(startupFailures, []);
+          assert.equal(yield* Queue.size(spawnedUrls), 0);
+
+          // The third round surfaces the failure once and swaps the run.
+          yield* TestClock.adjust(Duration.seconds(1));
+          assert.equal(yield* Queue.take(spawnedUrls), "http://127.0.0.1:3773/");
+          yield* Deferred.await(ready);
+          assert.equal(startupFailures.length, 1);
+          assert.equal((yield* instance.snapshot).ready, true);
+        }).pipe(Effect.provide(TestClock.layer())),
+      ),
+  );
+
+  it.effect("stopping the backend cancels a pending startup failure hook", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hookEntered = yield* Deferred.make<void>();
+        const releaseHook = yield* Deferred.make<void>();
+        let fallbackApplied = false;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const scope = yield* Scope.Scope;
+              const exited = yield* Deferred.make<void>();
+              yield* Scope.addFinalizer(scope, Deferred.succeed(exited, void 0));
+              return makeProcess({
+                exitCode: Deferred.await(exited).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+                kill: () => Deferred.succeed(exited, void 0).pipe(Effect.asVoid),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          readinessTimeout: Duration.seconds(1),
+          httpClientLayer: httpClientLayer((request) =>
+            Effect.succeed(responseForRequest(request, 503)),
+          ),
+          onStartupFailed: () =>
+            Deferred.succeed(hookEntered, void 0).pipe(
+              Effect.andThen(Deferred.await(releaseHook)),
+              Effect.andThen(
+                Effect.sync(() => {
+                  fallbackApplied = true;
+                }),
+              ),
+              Effect.as(true),
+            ),
+        });
+
+        yield* instance.start;
+        yield* TestClock.adjust(Duration.seconds(3));
+        yield* Deferred.await(hookEntered);
+
+        yield* instance.stop();
+        yield* Deferred.succeed(releaseHook, void 0);
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(fallbackApplied, false);
+        assert.equal((yield* instance.snapshot).desiredRunning, false);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("keeps a backend that became ready while the startup failure hook was pending", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hookEntered = yield* Deferred.make<void>();
+        const releaseHook = yield* Deferred.make<void>();
+        const ready = yield* Deferred.make<void>();
+        let spawnCount = 0;
+        let reachable = false;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              spawnCount += 1;
+              const scope = yield* Scope.Scope;
+              const exited = yield* Deferred.make<void>();
+              yield* Scope.addFinalizer(scope, Deferred.succeed(exited, void 0));
+              return makeProcess({
+                exitCode: Deferred.await(exited).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+                kill: () => Deferred.succeed(exited, void 0).pipe(Effect.asVoid),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          readinessTimeout: Duration.seconds(1),
+          httpClientLayer: httpClientLayer((request) =>
+            Effect.sync(() => responseForRequest(request, reachable ? 200 : 503)),
+          ),
+          onReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),
+          onStartupFailed: () =>
+            Deferred.succeed(hookEntered, void 0).pipe(
+              Effect.andThen(Deferred.await(releaseHook)),
+              Effect.as(true),
+            ),
+        });
+
+        yield* instance.start;
+        yield* TestClock.adjust(Duration.seconds(3));
+        yield* Deferred.await(hookEntered);
+
+        reachable = true;
+        yield* TestClock.adjust(Duration.seconds(1));
+        yield* Deferred.await(ready);
+
+        yield* Deferred.succeed(releaseHook, void 0);
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(spawnCount, 1);
+        assert.equal((yield* instance.snapshot).ready, true);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("stop is not held up by a pending startup failure hook after pre-ready exits", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hookEntered = yield* Deferred.make<void>();
+        const releaseHook = yield* Deferred.make<void>();
+        const exits = yield* Queue.unbounded<void>();
+        let fallbackApplied = false;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.succeed(
+              makeProcess({
+                exitCode: Queue.offer(exits, void 0).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              }),
+            ),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer(() => Effect.never),
+          onStartupFailed: () =>
+            Deferred.succeed(hookEntered, void 0).pipe(
+              Effect.andThen(Deferred.await(releaseHook)),
+              Effect.andThen(
+                Effect.sync(() => {
+                  fallbackApplied = true;
+                }),
+              ),
+              Effect.as(true),
+            ),
+        });
+
+        yield* instance.start;
+        // Pre-ready exits restart after 0.5s and 1s; the third exit hits the cap.
+        yield* Queue.take(exits);
+        yield* TestClock.adjust(Duration.millis(500));
+        yield* Queue.take(exits);
+        yield* TestClock.adjust(Duration.seconds(1));
+        yield* Deferred.await(hookEntered);
+
+        yield* instance.stop();
+        yield* Deferred.succeed(releaseHook, void 0);
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(fallbackApplied, false);
+        assert.equal((yield* instance.snapshot).desiredRunning, false);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("does not restart a backend that was stopped while being replaced", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const closing = yield* Queue.unbounded<void>();
+        const releaseClose = yield* Deferred.make<void>();
+        let spawnCount = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              spawnCount += 1;
+              const scope = yield* Scope.Scope;
+              const exited = yield* Deferred.make<void>();
+              // Closing the run blocks until the test lets it finish.
+              yield* Scope.addFinalizer(
+                scope,
+                Queue.offer(closing, void 0).pipe(
+                  Effect.andThen(Deferred.await(releaseClose)),
+                  Effect.andThen(Deferred.succeed(exited, void 0)),
+                ),
+              );
+              return makeProcess({
+                exitCode: Deferred.await(exited).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          readinessTimeout: Duration.seconds(1),
+          httpClientLayer: httpClientLayer((request) =>
+            Effect.succeed(responseForRequest(request, 503)),
+          ),
+          onStartupFailed: () => Effect.succeed(true),
+        });
+
+        yield* instance.start;
+        yield* TestClock.adjust(Duration.seconds(3));
+        // The replacement is closing the old run; the user stops the backend now.
+        yield* Queue.take(closing);
+        const userStop = yield* Effect.forkChild(instance.stop());
+        yield* TestClock.adjust(Duration.millis(1));
+        yield* Deferred.succeed(releaseClose, void 0);
+        yield* Fiber.join(userStop);
+        yield* TestClock.adjust(Duration.seconds(1));
+
+        assert.equal(spawnCount, 1);
+        assert.equal((yield* instance.snapshot).desiredRunning, false);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("surfaces repeated exits before readiness and keeps retrying when declined", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const startupFailures = yield* Queue.unbounded<string>();
+        let startCount = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.sync(() => {
+              startCount += 1;
+              return makeProcess({
+                exitCode: Queue.offer(starts, startCount).pipe(
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          httpClientLayer: httpClientLayer(() => Effect.never),
+          onStartupFailed: (reason) => Queue.offer(startupFailures, reason).pipe(Effect.as(false)),
+        });
+
+        yield* instance.start;
+        assert.equal(yield* Queue.take(starts), 1);
+        yield* TestClock.adjust(Duration.millis(500));
+        assert.equal(yield* Queue.take(starts), 2);
+        assert.equal(yield* Queue.size(startupFailures), 0);
+
+        // The third exit before the backend ever became ready hits the cap.
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(yield* Queue.take(starts), 3);
+        yield* Queue.take(startupFailures);
+
+        // Declined (a Windows primary): the restart loop carries on.
+        yield* TestClock.adjust(Duration.seconds(2));
+        assert.equal(yield* Queue.take(starts), 4);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("waits for the startup failure hook before restarting a crashed run", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const wslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+          ...baseConfig,
+          httpBaseUrl: new URL("http://172.17.0.1:3773"),
+          runningDistro: "Ubuntu-22.04",
+        };
+        const useFallback = yield* Ref.make(false);
+        const hookEntered = yield* Deferred.make<void>();
+        const releaseHook = yield* Deferred.make<void>();
+        const spawnedUrls = yield* Queue.unbounded<string>();
+        const ready = yield* Deferred.make<void>();
+        let currentUrl = "";
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.sync(() =>
+              makeProcess({
+                exitCode: Effect.sync(() => currentUrl).pipe(
+                  Effect.tap((url) => Queue.offer(spawnedUrls, url)),
+                  Effect.flatMap((url) =>
+                    url.startsWith("http://127.0.0.1")
+                      ? Effect.never
+                      : Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+                  ),
+                ),
+              }),
+            ),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          configResolve: Ref.get(useFallback).pipe(
+            Effect.map((fallback) => (fallback ? baseConfig : wslConfig)),
+            Effect.tap((config) =>
+              Effect.sync(() => {
+                currentUrl = config.httpBaseUrl.href;
+              }),
+            ),
+          ),
+          httpClientLayer: httpClientLayer((request) =>
+            Effect.succeed(
+              responseForRequest(request, request.url.startsWith("http://127.0.0.1") ? 200 : 503),
+            ),
+          ),
+          onReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),
+          onStartupFailed: () =>
+            Deferred.succeed(hookEntered, void 0).pipe(
+              Effect.andThen(Deferred.await(releaseHook)),
+              Effect.andThen(Ref.set(useFallback, true)),
+              Effect.as(true),
+            ),
+        });
+
+        yield* instance.start;
+        assert.equal(yield* Queue.take(spawnedUrls), "http://172.17.0.1:3773/");
+        yield* TestClock.adjust(Duration.millis(500));
+        assert.equal(yield* Queue.take(spawnedUrls), "http://172.17.0.1:3773/");
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(yield* Queue.take(spawnedUrls), "http://172.17.0.1:3773/");
+        yield* Deferred.await(hookEntered);
+
+        // The crashed run must not be replaced until the hook applies the fallback.
+        yield* TestClock.adjust(Duration.seconds(30));
+        assert.equal(yield* Queue.size(spawnedUrls), 0);
+
+        yield* Deferred.succeed(releaseHook, void 0);
+        yield* TestClock.adjust(Duration.seconds(2));
+        assert.equal(yield* Queue.take(spawnedUrls), "http://127.0.0.1:3773/");
+        yield* Deferred.await(ready);
+        assert.equal((yield* instance.snapshot).ready, true);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("does not surface exits that happen after the backend became ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const readied = yield* Queue.unbounded<void>();
+        const exits = yield* Queue.unbounded<string>();
+        let startupFailures = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.succeed(
+              makeProcess({
+                // Each run crashes only after it has reported ready.
+                exitCode: Queue.take(readied).pipe(Effect.as(ChildProcessSpawner.ExitCode(1))),
+              }),
+            ),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          onReady: Queue.offer(readied, void 0).pipe(Effect.asVoid),
+          onStartupFailed: () =>
+            Effect.sync(() => {
+              startupFailures += 1;
+            }).pipe(Effect.as(false)),
+          backendOutputLog: {
+            persistFailure: ({ details }) => Queue.offer(exits, details).pipe(Effect.asVoid),
+          },
+        });
+
+        yield* instance.start;
+        for (let i = 0; i < 5; i++) {
+          yield* Queue.take(exits);
+          yield* TestClock.adjust(Duration.seconds(1));
+        }
+        assert.equal(startupFailures, 0);
       }).pipe(Effect.provide(TestClock.layer())),
     ),
   );

@@ -277,6 +277,33 @@ export const layer = Layer.effect(
       },
     );
 
+    // Preflight passed, but the primary still never became ready: it keeps
+    // exiting, or it stays up and the readiness probe keeps timing out. The
+    // connecting splash has no controls, so wsl-only mode would sit there
+    // forever. Use Windows for this launch only — the same in-memory fallback
+    // as a bounded preflight failure — and try WSL again on the next launch.
+    // A run that already resolved to Windows (no distro) has nothing to fall
+    // back to and keeps its existing restart loop.
+    const handlePrimaryStartupFailure = Effect.fn("desktop.backendPool.primaryStartupFailed")(
+      function* (reason: string, config: DesktopBackendManager.DesktopBackendStartConfig) {
+        if (config.runningDistro === undefined) return false;
+        const detail = `The WSL backend (${config.runningDistro}) did not become ready (${reason}).`;
+        yield* logBackendPoolWarning(
+          "primary WSL backend did not become ready; using Windows for this launch",
+          { reason, distro: config.runningDistro },
+        );
+        // A failed dialog must not keep the splash up.
+        yield* electronDialog
+          .showErrorBox(
+            "WSL backend isn't responding",
+            `${detail}\n\nT3 Code will use the Windows backend for this launch and retry WSL the next time the app starts.`,
+          )
+          .pipe(Effect.ignoreCause);
+        yield* appSettings.applyWslWindowsFallbackInMemory;
+        return true;
+      },
+    );
+
     const primary = yield* DesktopBackendManager.makeBackendInstance({
       id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
       // Keep this lazy. The pool layer is initialized before startup loads
@@ -301,6 +328,7 @@ export const layer = Layer.effect(
         ),
       onShutdown: () => desktopWindow.handleBackendNotReady,
       onPreflightFailed: handlePrimaryPreflightFailure,
+      onStartupFailed: handlePrimaryStartupFailure,
     });
 
     const instancesRef = yield* SynchronizedRef.make<
