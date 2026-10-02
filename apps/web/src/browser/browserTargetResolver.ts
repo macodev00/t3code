@@ -1,4 +1,5 @@
-import type { ConnectionTarget, PreparedConnection } from "@t3tools/client-runtime/connection";
+import type { ConnectionTarget } from "@t3tools/client-runtime/connection";
+import type { EnvironmentCatalogState } from "@t3tools/client-runtime/state/connections";
 import type {
   BrowserNavigationTarget,
   EnvironmentId,
@@ -7,8 +8,22 @@ import type {
 import { isLoopbackHost, normalizePreviewUrl } from "@t3tools/shared/preview";
 import { isLocalLoopbackHost, isPrivateNetworkHost } from "@t3tools/shared/hostClassification";
 
+import { environmentCatalog } from "~/connection/catalog";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { readPreparedConnection } from "~/state/session";
+
+/** Advertised server URL plus the connection target used to choose a host. */
+interface BrowserSessionConnection {
+  readonly httpBaseUrl: string;
+  readonly target: ConnectionTarget;
+}
+
+/** Prepared session before host selection decides whether the target is required. */
+interface PreparedBrowserSession {
+  readonly httpBaseUrl: string;
+  readonly target: ConnectionTarget | undefined;
+}
 
 export {
   normalizeHostname,
@@ -17,16 +32,45 @@ export {
   isPublicFaviconHost,
 } from "@t3tools/shared/hostClassification";
 
-/** True when the prepared connection still carries the catalog target. */
-const hasConnectionTarget = (connection: {
-  readonly target?: ConnectionTarget | undefined;
-}): connection is { readonly target: ConnectionTarget } => connection.target !== undefined;
+/**
+ * Target from the mounted environment catalog. That entry is the connection
+ * the session was opened with, including desktop-local `local:` ids. Returns
+ * undefined when the catalog is not mounted yet so startup does not build it.
+ */
+const readMountedCatalogTarget = (environmentId: EnvironmentId): ConnectionTarget | undefined => {
+  const node = appAtomRegistry.getNodes().get(environmentCatalog.catalogValueAtom);
+  if (node === undefined) return undefined;
+  const state = node.currentState();
+  if (state !== "valid" && state !== "stale") return undefined;
+  const catalog: EnvironmentCatalogState = node.value();
+  return catalog.entries.get(environmentId)?.target;
+};
 
-/** Prepared connection for an environment. Host selection reads its target. */
-const readEnvironmentConnection = (environmentId: EnvironmentId): PreparedConnection => {
+/** Target carried on a prepared connection. Real sessions can omit it. */
+const readPreparedTarget = (connection: {
+  readonly target?: ConnectionTarget | undefined;
+}): ConnectionTarget | undefined => connection.target;
+
+/**
+ * Session used for browser host selection. The mounted catalog target wins;
+ * the prepared connection supplies the advertised URL and its target when the
+ * catalog entry is not available yet.
+ */
+const readEnvironmentConnection = (environmentId: EnvironmentId): PreparedBrowserSession => {
   const connection = readPreparedConnection(environmentId);
   if (!connection) throw new Error(`Environment ${environmentId} is not connected.`);
-  return connection;
+  return {
+    httpBaseUrl: connection.httpBaseUrl,
+    target: readMountedCatalogTarget(environmentId) ?? readPreparedTarget(connection),
+  };
+};
+
+/** Requires the connection target once the environment host is privately reachable. */
+const requireSessionTarget = (connection: PreparedBrowserSession): BrowserSessionConnection => {
+  if (connection.target === undefined) {
+    throw new Error("Prepared connection is missing its target.");
+  }
+  return { httpBaseUrl: connection.httpBaseUrl, target: connection.target };
 };
 
 /** True in the desktop renderer, which shares loopback with a local primary backend. */
@@ -40,10 +84,7 @@ const isDesktopRenderer = (): boolean =>
  * bound only to 127.0.0.1 is reached from the Windows webview at localhost.
  * Saved remote hosts keep their own address.
  */
-const prefersClientLoopback = (connection: PreparedConnection): boolean => {
-  if (!hasConnectionTarget(connection)) {
-    throw new Error("Prepared connection is missing its target.");
-  }
+const prefersClientLoopback = (connection: BrowserSessionConnection): boolean => {
   const target = connection.target;
   if (isDesktopLocalConnectionTarget(target)) return true;
   return target._tag === "PrimaryConnectionTarget" && isDesktopRenderer();
@@ -57,7 +98,7 @@ const prefersClientLoopback = (connection: PreparedConnection): boolean => {
 const resolveEnvironmentPortTarget = (
   environmentId: EnvironmentId,
   target: Extract<BrowserNavigationTarget, { readonly kind: "environment-port" }>,
-  connection: PreparedConnection,
+  connection: PreparedBrowserSession,
   requestedUrl?: string,
   sourceUrl?: URL,
 ): PreviewUrlResolution => {
@@ -67,6 +108,7 @@ const resolveEnvironmentPortTarget = (
       "This environment port needs the planned authenticated preview gateway; its server address is not directly private-network reachable.",
     );
   }
+  const session = requireSessionTarget(connection);
   const protocol = target.protocol ?? "http";
   const path = target.path?.startsWith("/") ? target.path : `/${target.path ?? ""}`;
   const normalizedEnvironmentHost = environmentUrl.hostname.replace(/^\[|\]$/g, "");
@@ -74,7 +116,7 @@ const resolveEnvironmentPortTarget = (
   // non-loopback advertisement, use `localhost` so Chromium's dual-stack
   // lookup can reach a server bound only to ::1 or 127.0.0.1.
   const preserveLoopback =
-    prefersClientLoopback(connection) || isLocalLoopbackHost(normalizedEnvironmentHost);
+    prefersClientLoopback(session) || isLocalLoopbackHost(normalizedEnvironmentHost);
   const resolvedHost = preserveLoopback
     ? "localhost"
     : normalizedEnvironmentHost.includes(":")
