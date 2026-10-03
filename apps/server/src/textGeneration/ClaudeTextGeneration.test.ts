@@ -579,4 +579,40 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
         }),
     ),
   );
+
+  it.effect("surfaces a Claude stdout API error instead of wrapper stderr", () =>
+    withFakeClaudeEnv(
+      {
+        exitCode: 1,
+        stderr:
+          "Using the OpenRouter credential from the global credential ~/.ori/credentials.json.",
+        output: JSON.stringify({
+          api_error_status: 400,
+          is_error: true,
+          result:
+            "API Error: 400 0 endpoints out of 4 requested are available matching your guardrail restrictions and data policy. Model blocked by guardrail: 4 endpoints excluded",
+        }),
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            textGeneration.generateCommitMessage({
+              cwd: process.cwd(),
+              branch: "feature/claude-api-error",
+              stagedSummary: "M README.md",
+              stagedPatch: "diff --git a/README.md b/README.md",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("claudeAgent"),
+                model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              },
+            }),
+          );
+
+          expect(error._tag).toBe("TextGenerationError");
+          expect(error.detail).toContain("API error 400");
+          expect(error.detail).toContain("Model blocked by guardrail");
+          expect(error.detail).not.toContain("OpenRouter credential");
+        }),
+    ),
+  );
 });

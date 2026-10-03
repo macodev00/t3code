@@ -69,6 +69,42 @@ const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknow
 const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
+const ClaudeCliApiErrorPayload = Schema.Struct({
+  api_error_status: Schema.optionalKey(Schema.Finite),
+  is_error: Schema.optionalKey(Schema.Boolean),
+  result: Schema.optionalKey(Schema.String),
+});
+const decodeClaudeCliApiErrorStdout = Schema.decodeOption(
+  Schema.fromJsonString(
+    Schema.Union([ClaudeCliApiErrorPayload, Schema.Array(ClaudeCliApiErrorPayload)]),
+  ),
+);
+
+/**
+ * Prefer a structured stdout API error over informational wrapper stderr.
+ */
+function claudeCliFailureDetail(stdout: string, stderr: string): string {
+  const stdoutDetail = stdout.trim();
+  const stderrDetail = stderr.trim();
+  const decoded = decodeClaudeCliApiErrorStdout(stdoutDetail);
+  if (Option.isSome(decoded)) {
+    const payloads = Array.isArray(decoded.value) ? decoded.value : [decoded.value];
+    for (let i = payloads.length - 1; i >= 0; i--) {
+      const payload = payloads[i];
+      if (payload === undefined) continue;
+      const status = payload.api_error_status;
+      const result = payload.result?.trim();
+      const hasResult = result !== undefined && result.length > 0;
+      if (status === undefined && payload.is_error !== true) continue;
+      if (status !== undefined && hasResult) {
+        return `API error ${status}: ${result}`;
+      }
+      if (hasResult) return result;
+      if (status !== undefined) return `API error ${status}`;
+    }
+  }
+  return stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
+}
 
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
@@ -250,9 +286,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       );
 
       if (exitCode !== 0) {
-        const stderrDetail = stderr.trim();
-        const stdoutDetail = stdout.trim();
-        const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
+        const detail = claudeCliFailureDetail(stdout, stderr);
         return yield* new TextGenerationError({
           operation,
           detail:
