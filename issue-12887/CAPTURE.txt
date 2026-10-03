@@ -1,0 +1,3 @@
+before: pingdotgg/t3code main @ fed41fa88bb27cb4325cb208d571393850bc63c2
+after: fix commit (from cursor/pr-diff-path-collision-6571 fa8c556bc) cherry-picked onto that main = 206558ea5938ba8d0b7588a20922acf5ff628620
+scene: Diff panel, scope Changes, fix/office-config -> main, click Show file tree
