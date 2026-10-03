@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# push-assets.sh <issue> <capture-dir-with-before-and-after> [fork-url]
+# push-assets.sh <issue> <capture-dir-with-before-and-after> [fork-push-url, e.g. "$(git remote get-url origin)"]
 # Commits PNG/GIF/MP4 captures to the orphan `pr-assets` branch of the fork under issue-<N>/, pushes
 # (retrying on races), then prints commit-pinned raw URLs and writes <capture-dir>/ui-changes.md.
 # Never commit captures to a code branch (CONTRIBUTING: "do not commit PR-only screenshots").
 set -euo pipefail
 ISSUE=$1; SRC=$(realpath "$2"); FORK=${3:-https://github.com/macodev00/t3code.git}
-SLUG=$(echo "$FORK" | sed -E 's#https://github.com/##; s#\.git$##')
+SLUG=${ASSETS_SLUG:-macodev00/t3code}   # used for the public raw URLs (FORK may carry credentials)
 WT=$(mktemp -d)
 git init -q "$WT"; cd "$WT"
 git config user.name macodev00; git config user.email 273427913+macodev00@users.noreply.github.com
