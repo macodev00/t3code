@@ -4,6 +4,7 @@ import {
   type OrchestrationSessionStatus,
   ProviderDriverKind,
   ProviderInstanceId,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProviderSendTurnInput,
   ThreadId,
   TurnId,
@@ -18,6 +19,7 @@ import * as Stream from "effect/Stream";
 import { OrchestrationCommandInvariantError } from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import type { UnterminatedProviderTask } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderSessionDirectoryPersistenceError,
   ProviderSessionNotFoundError,
@@ -72,14 +74,19 @@ const makeProviderService = (liveThreadIds: ReadonlyArray<ThreadId> = []) =>
     streamEvents: Stream.empty,
   }) satisfies ProviderService.ProviderService["Service"];
 
-const queryWithThreads = (threads: ReadonlyArray<ReturnType<typeof makeThread>>) =>
+const queryWithThreads = (
+  threads: ReadonlyArray<ReturnType<typeof makeThread>>,
+  tasks: ReadonlyArray<UnterminatedProviderTask> = [],
+) =>
   ({
     getUserInputActivity: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.succeed({ threads } as never),
+    listUnterminatedTasks: () => Effect.succeed(tasks),
   }) as unknown as ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"];
 
 const runReconciliation = (input: {
   readonly threads: ReadonlyArray<ReturnType<typeof makeThread>>;
+  readonly tasks?: ReadonlyArray<UnterminatedProviderTask>;
   readonly continueAfterRestart?: boolean;
   readonly liveThreadIds?: ReadonlyArray<ThreadId>;
   readonly providerService?: ProviderService.ProviderService["Service"];
@@ -89,7 +96,7 @@ const runReconciliation = (input: {
   ServerRuntimeStartup.reconcileProviderSessions.pipe(
     Effect.provideService(
       ProjectionSnapshotQuery.ProjectionSnapshotQuery,
-      queryWithThreads(input.threads),
+      queryWithThreads(input.threads, input.tasks),
     ),
     Effect.provideService(
       ProviderService.ProviderService,
@@ -164,6 +171,7 @@ it.effect("marks active running sessions that have persisted resume state", () =
           activeTurnId: "turn-mark-active",
           continueAfterServerUpdate: active.session.activeTurnId,
           continueAfterServerUpdatePrepared: null,
+          continueAfterServerUpdateTasks: null,
         });
       }),
     ),
@@ -347,6 +355,7 @@ it.effect.each(
             continueAfterServerUpdate: continuationTurnId,
             continueAfterServerUpdatePrepared: true,
             activeTurnId: null,
+            continueAfterServerUpdateTasks: null,
           },
         );
       }
@@ -875,6 +884,7 @@ for (const preparedStatus of [
         activeTurnId: null,
         continueAfterServerUpdate: turnId,
         continueAfterServerUpdatePrepared: true,
+        continueAfterServerUpdateTasks: null,
       });
 
       if (preparedStatus === "completed after update marking") {
@@ -904,6 +914,7 @@ for (const preparedStatus of [
         activeTurnId: null,
         continueAfterServerUpdate: null,
         continueAfterServerUpdatePrepared: null,
+        continueAfterServerUpdateTasks: null,
       });
     }),
   );
@@ -966,6 +977,7 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
         activeTurnId: null,
         continueAfterServerUpdate: turnId,
         continueAfterServerUpdatePrepared: true,
+        continueAfterServerUpdateTasks: null,
       },
     ]);
     assert.deepStrictEqual(
@@ -987,5 +999,386 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
       continueAfterServerUpdate: null,
       continueAfterServerUpdatePrepared: null,
     });
+  }),
+);
+
+it.effect("marks a ready thread whose background tasks were still running", () => {
+  const ready = makeThread("thread-mark-background", "ready");
+  const upserts: ProviderSessionDirectory.ProviderRuntimeBinding[] = [];
+  return ServerRuntimeStartup.markRunningProviderSessionsForContinuation.pipe(
+    Effect.provideService(
+      ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+      queryWithThreads(
+        [ready],
+        [
+          {
+            threadId: ready.id,
+            taskId: "task-explore",
+            label: "Explore the repo",
+          },
+        ],
+      ),
+    ),
+    Effect.provideService(ProviderSessionDirectory.ProviderSessionDirectory, {
+      getBinding: (threadId) =>
+        Effect.succeedSome({
+          threadId,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId,
+          resumeCursor: { threadId },
+          runtimePayload: { activeTurnId: null },
+        }),
+      upsert: (binding) => Effect.sync(() => upserts.push(binding)),
+      recordImportedTranscript: () => Effect.die("unused"),
+      getProvider: () => Effect.die("unused"),
+      listThreadIds: () => Effect.die("unused"),
+      listBindings: () => Effect.succeed([]),
+    }),
+    Effect.tap((marked) =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(marked, [ready.id]);
+        assert.deepStrictEqual(upserts[0]?.runtimePayload, {
+          activeTurnId: null,
+          continueAfterServerUpdate: "restart-background-tasks",
+          continueAfterServerUpdatePrepared: null,
+          continueAfterServerUpdateTasks: [{ taskId: "task-explore", label: "Explore the repo" }],
+        });
+      }),
+    ),
+  );
+});
+
+it.effect("continues a ready thread by naming the background tasks a restart stopped", () =>
+  Effect.gen(function* () {
+    const thread = makeThread("thread-background-continue", "ready");
+    const continued = yield* Deferred.make<void>();
+    const sends: ProviderSendTurnInput[] = [];
+    const dispatched: OrchestrationCommand[] = [];
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: true,
+      tasks: [{ threadId: thread.id, taskId: "task-shell", label: "tail the logs" }],
+      providerService: {
+        ...makeProviderService(),
+        getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+        sendTurn: (input) =>
+          Effect.gen(function* () {
+            sends.push(input);
+            yield* Deferred.succeed(continued, undefined);
+            return { threadId: input.threadId, turnId: TurnId.make("turn-continued-background") };
+          }),
+      },
+      directory: {
+        getBinding: () =>
+          Effect.succeedSome({
+            threadId: thread.id,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            providerInstanceId,
+            status: "running" as const,
+            resumeCursor: { threadId: thread.id },
+            runtimePayload: { activeTurnId: null },
+          }),
+        upsert: () => Effect.void,
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      dispatch: (command) =>
+        Effect.sync(() => {
+          dispatched.push(command);
+          return { sequence: dispatched.length };
+        }),
+    });
+    yield* Deferred.await(continued);
+    assert.deepStrictEqual(sends, [
+      {
+        threadId: thread.id,
+        input:
+          "Continue where you left off.\n\nThese background tasks were stopped by the server restart and did not finish:\n- tail the logs",
+        interactionMode: "default",
+      },
+    ]);
+    const stopped = dispatched.find((command) => command.type === "thread.activity.append");
+    assert.equal(stopped?.type, "thread.activity.append");
+    if (stopped?.type === "thread.activity.append") {
+      assert.equal(stopped.activity.kind, "task.completed");
+      assert.deepStrictEqual(stopped.activity.payload, {
+        taskId: "task-shell",
+        status: "stopped",
+        title: "tail the logs",
+        summary: "Stopped because the server restarted.",
+        detail: "Stopped because the server restarted.",
+      });
+    }
+    assert.equal(
+      dispatched.some(
+        (command) => command.type === "thread.session.set" && command.session.status === "error",
+      ),
+      false,
+    );
+  }),
+);
+
+it.effect(
+  "names recorded background tasks when retrying a starting session after they were settled",
+  () =>
+    Effect.gen(function* () {
+      const thread = makeThread("thread-background-retry", "starting");
+      const continued = yield* Deferred.make<void>();
+      const sends: ProviderSendTurnInput[] = [];
+      const dispatched: OrchestrationCommand[] = [];
+      yield* runReconciliation({
+        threads: [thread],
+        continueAfterRestart: true,
+        tasks: [],
+        providerService: {
+          ...makeProviderService(),
+          getCapabilities: () =>
+            Effect.succeed({
+              sessionModelSwitch: "in-session" as const,
+              promptlessTurnContinuation: true,
+            }),
+          sendTurn: (input) =>
+            Effect.gen(function* () {
+              sends.push(input);
+              yield* Deferred.succeed(continued, undefined);
+              return { threadId: input.threadId, turnId: TurnId.make("turn-retried-background") };
+            }),
+        },
+        directory: {
+          getBinding: () =>
+            Effect.succeedSome({
+              threadId: thread.id,
+              provider: ProviderDriverKind.make("claudeAgent"),
+              providerInstanceId,
+              status: "starting" as const,
+              resumeCursor: { threadId: thread.id },
+              runtimePayload: {
+                activeTurnId: null,
+                continueAfterServerUpdate: "restart-background-tasks",
+                continueAfterServerUpdatePrepared: true,
+                continueAfterServerUpdateTasks: [{ taskId: "task-shell", label: "tail the logs" }],
+              },
+            }),
+          upsert: () => Effect.void,
+          recordImportedTranscript: () => Effect.die("unused"),
+          getProvider: () => Effect.die("unused"),
+          listThreadIds: () => Effect.die("unused"),
+          listBindings: () => Effect.succeed([]),
+        },
+        dispatch: (command) =>
+          Effect.sync(() => {
+            dispatched.push(command);
+            return { sequence: dispatched.length };
+          }),
+      });
+      yield* Deferred.await(continued);
+      assert.deepStrictEqual(sends, [
+        {
+          threadId: thread.id,
+          input:
+            "Continue where you left off.\n\nThese background tasks were stopped by the server restart and did not finish:\n- tail the logs",
+          interactionMode: "default",
+        },
+      ]);
+      assert.equal(
+        dispatched.some((command) => command.type === "thread.activity.append"),
+        false,
+      );
+    }),
+);
+
+it.effect("settles unterminated background tasks when restart continuation is off", () =>
+  Effect.gen(function* () {
+    const thread = makeThread("thread-background-settle", "ready");
+    const sends: ProviderSendTurnInput[] = [];
+    const dispatched: OrchestrationCommand[] = [];
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: false,
+      tasks: [{ threadId: thread.id, taskId: "task-agent", label: "Review the diff" }],
+      providerService: {
+        ...makeProviderService(),
+        sendTurn: (input) =>
+          Effect.sync(() => {
+            sends.push(input);
+            return { threadId: input.threadId, turnId: TurnId.make("turn-should-not-send") };
+          }),
+      },
+      directory: {
+        getBinding: () =>
+          Effect.succeedSome({
+            threadId: thread.id,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            providerInstanceId,
+            status: "running" as const,
+            resumeCursor: { threadId: thread.id },
+            runtimePayload: { activeTurnId: null },
+          }),
+        upsert: () => Effect.void,
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      dispatch: (command) =>
+        Effect.sync(() => {
+          dispatched.push(command);
+          return { sequence: dispatched.length };
+        }),
+    });
+    assert.deepStrictEqual(sends, []);
+    const session = dispatched.find((command) => command.type === "thread.session.set");
+    assert.equal(session?.type, "thread.session.set");
+    if (session?.type === "thread.session.set") {
+      assert.equal(session.session.status, "error");
+      assert.equal(
+        session.session.lastError,
+        "Provider session did not survive a server restart. Send a new message to continue.",
+      );
+    }
+    const stopped = dispatched.filter((command) => command.type === "thread.activity.append");
+    assert.equal(stopped.length, 1);
+    const [onlyStopped] = stopped;
+    assert.equal(onlyStopped?.type, "thread.activity.append");
+    if (onlyStopped?.type === "thread.activity.append") {
+      assert.equal(onlyStopped.activity.kind, "task.completed");
+      assert.equal((onlyStopped.activity.payload as { status?: string }).status, "stopped");
+    }
+  }),
+);
+
+it.effect("clears a stale continuation task list when no background tasks are open", () => {
+  const active = makeThread("thread-mark-stale-tasks", "running", TurnId.make("turn-mark-stale"));
+  const upserts: ProviderSessionDirectory.ProviderRuntimeBinding[] = [];
+  return ServerRuntimeStartup.markRunningProviderSessionsForContinuation.pipe(
+    Effect.provideService(
+      ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+      queryWithThreads([active], []),
+    ),
+    Effect.provideService(ProviderSessionDirectory.ProviderSessionDirectory, {
+      getBinding: (threadId) =>
+        Effect.succeedSome({
+          threadId,
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId,
+          resumeCursor: { threadId },
+          runtimePayload: {
+            activeTurnId: "turn-mark-stale",
+            continueAfterServerUpdateTasks: [{ taskId: "task-old", label: "Already finished" }],
+          },
+        }),
+      upsert: (binding) => Effect.sync(() => upserts.push(binding)),
+      recordImportedTranscript: () => Effect.die("unused"),
+      getProvider: () => Effect.die("unused"),
+      listThreadIds: () => Effect.die("unused"),
+      listBindings: () => Effect.succeed([]),
+    }),
+    Effect.tap(() =>
+      Effect.sync(() => {
+        assert.deepStrictEqual(upserts[0]?.runtimePayload, {
+          activeTurnId: "turn-mark-stale",
+          continueAfterServerUpdate: active.session.activeTurnId,
+          continueAfterServerUpdatePrepared: null,
+          continueAfterServerUpdateTasks: null,
+        });
+      }),
+    ),
+  );
+});
+
+it.effect("bounds an oversized stopped-task label inside the provider send limit", () =>
+  Effect.gen(function* () {
+    const thread = makeThread("thread-background-long-label", "ready");
+    const continued = yield* Deferred.make<void>();
+    const sends: ProviderSendTurnInput[] = [];
+    const label = "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS + 500);
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: true,
+      tasks: [{ threadId: thread.id, taskId: "task-long", label }],
+      providerService: {
+        ...makeProviderService(),
+        getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+        sendTurn: (input) =>
+          Effect.gen(function* () {
+            sends.push(input);
+            yield* Deferred.succeed(continued, undefined);
+            return { threadId: input.threadId, turnId: TurnId.make("turn-long-label") };
+          }),
+      },
+      directory: {
+        getBinding: () =>
+          Effect.succeedSome({
+            threadId: thread.id,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            providerInstanceId,
+            status: "running" as const,
+            resumeCursor: { threadId: thread.id },
+            runtimePayload: { activeTurnId: null },
+          }),
+        upsert: () => Effect.void,
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      dispatch: () => Effect.succeed({ sequence: 1 }),
+    });
+    yield* Deferred.await(continued);
+    const input = sends[0]?.input ?? "";
+    assert.equal(sends.length, 1);
+    assert.isAtMost(input.length, PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+    assert.equal(input.startsWith("Continue where you left off."), true);
+    assert.equal(input.includes("These background tasks were stopped"), true);
+  }),
+);
+
+it.effect("settles an open background task once when continuation fails", () =>
+  Effect.gen(function* () {
+    const thread = makeThread("thread-background-settle-once", "ready");
+    const settled = yield* Deferred.make<void>();
+    const dispatched: OrchestrationCommand[] = [];
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: true,
+      tasks: [{ threadId: thread.id, taskId: "task-once", label: "tail the logs" }],
+      providerService: {
+        ...makeProviderService(),
+        getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+        sendTurn: () => Effect.die("continuation failed"),
+      },
+      directory: {
+        getBinding: () =>
+          Effect.succeedSome({
+            threadId: thread.id,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            providerInstanceId,
+            status: "running" as const,
+            resumeCursor: { threadId: thread.id },
+            runtimePayload: { activeTurnId: null },
+          }),
+        upsert: () => Effect.void,
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      dispatch: (command) =>
+        Effect.gen(function* () {
+          dispatched.push(command);
+          if (command.type === "thread.session.set" && command.session.status === "error") {
+            yield* Deferred.succeed(settled, undefined);
+          }
+          return { sequence: dispatched.length };
+        }),
+    });
+    yield* Deferred.await(settled);
+    const stopped = dispatched.filter(
+      (command) =>
+        command.type === "thread.activity.append" && command.activity.kind === "task.completed",
+    );
+    assert.equal(stopped.length, 1);
   }),
 );
