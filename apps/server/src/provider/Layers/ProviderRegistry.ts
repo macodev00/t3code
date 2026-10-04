@@ -42,6 +42,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as ModelManifest from "../ModelManifest.ts";
 import { applyProviderCompatibility } from "../providerCompatibility.ts";
+import { isOpenCodeVersionProbeTimeoutMessage } from "../opencodeVersionProbe.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
@@ -218,6 +219,42 @@ const carrySavedAntigravityAccount = (
   return { auth: previousProvider.auth, status };
 };
 
+/**
+ * A slow OpenCode `--version` must not mark a provider Unavailable after it
+ * has already reported a version. Only an exact timeout against a previous
+ * ready, versioned snapshot keeps status, version, and auth.
+ */
+function carryLastKnownOpenCodeOnVersionProbeTimeout(
+  previousProvider: ServerProvider,
+  nextProvider: ServerProvider,
+): Pick<ServerProvider, "auth" | "status" | "version"> | undefined {
+  if (
+    !isOpenCodeVersionProbeTimeoutMessage(nextProvider.message) ||
+    nextProvider.driver !== ProviderDriverKind.make("opencode") ||
+    !nextProvider.installed ||
+    nextProvider.status !== "error" ||
+    nextProvider.version !== null ||
+    previousProvider.driver !== ProviderDriverKind.make("opencode") ||
+    previousProvider.status !== "ready" ||
+    previousProvider.version === null ||
+    previousProvider.version.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    auth: previousProvider.auth,
+    status: previousProvider.status,
+    version: previousProvider.version,
+  };
+}
+
+/**
+ * Folds a fresh probe into the previous snapshot. Carries a saved Antigravity
+ * account forward, and keeps a ready OpenCode version, status, and auth across
+ * an exact `--version` timeout. Models, workspace snapshots, and empty OpenCode
+ * skills or slash commands stay when the new probe did not replace them.
+ */
 export const mergeProviderSnapshot = (
   previousProvider: ServerProvider | undefined,
   nextProvider: ServerProvider,
@@ -226,12 +263,17 @@ export const mergeProviderSnapshot = (
     return nextProvider;
   }
   const savedAccount = carrySavedAntigravityAccount(previousProvider, nextProvider);
+  const lastKnownOpenCode = carryLastKnownOpenCodeOnVersionProbeTimeout(
+    previousProvider,
+    nextProvider,
+  );
   // "Google account access is not checked yet" describes the probe, not the
   // account; it must not outlive the state it explained.
   const { message: _uncheckedMessage, ...nextWithoutMessage } = nextProvider;
   return {
     ...(savedAccount?.status === "ready" ? nextWithoutMessage : nextProvider),
     ...savedAccount,
+    ...lastKnownOpenCode,
     models: mergeProviderModels(nextProvider, previousProvider.models, nextProvider.models),
     ...(nextProvider.workspaceSnapshots !== undefined
       ? { workspaceSnapshots: nextProvider.workspaceSnapshots }

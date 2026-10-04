@@ -1,12 +1,17 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http";
 
 import * as OpenCodeRuntime from "./opencodeRuntime.ts";
 import {
   classifyOpenCodeCliVersion,
+  isOpenCodeVersionProbeTimeoutMessage,
   makeOpenCodeRuntimeProbe,
+  OPENCODE_VERSION_PROBE_TIMEOUT_ENV,
+  openCodeVersionProbeTimeoutDetail,
   probeOpenCodeRuntime,
+  resolveOpenCodeVersionProbeTimeout,
 } from "./opencodeVersionProbe.ts";
 import {
   OPENCODE_1_RESPONSES,
@@ -26,6 +31,58 @@ const probeServer = (serverUrl: string, serverPassword: string, http: HttpClient
 const SERVER_URL = "http://127.0.0.1:4096/";
 
 describe("OpenCode version probe", () => {
+  it("resolves the version probe timeout without changing the 4 second default", () => {
+    const millis = (environment: NodeJS.ProcessEnv) =>
+      Duration.toMillis(resolveOpenCodeVersionProbeTimeout(environment));
+
+    assert.equal(millis({}), Duration.toMillis(Duration.seconds(4)));
+    assert.equal(
+      millis({ [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "8 seconds" }),
+      Duration.toMillis(Duration.seconds(8)),
+    );
+    assert.equal(
+      millis({ [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "8s" }),
+      Duration.toMillis(Duration.seconds(8)),
+    );
+    assert.equal(
+      millis({ [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "nope" }),
+      Duration.toMillis(Duration.seconds(4)),
+    );
+    assert.equal(
+      millis({ [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "0 seconds" }),
+      Duration.toMillis(Duration.seconds(4)),
+    );
+    assert.equal(
+      millis({ [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "1 ms" }),
+      Duration.toMillis(Duration.seconds(1)),
+    );
+    assert.equal(
+      millis({ [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "Infinity" }),
+      Duration.toMillis(Duration.seconds(60)),
+    );
+    assert.equal(
+      millis({ [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "2 hours" }),
+      Duration.toMillis(Duration.seconds(60)),
+    );
+    assert.equal(millis({ [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "1.2345s" }), 1235);
+    const fractionalDetail = openCodeVersionProbeTimeoutDetail(
+      resolveOpenCodeVersionProbeTimeout({
+        [OPENCODE_VERSION_PROBE_TIMEOUT_ENV]: "1.2345s",
+      }),
+    );
+    assert.equal(fractionalDetail, "OpenCode CLI version probe timed out after 1235 millis.");
+    assert.isTrue(
+      isOpenCodeVersionProbeTimeoutMessage(
+        `Failed to execute OpenCode CLI health check: ${fractionalDetail}`,
+      ),
+    );
+    assert.isFalse(
+      isOpenCodeVersionProbeTimeoutMessage(
+        "Failed to execute OpenCode CLI health check: OpenCode CLI version probe timed out after 4 seconds. See the binary path.",
+      ),
+    );
+  });
+
   it("classifies the recorded `opencode --version` output of both versions", () => {
     assert.deepStrictEqual(classifyOpenCodeCliVersion("1.18.32\n"), {
       generation: "v1",
