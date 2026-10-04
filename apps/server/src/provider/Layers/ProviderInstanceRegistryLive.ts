@@ -23,7 +23,10 @@
  * (`Ref`s + `PubSub`) and exposes an internal mutator
  * (`ProviderInstanceRegistryMutator`) whose `reconcile` method diffs a
  * fresh config map against the live state, tearing down removed instances
- * and building new ones without disturbing unaffected instances.
+ * and building new ones without disturbing unaffected instances. A display
+ * name or accent color edit, including the first rename that only lifts a
+ * legacy `config.enabled` flag onto the envelope, updates the live instance
+ * in place and leaves its scope running.
  *
  * Every live instance runs inside its own child `Scope`. The registry's
  * own scope owns all child scopes via finalizers, so closing the registry
@@ -34,6 +37,7 @@
  */
 import {
   providerInstanceConfigEnabledFlag,
+  providerInstanceRuntimeConfigEqual,
   ProviderInstanceId,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
@@ -64,7 +68,7 @@ import type { AnyProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 interface LiveEntry {
   readonly instance: ProviderInstance;
   readonly scope: Scope.Closeable;
-  readonly entry: ProviderInstanceConfig;
+  entry: ProviderInstanceConfig;
 }
 
 /**
@@ -78,14 +82,61 @@ interface RegistryState {
 }
 
 /**
- * Structural equality on `ProviderInstanceConfig` envelopes. Used by
- * `reconcile` to skip rebuilds when settings arrive unchanged. Config
- * payloads are opaque `unknown` at the envelope layer; `Equal.equals`
- * falls back to structural equality for plain records, which matches how
- * the schema decode output is constructed.
+ * Stamp the envelope's current display name and accent color onto a snapshot.
+ *
+ * Drivers capture presentation once inside `create`. Reading it from the
+ * entry `reconcile` keeps up to date lets a rename show up on later reads
+ * without closing the instance scope.
  */
-const entryEqual = (a: ProviderInstanceConfig, b: ProviderInstanceConfig): boolean =>
-  Equal.equals(a, b);
+const overlayProviderPresentation = (
+  entry: ProviderInstanceConfig,
+  snapshot: ServerProvider,
+): ServerProvider => {
+  const { displayName: _displayName, accentColor: _accentColor, ...rest } = snapshot;
+  return {
+    ...rest,
+    ...(entry.displayName ? { displayName: entry.displayName } : {}),
+    ...(entry.accentColor ? { accentColor: entry.accentColor } : {}),
+  };
+};
+
+/**
+ * Return a stable instance whose presentation follows `source.entry`.
+ *
+ * The instance object, its adapter, and the scope it was created in stay
+ * put. `reconcile` assigns the next envelope onto that same entry.
+ */
+const presentProviderInstance = (
+  source: { readonly entry: ProviderInstanceConfig },
+  instance: ProviderInstance,
+): ProviderInstance => {
+  const { snapshotForCwd } = instance;
+  /**
+   * Read presentation from the entry at call time, including probe emissions
+   * that still carry the name captured when the driver was created.
+   */
+  const present = (snapshot: ServerProvider) => overlayProviderPresentation(source.entry, snapshot);
+  return {
+    ...instance,
+    get displayName() {
+      return source.entry.displayName;
+    },
+    get accentColor() {
+      return source.entry.accentColor;
+    },
+    snapshot: {
+      ...instance.snapshot,
+      getSnapshot: instance.snapshot.getSnapshot.pipe(Effect.map(present)),
+      refresh: instance.snapshot.refresh.pipe(Effect.map(present)),
+      streamChanges: instance.snapshot.streamChanges.pipe(Stream.map(present)),
+    },
+    ...(snapshotForCwd
+      ? {
+          snapshotForCwd: (cwd: string) => snapshotForCwd(cwd).pipe(Effect.map(present)),
+        }
+      : {}),
+  };
+};
 
 /**
  * Resolve an entry's enabled state. An explicit false on either the
@@ -196,12 +247,21 @@ const buildEntry = <R>(input: {
       };
     }
 
+    // Presentation getters read this holder, and `reconcile` writes it through
+    // the live entry's `entry` setter, so a rename updates both together.
+    const presentation: { entry: ProviderInstanceConfig } = { entry };
     return {
       kind: "live" as const,
       live: {
-        instance: createResult.success,
         scope: childScope,
-        entry,
+        instance: presentProviderInstance(presentation, createResult.success),
+        /** Envelope `reconcile` updates in place so presentation getters follow it. */
+        get entry() {
+          return presentation.entry;
+        },
+        set entry(next: ProviderInstanceConfig) {
+          presentation.entry = next;
+        },
       },
     };
   });
@@ -236,7 +296,7 @@ const makeReconcile = <R>(input: {
           continue;
         }
         const nextEntry = configMap[instanceId];
-        if (nextEntry !== undefined && !entryEqual(live.entry, nextEntry)) {
+        if (nextEntry !== undefined && !providerInstanceRuntimeConfigEqual(live.entry, nextEntry)) {
           replacedIds.add(instanceId);
         }
       }
@@ -252,6 +312,7 @@ const makeReconcile = <R>(input: {
       const builtEntries = new Map<ProviderInstanceId, LiveEntry>();
       const builtUnavailable = new Map<ProviderInstanceId, ServerProvider>();
       let orderChanged = false;
+      let presentationChanged = false;
       const previousOrder = [...previousEntries.keys()];
       const nextOrder: Array<ProviderInstanceId> = [];
 
@@ -261,7 +322,9 @@ const makeReconcile = <R>(input: {
 
         const existing = previousEntries.get(instanceId);
         if (existing !== undefined && !replacedIds.has(instanceId)) {
-          // No-op update: keep the existing live entry and scope.
+          presentationChanged ||= !Equal.equals(existing.entry, entry);
+          existing.entry = entry;
+          // Presentation edits keep the adapter, subscriptions, and scope alive.
           builtEntries.set(instanceId, existing);
           continue;
         }
@@ -292,6 +355,7 @@ const makeReconcile = <R>(input: {
       }
 
       const entriesChanged =
+        presentationChanged ||
         orderChanged ||
         removedIds.length > 0 ||
         replacedIds.size > 0 ||

@@ -13,6 +13,7 @@ import {
   type AcpRegistryUrlAuthAction,
   PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
+  type OrchestrationV2ThreadShell,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
   resolveEnvironmentMachineKind,
@@ -41,6 +42,7 @@ import {
 } from "../../hooks/useSettings";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { cn } from "../../lib/utils";
+import { ensureLocalApi } from "../../localApi";
 import { resolveAppModelSelectionState } from "../../modelSelection";
 import {
   useEnvironments,
@@ -49,6 +51,7 @@ import {
 } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useEnvironmentSessionState } from "../../state/session";
+import { environmentThreadShells } from "../../state/threads";
 import { useProjects } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { getRelativeTimeState } from "../../timestampFormat";
@@ -584,6 +587,42 @@ function AccessGatedProviderSettings({
   );
 }
 
+const IN_FLIGHT_ORCHESTRATION_STATUSES: ReadonlySet<string> = new Set([
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+]);
+
+/**
+ * Report whether an orchestration v2 shell still has a turn in flight.
+ *
+ * Activity status wins when the shell status has already moved on, which is
+ * how a wake keeps the original run's work visible. Idle and settled shells
+ * are not in flight.
+ */
+function orchestrationV2ThreadInFlight(
+  thread: Pick<OrchestrationV2ThreadShell, "status" | "activityRunStatus">,
+): boolean {
+  const status = thread.activityRunStatus ?? thread.status;
+  return IN_FLIGHT_ORCHESTRATION_STATUSES.has(status);
+}
+
+/**
+ * Report whether this provider instance still owns an in-flight thread.
+ */
+function providerInstanceHasInFlightThread(
+  threads: ReadonlyArray<
+    Pick<OrchestrationV2ThreadShell, "providerInstanceId" | "status" | "activityRunStatus">
+  >,
+  instanceId: ProviderInstanceId,
+): boolean {
+  return threads.some(
+    (thread) => thread.providerInstanceId === instanceId && orchestrationV2ThreadInFlight(thread),
+  );
+}
+
 export function EnvironmentProviderSettings({
   environmentId,
   environmentLabel,
@@ -604,6 +643,7 @@ export function EnvironmentProviderSettings({
   readonly readOnly?: boolean;
 }) {
   const settings = useEnvironmentSettings(environmentId);
+  const threads = useAtomValue(environmentThreadShells.environmentThreadsAtom(environmentId));
   // Provider instances hold per-machine credentials and binaries, so this
   // page always edits exactly the environment it displays.
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
@@ -906,7 +946,22 @@ export function EnvironmentProviderSettings({
     }
   };
 
+  /**
+   * Remove one provider instance.
+   *
+   * Ask with the confirm dialog only when that instance has an in-flight
+   * orchestration v2 thread. Cancel leaves the turn running. An idle
+   * instance deletes immediately.
+   */
   const deleteProviderInstance = async (row: InstanceRow) => {
+    if (
+      providerInstanceHasInFlightThread(threads, row.instanceId) &&
+      !(await ensureLocalApi().dialogs.confirm(
+        `Delete this provider from ${environmentLabel}? This stops its running threads. Thread history is kept.`,
+      ))
+    ) {
+      return;
+    }
     const updateResult = await persistProviderInstance({
       operation: "remove",
       instanceId: row.instanceId,

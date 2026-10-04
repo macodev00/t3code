@@ -7,6 +7,7 @@ import {
   ClientSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
+  providerInstanceRuntimeConfigEqual,
   resolveProviderInstanceEnabled,
   ServerSettings,
   ServerSettingsPatch,
@@ -846,6 +847,54 @@ describe("provider enabled defaults", () => {
     ).toBe(false);
     expect(
       resolveProviderInstanceEnabled({ driver: codex, enabled: false, config: { enabled: true } }),
+    ).toBe(false);
+  });
+
+  it("treats a display name, accent color, or lifted enabled flag as the same runtime", () => {
+    const codex = ProviderDriverKind.make("codex");
+    const legacy = {
+      driver: codex,
+      config: { enabled: true, binaryPath: "codex", launchArgs: "" },
+    };
+    expect(
+      providerInstanceRuntimeConfigEqual(legacy, {
+        ...legacy,
+        displayName: "Personal",
+        accentColor: "#112233",
+      }),
+    ).toBe(true);
+    expect(
+      providerInstanceRuntimeConfigEqual(legacy, {
+        driver: codex,
+        enabled: true,
+        displayName: "Personal",
+        config: { binaryPath: "codex", launchArgs: "" },
+      }),
+    ).toBe(true);
+    expect(
+      providerInstanceRuntimeConfigEqual(
+        { driver: codex, enabled: true, config: { enabled: false, binaryPath: "codex" } },
+        { driver: codex, enabled: true, config: { enabled: true, binaryPath: "codex" } },
+      ),
+    ).toBe(false);
+    expect(
+      providerInstanceRuntimeConfigEqual(legacy, {
+        driver: codex,
+        enabled: false,
+        config: { binaryPath: "codex", launchArgs: "" },
+      }),
+    ).toBe(false);
+    expect(
+      providerInstanceRuntimeConfigEqual(legacy, {
+        ...legacy,
+        environment: [{ name: "CODEX_HOME", value: "/tmp/codex", sensitive: false }],
+      }),
+    ).toBe(false);
+    expect(
+      providerInstanceRuntimeConfigEqual(legacy, {
+        driver: ProviderDriverKind.make("grok"),
+        config: { enabled: true, binaryPath: "codex", launchArgs: "" },
+      }),
     ).toBe(false);
   });
 });
