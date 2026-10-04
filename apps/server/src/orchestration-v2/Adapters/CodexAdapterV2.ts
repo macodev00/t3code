@@ -1,4 +1,9 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import {
+  noteCodexMcpStartup,
+  waitForCodexMcpCatalogBeforeTurn,
+  type CodexMcpStartupCatalog,
+} from "../../provider/CodexMcpCatalog.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -1664,6 +1669,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ).hasSubagents = true;
         };
         const pendingRootTurns = yield* Ref.make(new Map<string, ProviderAdapterV2TurnInput>());
+        const mcpStartupByThread = yield* Ref.make<CodexMcpStartupCatalog>(new Map());
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
         const subagentModels = new Map<string, string>();
@@ -3708,6 +3714,16 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             return { node, request, turnItem };
           });
 
+        yield* client.handleServerNotification("mcpServer/startupStatus/updated", (payload) =>
+          Ref.update(mcpStartupByThread, (catalog) =>
+            noteCodexMcpStartup(catalog, {
+              threadId: payload.threadId ?? null,
+              name: payload.name,
+              status: payload.status,
+            }),
+          ).pipe(Effect.asVoid),
+        );
+
         yield* client.handleServerNotification("item/agentMessage/delta", (payload) =>
           Effect.gen(function* () {
             const context = (yield* Ref.get(activeTurns)).get(payload.turnId);
@@ -5547,6 +5563,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           startTurn: (turnInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
+              // turn/start snapshots the tool catalog. Wait out servers that
+              // have already reported `starting` so the snapshot is not limited
+              // to whichever stdio server finished first.
+              yield* waitForCodexMcpCatalogBeforeTurn({
+                catalog: mcpStartupByThread,
+                threadId,
+              });
 
               const codexInput =
                 turnInput.restartContinuationOfRunId === undefined
