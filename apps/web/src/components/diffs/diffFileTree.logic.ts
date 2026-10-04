@@ -51,6 +51,11 @@ const DIFF_FILE_TREE_FILE_MARK = "\u200b";
 
 const identityPath = (path: string) => path;
 
+/**
+ * Paths safe for Pierre, and the maps between those paths and the diff.
+ * `selectionPath` turns a tree row back into the file a click should open.
+ * `modelPath` turns a diff path into the row stored in the tree.
+ */
 export interface DiffFileTreeModel {
   /** Paths safe to pass to Pierre. Same array as the input when nothing collides. */
   readonly paths: ReadonlyArray<string>;
@@ -60,6 +65,11 @@ export interface DiffFileTreeModel {
   readonly modelPath: (path: string) => string;
 }
 
+/**
+ * File paths that are also a directory prefix of another path in this diff.
+ * `office` collides with `office/config.ts`; a shared string prefix such as
+ * `office` and `officer.ts` does not. Null when every path can be stored as itself.
+ */
 function collidingFilePaths(paths: ReadonlyArray<string>): ReadonlySet<string> | null {
   if (paths.length < 2) return null;
   const unique = [...new Set(paths)].toSorted();
@@ -79,6 +89,10 @@ function collidingFilePaths(paths: ReadonlyArray<string>): ReadonlySet<string> |
   return colliding.size === 0 ? null : colliding;
 }
 
+/**
+ * A tree path for a file that collides with a directory. Appends the zero-width file
+ * mark until the path is neither occupied nor a directory prefix of an occupied path.
+ */
 function modelPathForCollidingFile(path: string, occupied: Set<string>): string {
   let modelPath = path;
   const collides = (candidate: string) => {
@@ -95,6 +109,11 @@ function modelPathForCollidingFile(path: string, occupied: Set<string>): string 
   return modelPath;
 }
 
+/**
+ * Rewrites file paths that collide with a directory prefix so both can live in one tree,
+ * and maps a click on the rewritten row back to the original diff path. Paths that do not
+ * collide are returned unchanged.
+ */
 export function diffFileTreeModel(paths: ReadonlyArray<string>): DiffFileTreeModel {
   const colliding = collidingFilePaths(paths);
   if (colliding === null) {
