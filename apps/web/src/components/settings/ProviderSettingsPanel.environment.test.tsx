@@ -15,6 +15,12 @@ import { reactHookHarness as hooks } from "../../test/reactHookHarness";
 const atoms = vi.hoisted(() => ({
   providers: null as ReadonlyArray<ServerProvider> | null,
   providersAtom: Symbol("providers"),
+  threads: [] as ReadonlyArray<{
+    providerInstanceId: ProviderInstanceId;
+    status: string;
+    activityRunStatus?: string | null;
+  }>,
+  threadsAtom: Symbol("threads"),
   refreshProviders: Symbol("refreshProviders"),
   updateProvider: Symbol("updateProvider"),
   uninstallAcpRegistryManagedBinary: Symbol("uninstallAcpRegistryManagedBinary"),
@@ -22,10 +28,15 @@ const atoms = vi.hoisted(() => ({
 }));
 
 const commands = vi.hoisted(() => ({
+  confirm: vi.fn(async () => true),
   refresh: vi.fn(),
   updateProvider: vi.fn(),
   uninstall: vi.fn(),
   acceptUrlAuth: vi.fn(),
+}));
+
+vi.mock("../../localApi", () => ({
+  ensureLocalApi: () => ({ dialogs: { confirm: commands.confirm } }),
 }));
 
 const settingsState = vi.hoisted(() => ({
@@ -71,7 +82,13 @@ vi.mock("react/compiler-runtime", async () => {
 });
 
 vi.mock("@effect/atom-react", () => ({
-  useAtomValue: () => atoms.providers,
+  useAtomValue: (atom: symbol) => (atom === atoms.threadsAtom ? atoms.threads : atoms.providers),
+}));
+
+vi.mock("../../state/threads", () => ({
+  environmentThreadShells: {
+    environmentThreadsAtom: () => atoms.threadsAtom,
+  },
 }));
 
 vi.mock("../../state/server", () => ({
@@ -198,6 +215,8 @@ describe("EnvironmentProviderSettings routing", () => {
   beforeEach(() => {
     hooks.reset();
     atoms.providers = null;
+    atoms.threads = [];
+    commands.confirm.mockReset().mockResolvedValue(true);
     settingsState.value = DEFAULT_UNIFIED_SETTINGS;
     settingsState.readEnvironmentIds = [];
     settingsState.updateEnvironmentIds = [];
@@ -436,6 +455,7 @@ describe("EnvironmentProviderSettings routing", () => {
       },
       favorites: [{ provider: customId, model: "favorite" }],
     };
+    atoms.threads = [{ providerInstanceId: codexId, status: "running" }];
     let panel = renderPanel();
     const customRow = visitElements(
       panel,
@@ -448,9 +468,9 @@ describe("EnvironmentProviderSettings routing", () => {
       (element) => element.props.instanceId === customId && element.props.mode === "editor",
     );
     expect(customCard).not.toBeNull();
-    (customCard?.props.onDelete as (() => void) | undefined)?.();
-    await flushPromises();
+    await (customCard?.props.onDelete as (() => Promise<void>) | undefined)?.();
 
+    expect(commands.confirm).not.toHaveBeenCalled();
     expect(settingsState.mutateProviderInstance).toHaveBeenLastCalledWith({
       operation: "remove",
       instanceId: customId,
@@ -510,6 +530,40 @@ describe("EnvironmentProviderSettings routing", () => {
     );
   });
 
+  it("asks before deleting a provider with an in-flight thread and leaves it running on cancel", async () => {
+    settingsState.value = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [customId]: {
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          displayName: "Work",
+        },
+      },
+    };
+    atoms.threads = [
+      { providerInstanceId: codexId, status: "running" },
+      { providerInstanceId: customId, status: "idle", activityRunStatus: "running" },
+    ];
+    const panel = renderPanel({ targetInstanceId: customId });
+    const card = visitElements(
+      panel,
+      (element) => element.props.instanceId === customId && element.props.mode === "editor",
+    );
+    commands.confirm.mockResolvedValueOnce(false);
+    await (card?.props.onDelete as (() => Promise<void>) | undefined)?.();
+
+    expect(commands.confirm).toHaveBeenCalledOnce();
+    expect(settingsState.mutateProviderInstance).not.toHaveBeenCalled();
+
+    commands.confirm.mockResolvedValueOnce(true);
+    await (card?.props.onDelete as (() => Promise<void>) | undefined)?.();
+    expect(settingsState.mutateProviderInstance).toHaveBeenCalledWith({
+      operation: "remove",
+      instanceId: customId,
+    });
+  });
+
   it("lets the server decide managed ACP cleanup after an atomic delete", async () => {
     const firstId = ProviderInstanceId.make("acpRegistry_kilo_one");
     const secondId = ProviderInstanceId.make("acpRegistry_kilo_two");
@@ -536,9 +590,9 @@ describe("EnvironmentProviderSettings routing", () => {
       panel,
       (element) => element.props.instanceId === firstId && element.props.mode === "editor",
     );
-    (card?.props.onDelete as (() => void) | undefined)?.();
-    await flushPromises();
+    await (card?.props.onDelete as (() => Promise<void>) | undefined)?.();
 
+    expect(commands.confirm).not.toHaveBeenCalled();
     expect(settingsState.mutateProviderInstance).toHaveBeenCalledWith({
       operation: "remove",
       instanceId: firstId,

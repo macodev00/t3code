@@ -1,6 +1,7 @@
 import { SshDeviceHostConfigs } from "./device.ts";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
+import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
@@ -1459,6 +1460,50 @@ export const resolveProviderInstanceEnabled = (
   }
   return instance.enabled ?? configEnabled ?? defaultEnabledForDriver(instance.driver);
 };
+
+/**
+ * Drop a legacy boolean `enabled` flag from a driver config blob.
+ *
+ * The envelope owns that flag. Comparing what remains lets a rename that
+ * only lifts the flag out of `config` look like the same runtime settings.
+ */
+const providerInstanceConfigWithoutEnabledFlag = (config: unknown): unknown => {
+  if (providerInstanceConfigEnabledFlag(config) === undefined) {
+    return config;
+  }
+  const { enabled: _enabled, ...rest } = config as Record<string, unknown>;
+  return rest;
+};
+
+/**
+ * Enabled value a reconcile should treat as authoritative: the envelope
+ * flag when present, otherwise the legacy flag inside `config`.
+ */
+const providerInstanceCanonicalEnabled = (
+  instance: Pick<ProviderInstanceConfig, "enabled" | "config">,
+): boolean | undefined => instance.enabled ?? providerInstanceConfigEnabledFlag(instance.config);
+
+/**
+ * Report whether two provider envelopes would start the same instance.
+ *
+ * Display name and accent color are ignored. Lifting a legacy
+ * `config.enabled` flag onto the envelope is also ignored when the resolved
+ * enabled value does not change, so the first rename of a default provider
+ * does not rebuild it. Driver, environment, and any other config change
+ * still count as a runtime edit.
+ */
+export const providerInstanceRuntimeConfigEqual = (
+  left: ProviderInstanceConfig,
+  right: ProviderInstanceConfig,
+): boolean =>
+  left.driver === right.driver &&
+  providerInstanceCanonicalEnabled(left) === providerInstanceCanonicalEnabled(right) &&
+  resolveProviderInstanceEnabled(left) === resolveProviderInstanceEnabled(right) &&
+  Equal.equals(left.environment, right.environment) &&
+  Equal.equals(
+    providerInstanceConfigWithoutEnabledFlag(left.config),
+    providerInstanceConfigWithoutEnabledFlag(right.config),
+  );
 
 export const ServerSettingsOperation = Schema.Literals([
   "normalize",

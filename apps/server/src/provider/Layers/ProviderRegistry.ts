@@ -279,6 +279,20 @@ const haveProvidersChanged = (
   nextProviders: ReadonlyArray<ServerProvider>,
 ): boolean => !Equal.equals(previousProviders, nextProviders);
 
+/**
+ * Report whether a retained instance's snapshot now carries a different
+ * display name or accent color than the aggregated provider list.
+ *
+ * A missing current snapshot still counts, so the first read is published.
+ */
+const providerPresentationChanged = (
+  current: Pick<ServerProvider, "displayName" | "accentColor"> | undefined,
+  next: Pick<ServerProvider, "displayName" | "accentColor">,
+): boolean =>
+  current === undefined ||
+  current.displayName !== next.displayName ||
+  current.accentColor !== next.accentColor;
+
 const correlateSnapshotWithSource = (
   source: ProviderSnapshotSource,
   snapshot: ServerProvider,
@@ -768,6 +782,29 @@ export const ProviderRegistryLive = Layer.effect(
             }).pipe(Effect.ignoreCause({ log: true })),
           { concurrency: "unbounded", discard: true },
         );
+        /**
+         * Publish a retained instance when its display name or accent color
+         * changed. The subscription and in-flight scope stay in place.
+         */
+        const publishRetainedPresentation = (instance: ProviderInstance) =>
+          Effect.gen(function* () {
+            if (!carriedOver.has(instance.instanceId)) {
+              return;
+            }
+            const source = buildSnapshotSource(instance);
+            const provider = yield* source.getSnapshot;
+            const current = (yield* Ref.get(providersRef)).find(
+              (candidate) => candidate.instanceId === instance.instanceId,
+            );
+            if (!providerPresentationChanged(current, provider)) {
+              return;
+            }
+            yield* correlateSnapshotWithSource(source, provider).pipe(Effect.flatMap(syncProvider));
+          }).pipe(Effect.ignoreCause({ log: true }));
+        yield* Effect.forEach(instances, publishRetainedPresentation, {
+          concurrency: "unbounded",
+          discard: true,
+        });
         yield* upsertProviders(unavailableProviders, {
           persist: false,
           replace: true,
