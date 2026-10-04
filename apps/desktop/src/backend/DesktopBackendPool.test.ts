@@ -1,12 +1,17 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
+import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { HttpClient } from "effect/unstable/http";
+import * as TestClock from "effect/testing/TestClock";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
@@ -18,6 +23,29 @@ import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import type { DesktopBackendSnapshot, DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
+
+const backendConfig: DesktopBackendStartConfig = {
+  executablePath: "/electron",
+  args: ["/server/bin.mjs"],
+  entryPath: "/server/bin.mjs",
+  cwd: "/server",
+  env: { ELECTRON_RUN_AS_NODE: "1" },
+  bootstrap: {
+    mode: "desktop",
+    noBrowser: true,
+    port: 3773,
+    t3Home: "/tmp/t3",
+    host: "127.0.0.1",
+    desktopBootstrapToken: "token",
+    tailscaleServeEnabled: false,
+    tailscaleServePort: 443,
+  },
+  bootstrapDelivery: "fd3",
+  extendEnv: true,
+  httpBaseUrl: new URL("http://127.0.0.1:3773"),
+  captureOutput: false,
+  preflightFailure: Option.none(),
+};
 
 function makeStubInstance(
   id: DesktopBackendPool.BackendInstanceId,
@@ -152,6 +180,184 @@ describe("DesktopBackendPool", () => {
 
         assert.equal(yield* primary.label, "WSL (Ubuntu)");
       }),
+    ),
+  );
+
+  it.effect("uses Windows for this launch when a wsl-only primary never becomes ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const launches = yield* Queue.unbounded<"wsl" | "windows">();
+        const failures = yield* Queue.unbounded<string>();
+        const dialogs = yield* Queue.unbounded<{
+          readonly title: string;
+          readonly content: string;
+        }>();
+        const ready = yield* Queue.unbounded<string>();
+        const launchKind = yield* Ref.make<"wsl" | "windows">("wsl");
+        const windowsExit = yield* Deferred.make<void>();
+        const wslConfig: DesktopBackendStartConfig = {
+          ...backendConfig,
+          runningDistro: "Ubuntu-22.04",
+          httpBaseUrl: new URL("http://10.0.0.8:3773"),
+        };
+        const windowsConfig: DesktopBackendStartConfig = {
+          ...backendConfig,
+          httpBaseUrl: new URL("http://127.0.0.1:3773"),
+        };
+        const settingsLayer = DesktopAppSettings.layerTest({
+          ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+          wslBackendEnabled: true,
+          wslOnly: true,
+          wslDistro: "Ubuntu-22.04",
+        });
+
+        const context = yield* Layer.build(
+          DesktopBackendPool.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                FileSystem.layerNoop({ exists: () => Effect.succeed(true) }),
+                Layer.succeed(
+                  ChildProcessSpawner.ChildProcessSpawner,
+                  ChildProcessSpawner.make(() =>
+                    Effect.gen(function* () {
+                      const scope = yield* Scope.Scope;
+                      const kind = yield* Ref.get(launchKind);
+                      yield* Queue.offer(launches, kind);
+                      const releaseWindows = Deferred.succeed(windowsExit, undefined).pipe(
+                        Effect.ignore,
+                      );
+                      if (kind === "windows") {
+                        yield* Scope.addFinalizer(scope, releaseWindows);
+                      }
+                      return ChildProcessSpawner.makeHandle({
+                        pid: ChildProcessSpawner.ProcessId(123),
+                        stdout: Stream.empty,
+                        stderr: Stream.empty,
+                        all: Stream.empty,
+                        exitCode:
+                          kind === "windows"
+                            ? Deferred.await(windowsExit).pipe(
+                                Effect.as(ChildProcessSpawner.ExitCode(0)),
+                              )
+                            : Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+                        isRunning: Effect.succeed(false),
+                        kill: () => (kind === "windows" ? releaseWindows : Effect.void),
+                        stdin: Sink.drain,
+                        getInputFd: () => Sink.drain,
+                        getOutputFd: () => Stream.empty,
+                        unref: Effect.succeed(Effect.void),
+                      });
+                    }),
+                  ),
+                ),
+                Layer.succeed(
+                  HttpClient.HttpClient,
+                  HttpClient.make((request) =>
+                    request.url.startsWith("http://127.0.0.1:3773")
+                      ? Effect.succeed(
+                          HttpClientResponse.fromWeb(request, new Response(null, { status: 200 })),
+                        )
+                      : Effect.never,
+                  ),
+                ),
+                Layer.succeed(DesktopObservability.DesktopBackendOutputLogFactory, {
+                  forInstance: () =>
+                    Effect.succeed({
+                      beginSession: () => Effect.void,
+                      writeOutputChunk: () => Effect.void,
+                      persistFailureSnapshot: () => Effect.void,
+                      persistFailure: ({ details }) =>
+                        Queue.offer(failures, details).pipe(Effect.asVoid),
+                      discardSession: Effect.void,
+                    } satisfies DesktopObservability.DesktopBackendOutputLogShape),
+                } satisfies DesktopObservability.DesktopBackendOutputLogFactory["Service"]),
+                Layer.succeed(DesktopTelemetryPublisher.DesktopTelemetryPublisher, {
+                  latest: Effect.succeedNone,
+                  changes: Stream.empty,
+                  encoded: Stream.empty,
+                  handleControlForSource: () => Effect.void,
+                  removeControlSource: () => Effect.void,
+                  publishUpdateReport: () => Effect.void,
+                  updateRequests: Stream.empty,
+                  updateCommits: Stream.empty,
+                  updateCancellations: Stream.empty,
+                }),
+                Layer.effect(
+                  DesktopBackendConfiguration.DesktopBackendConfiguration,
+                  Effect.gen(function* () {
+                    const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
+                    return {
+                      resolvePrimary: appSettings.get.pipe(
+                        Effect.tap((settings) =>
+                          Ref.set(launchKind, settings.wslOnly ? "wsl" : "windows"),
+                        ),
+                        Effect.map((settings) => (settings.wslOnly ? wslConfig : windowsConfig)),
+                      ),
+                      resolvePrimaryLabel: Effect.succeed("WSL (Ubuntu-22.04)"),
+                      resolveWsl: () => Effect.die("unexpected WSL config resolve"),
+                    } satisfies DesktopBackendConfiguration.DesktopBackendConfiguration["Service"];
+                  }),
+                ),
+                DesktopWslEnvironment.layerTest(),
+                Layer.succeed(ElectronDialog.ElectronDialog, {
+                  pickFolder: () => Effect.die("unexpected folder picker"),
+                  pickFiles: () => Effect.die("unexpected file picker"),
+                  showMessageBox: () => Effect.die("unexpected message box"),
+                  showErrorBox: (title, content) =>
+                    Queue.offer(dialogs, { title, content }).pipe(Effect.asVoid),
+                } satisfies ElectronDialog.ElectronDialog["Service"]),
+                Layer.succeed(DesktopWindow.DesktopWindow, {
+                  createMain: Effect.die("unexpected window create"),
+                  ensureMain: Effect.die("unexpected window ensure"),
+                  revealOrCreateMain: Effect.die("unexpected window reveal"),
+                  activate: Effect.die("unexpected window activate"),
+                  createMainIfBackendReady: Effect.die("unexpected window create"),
+                  showConnectingSplash: Effect.void,
+                  handleBackendReady: () => Queue.offer(ready, "ready").pipe(Effect.asVoid),
+                  handleBackendNotReady: Effect.void,
+                  flushMainWindowBounds: Effect.void,
+                  prepareCaptureReveal: Effect.void,
+                  dispatchMenuAction: () => Effect.die("unexpected menu action"),
+                  dispatchSnapShotEvent: () => Effect.void,
+                  zoomMain: () => Effect.die("unexpected zoom"),
+                  syncAppearance: Effect.void,
+                } satisfies DesktopWindow.DesktopWindow["Service"]),
+              ),
+            ),
+            Layer.provideMerge(settingsLayer),
+          ),
+        );
+        const pool = yield* DesktopBackendPool.DesktopBackendPool.pipe(Effect.provide(context));
+        const settings = yield* DesktopAppSettings.DesktopAppSettings.pipe(Effect.provide(context));
+
+        const primary = yield* pool.primary;
+        yield* primary.start;
+        assert.equal(yield* Queue.take(launches), "wsl");
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        yield* TestClock.adjust(Duration.millis(500));
+        assert.equal(yield* Queue.take(launches), "wsl");
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(yield* Queue.take(launches), "wsl");
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+
+        const dialog = yield* Queue.take(dialogs);
+        assert.equal(dialog.title, "WSL backend isn't responding");
+        assert.equal(
+          dialog.content,
+          "The WSL backend (Ubuntu-22.04) exited before it was ready (exit code 1).\n\nT3 Code will use the Windows backend for this launch and retry WSL the next time the app starts.",
+        );
+        assert.isFalse(dialog.content.includes("http"));
+        assert.isFalse(dialog.content.includes("MODULE_NOT_FOUND"));
+        assert.equal(yield* Queue.take(launches), "windows");
+        assert.equal(yield* Queue.take(ready), "ready");
+
+        const stored = yield* settings.get;
+        assert.equal(stored.wslOnly, false);
+        assert.equal(stored.wslBackendEnabled, false);
+        assert.equal(stored.wslDistro, "Ubuntu-22.04");
+        yield* primary.stop();
+      }).pipe(Effect.provide(TestClock.layer())),
     ),
   );
 });

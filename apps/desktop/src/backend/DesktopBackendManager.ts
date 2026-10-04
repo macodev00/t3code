@@ -61,6 +61,10 @@ const MAX_RESTART_DELAY = Duration.seconds(10);
 // failures may instead provide their own larger retryLimit when they should
 // self-heal for a while but must not leave the app connecting forever.
 const MAX_PREFLIGHT_FAILURE_ATTEMPTS = 5;
+// Preflight can pass and the child can still exit, or stay up and never
+// answer. Cap those consecutive pre-ready failures, then let onStartupFailed
+// recover. A backend that has already been ready does not count.
+const MAX_STARTUP_FAILURE_ATTEMPTS = 3;
 const DEFAULT_BACKEND_READINESS_TIMEOUT = Duration.minutes(1);
 const DEFAULT_BACKEND_READINESS_INTERVAL = Duration.millis(100);
 const DEFAULT_BACKEND_READINESS_REQUEST_TIMEOUT = Duration.seconds(1);
@@ -116,6 +120,27 @@ export interface PreflightFailure {
   readonly fatal: boolean;
   readonly retryLimit?: number;
 }
+
+// Categorized before it reaches a dialog or a log annotation. `exited` is a
+// child that ended before it was ever ready. `unreachable` is a child that
+// stayed up while its readiness budget ran out. `exitCode` is only a numeric
+// status in 0..255; process output and readiness URLs are not included.
+export interface StartupFailure {
+  readonly kind: "exited" | "unreachable";
+  readonly exitCode?: number;
+}
+
+const startupFailureFromExitReason = (reason: string): StartupFailure => {
+  const match = /^code=(\d{1,3})$/.exec(reason);
+  if (match === null) {
+    return { kind: "exited" };
+  }
+  const exitCode = Number(match[1]);
+  if (!Number.isInteger(exitCode) || exitCode > 255) {
+    return { kind: "exited" };
+  }
+  return { kind: "exited", exitCode };
+};
 
 interface BackendProcessExit {
   readonly code: Option.Option<number>;
@@ -230,7 +255,11 @@ interface RunBackendProcessOptions extends DesktopBackendStartConfig {
   readonly onStarted?: (pid: number) => Effect.Effect<void>;
   readonly onExitObserved?: () => Effect.Effect<void>;
   readonly onReady?: () => Effect.Effect<void>;
-  readonly onReadinessFailure?: (error: BackendReadinessTimeoutError) => Effect.Effect<void>;
+  // `true` stops probing and kills the child so the exit path can recover.
+  // `void` / `false` keeps the current probe loop.
+  readonly onReadinessFailure?: (
+    error: BackendReadinessTimeoutError,
+  ) => Effect.Effect<boolean | void>;
   readonly onOutput?: (
     streamName: BackendProcessOutputStream,
     chunk: Uint8Array,
@@ -299,6 +328,16 @@ export interface BackendInstanceSpec {
   // retries. Returns true when the callback changed configuration and the
   // manager should resolve once more; false stops the failed instance.
   readonly onPreflightFailed?: (failure: PreflightFailure) => Effect.Effect<boolean>;
+  // Fired once MAX_STARTUP_FAILURE_ATTEMPTS consecutive pre-ready failures
+  // have accumulated. Returns true when configuration changed and the manager
+  // should start again immediately; false keeps the normal restart loop.
+  // Exits after a successful ready do not count.
+  readonly onStartupFailed?: (
+    failure: StartupFailure,
+    runningDistro: string | undefined,
+  ) => Effect.Effect<boolean>;
+  // Overrides the per-round readiness budget. Production uses the default.
+  readonly readinessTimeout?: Duration.Duration;
 }
 
 interface ActiveBackendRun {
@@ -319,6 +358,12 @@ interface BackendManagerState {
   // Consecutive bounded/fatal preflight failures, reset on a clean or
   // unbounded-transient preflight. restartAttempt counts all restarts.
   readonly preflightFailureAttempt: number;
+  // Consecutive pre-ready exits and readiness timeouts. Reset once ready,
+  // and when a user-driven start() asks for a new process.
+  readonly startupFailureAttempt: number;
+  // The readiness probe hit the cap and killed the child. The following exit
+  // is that unreachable failure, not a separate crash.
+  readonly startupFailureUnreachable: boolean;
   readonly restartFiber: Option.Option<Fiber.Fiber<void, never>>;
   readonly nextRunId: number;
 }
@@ -330,9 +375,20 @@ const initialState: BackendManagerState = {
   active: Option.none(),
   restartAttempt: 0,
   preflightFailureAttempt: 0,
+  startupFailureAttempt: 0,
+  startupFailureUnreachable: false,
   restartFiber: Option.none(),
   nextRunId: 1,
 };
+
+const withFreshStartupBudget = (state: BackendManagerState): BackendManagerState =>
+  state.startupFailureAttempt === 0 && !state.startupFailureUnreachable
+    ? state
+    : {
+        ...state,
+        startupFailureAttempt: 0,
+        startupFailureUnreachable: false,
+      };
 
 const activePid = (active: Option.Option<ActiveBackendRun>): Option.Option<number> =>
   Option.flatMap(active, (run) => run.pid);
@@ -588,7 +644,21 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       Effect.as(true),
       Effect.catchTags({
         BackendReadinessTimeoutError: (error) =>
-          (options.onReadinessFailure?.(error) ?? Effect.void).pipe(Effect.as(false)),
+          Effect.gen(function* () {
+            const notified = options.onReadinessFailure?.(error);
+            const giveUp =
+              notified === undefined
+                ? false
+                : yield* Effect.map(notified, (value) => value === true);
+            if (!giveUp) {
+              return false;
+            }
+            // The probe loop is forked beside the exit wait. Killing here lets
+            // that wait finish and own recovery, instead of stopping the
+            // instance from inside its own fiber.
+            yield* handle.kill().pipe(Effect.ignore);
+            return true;
+          }),
       }),
     ),
   );
@@ -692,10 +762,16 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
     mutex.withPermits(1)(
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
+        const userDrivenStart = !current.desiredRunning;
         if (Option.isSome(current.active)) {
-          if (!current.desiredRunning) {
+          if (userDrivenStart) {
+            // The replacement is spawned only after this run closes, and by
+            // then desiredRunning is already true. The later start sees a
+            // restart, not a user start, so the fresh budget has to be taken
+            // here — otherwise one pre-ready failure on the replacement can
+            // spend a budget the previous run already used up.
             yield* Ref.update(state, (latest) => ({
-              ...latest,
+              ...withFreshStartupBudget(latest),
               desiredRunning: true,
             }));
           }
@@ -726,16 +802,18 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           .exists(config.value.entryPath)
           .pipe(Effect.orElseSucceed(() => false));
 
-        const resetFatalPreflightCounter =
-          !current.desiredRunning && current.preflightFailureAttempt > 0;
+        const resetFatalPreflightCounter = userDrivenStart && current.preflightFailureAttempt > 0;
         yield* cancelRestart;
-        yield* Ref.update(state, (latest) => ({
-          ...latest,
-          desiredRunning: true,
-          ready: false,
-          config: Option.some(config.value),
-          preflightFailureAttempt: resetFatalPreflightCounter ? 0 : latest.preflightFailureAttempt,
-        }));
+        yield* Ref.update(state, (latest) => {
+          const next = userDrivenStart ? withFreshStartupBudget(latest) : latest;
+          return {
+            ...next,
+            desiredRunning: true,
+            ready: false,
+            config: Option.some(config.value),
+            preflightFailureAttempt: resetFatalPreflightCounter ? 0 : next.preflightFailureAttempt,
+          };
+        });
 
         const preflightFailure = config.value.preflightFailure;
         if (Option.isSome(preflightFailure)) {
@@ -829,57 +907,72 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
         const finalizeRun = Effect.fn("desktop.backendInstance.finalizeRun")(function* (
           reason: string,
         ) {
-          yield* mutex.withPermits(1)(
+          const recovery = yield* mutex.withPermits(1)(
             Effect.gen(function* () {
-              const { isCurrentRun, nextState, pid, exitObserved, stopRequested, wasReady } =
-                yield* Ref.modify(
-                  state,
-                  (
-                    latest,
-                  ): readonly [
-                    {
-                      readonly isCurrentRun: boolean;
-                      readonly nextState: BackendManagerState;
-                      readonly pid: Option.Option<number>;
-                      readonly exitObserved: boolean;
-                      readonly stopRequested: boolean;
-                      readonly wasReady: boolean;
-                    },
-                    BackendManagerState,
-                  ] => {
-                    const currentRun = Option.getOrUndefined(latest.active);
-                    if (currentRun?.id !== runId) {
-                      return [
-                        {
-                          isCurrentRun: false,
-                          nextState: latest,
-                          pid: Option.none<number>(),
-                          exitObserved: false,
-                          stopRequested: false,
-                          wasReady: false,
-                        },
-                        latest,
-                      ] as const;
-                    }
-
-                    const next = {
-                      ...latest,
-                      active: Option.none<ActiveBackendRun>(),
-                      ready: false,
-                    };
+              const {
+                isCurrentRun,
+                nextState,
+                pid,
+                exitObserved,
+                stopRequested,
+                wasReady,
+                startupFailureAttempt,
+                startupFailureUnreachable,
+              } = yield* Ref.modify(
+                state,
+                (
+                  latest,
+                ): readonly [
+                  {
+                    readonly isCurrentRun: boolean;
+                    readonly nextState: BackendManagerState;
+                    readonly pid: Option.Option<number>;
+                    readonly exitObserved: boolean;
+                    readonly stopRequested: boolean;
+                    readonly wasReady: boolean;
+                    readonly startupFailureAttempt: number;
+                    readonly startupFailureUnreachable: boolean;
+                  },
+                  BackendManagerState,
+                ] => {
+                  const currentRun = Option.getOrUndefined(latest.active);
+                  if (currentRun?.id !== runId) {
                     return [
                       {
-                        isCurrentRun: true,
-                        nextState: next,
-                        pid: currentRun.pid,
-                        exitObserved: currentRun.exitObserved,
-                        stopRequested: currentRun.stopRequested,
-                        wasReady: latest.ready,
+                        isCurrentRun: false,
+                        nextState: latest,
+                        pid: Option.none<number>(),
+                        exitObserved: false,
+                        stopRequested: false,
+                        wasReady: false,
+                        startupFailureAttempt: latest.startupFailureAttempt,
+                        startupFailureUnreachable: false,
                       },
-                      next,
+                      latest,
                     ] as const;
-                  },
-                );
+                  }
+
+                  const next = {
+                    ...latest,
+                    active: Option.none<ActiveBackendRun>(),
+                    ready: false,
+                    startupFailureUnreachable: false,
+                  };
+                  return [
+                    {
+                      isCurrentRun: true,
+                      nextState: next,
+                      pid: currentRun.pid,
+                      exitObserved: currentRun.exitObserved,
+                      stopRequested: currentRun.stopRequested,
+                      wasReady: latest.ready,
+                      startupFailureAttempt: latest.startupFailureAttempt,
+                      startupFailureUnreachable: latest.startupFailureUnreachable,
+                    },
+                    next,
+                  ] as const;
+                },
+              );
 
               if (isCurrentRun) {
                 yield* desktopTelemetryPublisher.removeControlSource(spec.id);
@@ -897,15 +990,71 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                 }
               }
 
-              if (isCurrentRun && nextState.desiredRunning) {
+              const countsTowardStartupBudget =
+                isCurrentRun && !stopRequested && !wasReady && spec.onStartupFailed !== undefined;
+              let startupFailure: StartupFailure | undefined;
+              if (countsTowardStartupBudget) {
+                const nextAttempt = startupFailureAttempt + 1;
+                if (nextAttempt < MAX_STARTUP_FAILURE_ATTEMPTS) {
+                  yield* Ref.update(state, (latest) => ({
+                    ...latest,
+                    startupFailureAttempt: nextAttempt,
+                  }));
+                } else {
+                  startupFailure = startupFailureUnreachable
+                    ? { kind: "unreachable" }
+                    : startupFailureFromExitReason(reason);
+                  yield* Ref.update(state, withFreshStartupBudget);
+                }
+              } else if (isCurrentRun && wasReady) {
+                yield* Ref.update(state, withFreshStartupBudget);
+              }
+
+              if (startupFailure === undefined && isCurrentRun && nextState.desiredRunning) {
                 yield* scheduleRestart(reason);
               }
+              return startupFailure;
             }),
           );
+
+          // The hook runs after the mutex is released so a dialog cannot sit
+          // on it. stop() sets desiredRunning false before it waits for this
+          // fiber, so a quit during the hook does not start a replacement.
+          if (recovery === undefined || spec.onStartupFailed === undefined) {
+            return;
+          }
+          const decision = yield* spec
+            .onStartupFailed(recovery, config.value.runningDistro)
+            .pipe(Effect.exit);
+          if (Exit.isFailure(decision)) {
+            if (Cause.hasInterruptsOnly(decision.cause)) {
+              return;
+            }
+            yield* logInstanceWarning("desktop backend startup recovery failed", {
+              failure: recovery.kind,
+            });
+          }
+          const current = yield* Ref.get(state);
+          if (
+            !current.desiredRunning ||
+            current.ready ||
+            Option.isSome(current.active) ||
+            Option.isSome(current.restartFiber)
+          ) {
+            return;
+          }
+          if (Exit.isSuccess(decision) && decision.value) {
+            yield* start;
+            return;
+          }
+          yield* scheduleRestart(reason);
         });
 
         const program = runBackendProcess({
           ...config.value,
+          ...(spec.readinessTimeout === undefined
+            ? {}
+            : { readinessTimeout: spec.readinessTimeout }),
           desktopTelemetryStream: desktopTelemetryPublisher.encoded,
           onDesktopTelemetryControl: (message) =>
             desktopTelemetryPublisher.handleControlForSource(spec.id, message),
@@ -932,11 +1081,11 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
 
               return [
                 true,
-                {
+                withFreshStartupBudget({
                   ...latest,
                   restartAttempt: 0,
                   ready: true,
-                },
+                }),
               ] as const;
             });
             if (!isCurrentRun) {
@@ -960,8 +1109,29 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                 error: error.message,
               });
               yield* backendOutputLog.persistFailureSnapshot({
-                details: error.message,
+                details: "readiness-timeout",
               });
+              if (spec.onStartupFailed === undefined) {
+                return false;
+              }
+              return yield* mutex.withPermits(1)(
+                Ref.modify(state, (latest) => {
+                  const active = Option.getOrUndefined(latest.active);
+                  if (
+                    active?.id !== runId ||
+                    active.stopRequested ||
+                    !latest.desiredRunning ||
+                    latest.ready
+                  ) {
+                    return [false, latest] as const;
+                  }
+                  const nextAttempt = latest.startupFailureAttempt + 1;
+                  if (nextAttempt < MAX_STARTUP_FAILURE_ATTEMPTS) {
+                    return [false, { ...latest, startupFailureAttempt: nextAttempt }] as const;
+                  }
+                  return [true, { ...latest, startupFailureUnreachable: true }] as const;
+                }),
+              );
             },
           ),
           onOutput: (streamName, chunk) => backendOutputLog.writeOutputChunk(streamName, chunk),
