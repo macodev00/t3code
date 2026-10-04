@@ -126,6 +126,11 @@ interface MakeInstanceInput {
   readonly onPreflightFailed?: (
     failure: DesktopBackendManager.PreflightFailure,
   ) => Effect.Effect<boolean>;
+  readonly onStartupFailed?: (
+    failure: DesktopBackendManager.StartupFailure,
+    runningDistro: string | undefined,
+  ) => Effect.Effect<boolean>;
+  readonly readinessTimeout?: Duration.Duration;
   readonly config?: DesktopBackendManager.DesktopBackendStartConfig;
   readonly configResolve?: Effect.Effect<
     DesktopBackendManager.DesktopBackendStartConfig,
@@ -185,6 +190,8 @@ function makeTestInstance(input: MakeInstanceInput) {
     ...(input.onReady ? { onReady: () => input.onReady! } : {}),
     ...(input.onShutdown ? { onShutdown: () => input.onShutdown! } : {}),
     ...(input.onPreflightFailed ? { onPreflightFailed: input.onPreflightFailed } : {}),
+    ...(input.onStartupFailed ? { onStartupFailed: input.onStartupFailed } : {}),
+    ...(input.readinessTimeout === undefined ? {} : { readinessTimeout: input.readinessTimeout }),
   });
 
   return instance.pipe(Effect.provide(servicesLayer));
@@ -1572,6 +1579,315 @@ describe("DesktopBackendManager", () => {
         yield* Deferred.succeed(allowTeardown, undefined);
         const finished = yield* Queue.takeN(teardownFinished, 2);
         assert.deepEqual(finished.toSorted(), ["instance1", "instance2"]);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("recovers after three pre-ready exits instead of restarting without a cap", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const launches = yield* Queue.unbounded<"wsl" | "windows">();
+        const failures = yield* Queue.unbounded<string>();
+        const startupFailures: Array<DesktopBackendManager.StartupFailure> = [];
+        const useWindows = yield* Ref.make(false);
+        const ready = yield* Deferred.make<void>();
+        const wslConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+          ...baseConfig,
+          runningDistro: "Ubuntu-22.04",
+          httpBaseUrl: new URL("http://10.0.0.8:3773"),
+        };
+        const windowsConfig: DesktopBackendManager.DesktopBackendStartConfig = {
+          ...baseConfig,
+          httpBaseUrl: new URL("http://127.0.0.1:3773"),
+        };
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const windows = yield* Ref.get(useWindows);
+              yield* Queue.offer(launches, windows ? "windows" : "wsl");
+              if (!windows) {
+                return makeProcess({
+                  exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+                });
+              }
+              const closed = yield* Deferred.make<void>();
+              return makeProcess({
+                exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          configResolve: Ref.get(useWindows).pipe(
+            Effect.map((windows) => (windows ? windowsConfig : wslConfig)),
+          ),
+          httpClientLayer: httpClientLayer((request) =>
+            request.url.startsWith("http://127.0.0.1:3773")
+              ? Effect.succeed(responseForRequest(request, 200))
+              : Effect.never,
+          ),
+          onReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),
+          onStartupFailed: (failure) =>
+            Effect.sync(() => {
+              startupFailures.push(failure);
+            }).pipe(Effect.andThen(Ref.set(useWindows, true)), Effect.as(true)),
+          backendOutputLog: {
+            persistFailure: ({ details }) => Queue.offer(failures, details).pipe(Effect.asVoid),
+          },
+        });
+
+        yield* instance.start;
+        assert.equal(yield* Queue.take(launches), "wsl");
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        assert.deepEqual(startupFailures, []);
+
+        yield* TestClock.adjust(Duration.millis(500));
+        assert.equal(yield* Queue.take(launches), "wsl");
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        assert.deepEqual(startupFailures, []);
+
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(yield* Queue.take(launches), "wsl");
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        assert.equal(yield* Queue.take(launches), "windows");
+        yield* Deferred.await(ready).pipe(Effect.timeout("1 second"));
+
+        assert.deepEqual(startupFailures, [{ kind: "exited", exitCode: 1 }]);
+        // The recovered Windows backend stays up. Advancing well past the
+        // restart cap must not spawn another WSL process.
+        yield* TestClock.adjust(Duration.seconds(30));
+        assert.equal(yield* Queue.size(launches), 0);
+        assert.equal((yield* instance.snapshot).ready, true);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("gives a user-driven start during teardown a fresh startup budget", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const failures = yield* Queue.unbounded<string>();
+        const startupFailures: Array<DesktopBackendManager.StartupFailure> = [];
+        const teardownStarted = yield* Deferred.make<void>();
+        const finishTeardown = yield* Deferred.make<void>();
+        let startCount = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const scope = yield* Scope.Scope;
+              startCount += 1;
+              const id = startCount;
+              yield* Queue.offer(starts, id);
+              if (id === 3) {
+                const closed = yield* Deferred.make<void>();
+                yield* Scope.addFinalizer(
+                  scope,
+                  Deferred.succeed(teardownStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(finishTeardown)),
+                    Effect.andThen(Deferred.succeed(closed, undefined)),
+                    Effect.asVoid,
+                  ),
+                );
+                return makeProcess({
+                  exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+                });
+              }
+              return makeProcess({
+                exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          config: {
+            ...baseConfig,
+            runningDistro: "Ubuntu-22.04",
+          },
+          httpClientLayer: httpClientLayer(() => Effect.never),
+          onStartupFailed: (failure) =>
+            Effect.sync(() => {
+              startupFailures.push(failure);
+            }).pipe(Effect.as(false)),
+          backendOutputLog: {
+            persistFailure: ({ details }) => Queue.offer(failures, details).pipe(Effect.asVoid),
+          },
+        });
+
+        yield* instance.start;
+        assert.equal(yield* Queue.take(starts), 1);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        yield* TestClock.adjust(Duration.millis(500));
+        assert.equal(yield* Queue.take(starts), 2);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.equal(yield* Queue.take(starts), 3);
+        assert.deepEqual(startupFailures, []);
+
+        // Two pre-ready crashes are already on the budget. start() while that
+        // run is closing must not leave them there for the replacement.
+        const stopFiber = yield* instance.stop().pipe(Effect.forkChild);
+        yield* Deferred.await(teardownStarted).pipe(Effect.timeout("1 second"));
+        yield* instance.start;
+        yield* Deferred.succeed(finishTeardown, undefined);
+        yield* Fiber.join(stopFiber).pipe(Effect.timeout("1 second"));
+
+        // Closing the stopped run schedules the replacement. Two earlier
+        // crashes leave the backoff at 2s (500ms * 2^2).
+        yield* TestClock.adjust(Duration.seconds(2));
+        assert.equal(yield* Queue.take(starts), 4);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        assert.deepEqual(startupFailures, []);
+
+        yield* TestClock.adjust(Duration.seconds(4));
+        assert.equal(yield* Queue.take(starts), 5);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        assert.deepEqual(startupFailures, []);
+
+        yield* TestClock.adjust(Duration.seconds(8));
+        assert.equal(yield* Queue.take(starts), 6);
+        assert.equal(yield* Queue.take(failures), "pid=123 code=1");
+        assert.deepEqual(startupFailures, [{ kind: "exited", exitCode: 1 }]);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("recovers when a live backend exhausts three readiness budgets", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const startupFailures: Array<DesktopBackendManager.StartupFailure> = [];
+        const ready = yield* Deferred.make<void>();
+        const childExit = yield* Deferred.make<void>();
+        const healthy = yield* Ref.make(false);
+        let startCount = 0;
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              startCount += 1;
+              const id = startCount;
+              yield* Queue.offer(starts, id);
+              if (id === 1) {
+                return makeProcess({
+                  exitCode: Deferred.await(childExit).pipe(
+                    Effect.as(ChildProcessSpawner.ExitCode(1)),
+                  ),
+                  kill: () => Deferred.succeed(childExit, undefined),
+                });
+              }
+              const closed = yield* Deferred.make<void>();
+              return makeProcess({
+                exitCode: Deferred.await(closed).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          readinessTimeout: Duration.millis(50),
+          config: {
+            ...baseConfig,
+            runningDistro: "Ubuntu-22.04",
+          },
+          httpClientLayer: httpClientLayer((request) =>
+            Ref.get(healthy).pipe(
+              Effect.map((isHealthy) => responseForRequest(request, isHealthy ? 200 : 503)),
+            ),
+          ),
+          onReady: Deferred.succeed(ready, void 0).pipe(Effect.asVoid),
+          onStartupFailed: (failure) =>
+            Effect.sync(() => {
+              startupFailures.push(failure);
+            }).pipe(Effect.andThen(Ref.set(healthy, true)), Effect.as(true)),
+        });
+
+        yield* instance.start;
+        assert.equal(yield* Queue.take(starts), 1);
+        assert.deepEqual(startupFailures, []);
+
+        yield* TestClock.adjust(Duration.millis(50));
+        assert.deepEqual(startupFailures, []);
+        yield* TestClock.adjust(Duration.millis(50));
+        assert.deepEqual(startupFailures, []);
+        yield* TestClock.adjust(Duration.millis(50));
+
+        assert.equal(yield* Queue.take(starts).pipe(Effect.timeout("1 second")), 2);
+        yield* Deferred.await(ready).pipe(Effect.timeout("1 second"));
+        assert.deepEqual(startupFailures, [{ kind: "unreachable" }]);
+        assert.equal((yield* instance.snapshot).ready, true);
+      }).pipe(Effect.provide(TestClock.layer())),
+    ),
+  );
+
+  it.effect("does not spend the startup budget on exits after the backend was ready", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const starts = yield* Queue.unbounded<number>();
+        const readies = yield* Queue.unbounded<number>();
+        const exited = yield* Queue.unbounded<number>();
+        const release = yield* Queue.unbounded<void>();
+        let startCount = 0;
+        const startupFailures: Array<DesktopBackendManager.StartupFailure> = [];
+
+        const spawnerLayer = Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() =>
+            Effect.sync(() => {
+              startCount += 1;
+              const pid = startCount;
+              return makeProcess({
+                exitCode: Queue.offer(starts, pid).pipe(
+                  Effect.andThen(Queue.take(release)),
+                  Effect.as(ChildProcessSpawner.ExitCode(1)),
+                ),
+              });
+            }),
+          ),
+        );
+
+        const instance = yield* makeTestInstance({
+          spawnerLayer,
+          onReady: Effect.sync(() => startCount).pipe(
+            Effect.flatMap((pid) => Queue.offer(readies, pid)),
+            Effect.asVoid,
+          ),
+          onStartupFailed: (failure) =>
+            Effect.sync(() => {
+              startupFailures.push(failure);
+            }).pipe(Effect.as(false)),
+          backendOutputLog: {
+            persistFailure: () => Queue.offer(exited, startCount).pipe(Effect.asVoid),
+          },
+        });
+
+        yield* instance.start;
+        for (const delay of [
+          Duration.zero,
+          Duration.millis(500),
+          Duration.seconds(1),
+          Duration.seconds(2),
+          Duration.seconds(4),
+        ]) {
+          if (Duration.toMillis(delay) > 0) {
+            yield* TestClock.adjust(delay);
+          }
+          const pid = yield* Queue.take(starts);
+          assert.equal(yield* Queue.take(readies), pid);
+          yield* Queue.offer(release, undefined);
+          assert.equal(yield* Queue.take(exited), pid);
+        }
+        assert.deepEqual(startupFailures, []);
+        assert.equal(startCount, 5);
       }).pipe(Effect.provide(TestClock.layer())),
     ),
   );
