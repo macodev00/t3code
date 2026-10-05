@@ -8,7 +8,12 @@ import {
 } from "@t3tools/contracts";
 import { parseKeybindingShortcut } from "@t3tools/shared/keybindings";
 
-import { formatShortcutKeyLabel, formatShortcutLabel, shortcutConflictKey } from "../keybindings";
+import {
+  canonicalShortcutKey,
+  formatShortcutKeyLabel,
+  formatShortcutLabel,
+  shortcutConflictKey,
+} from "../keybindings";
 import { isMacPlatform, isWindowsPlatform } from "./utils";
 
 const DESKTOP_KEY_ALIASES: Readonly<Record<string, string>> = {
@@ -107,15 +112,27 @@ export function sameSnapShotShortcut(
   return shortcutConflictKey(left, platform) === shortcutConflictKey(right, platform);
 }
 
+/**
+ * Keybinding command already bound to this snapshot chord, or null.
+ * A layout character and the US name of that key count as the same chord.
+ */
 export function snapShotKeybindingConflict<Command extends string>(
   shortcut: SnapShotShortcut,
   keybindings: ReadonlyArray<{ readonly command: Command; readonly shortcut: KeybindingShortcut }>,
   platform = navigator.platform,
 ): Command | null {
   if (isModifierPairShortcut(shortcut)) return null;
-  const key = shortcutConflictKey(shortcut, platform);
+  const key = shortcutConflictKey(shortcutForConflict(shortcut), platform);
   return (
-    keybindings.find((binding) => shortcutConflictKey(binding.shortcut, platform) === key)
-      ?.command ?? null
+    keybindings.find(
+      (binding) => shortcutConflictKey(shortcutForConflict(binding.shortcut), platform) === key,
+    )?.command ?? null
   );
+}
+
+/** Replaces a layout character with the US name of that key, when one is known. */
+function shortcutForConflict<Shortcut extends KeybindingShortcut>(shortcut: Shortcut): Shortcut {
+  const key = canonicalShortcutKey(shortcut.key);
+  if (key === shortcut.key) return shortcut;
+  return { ...shortcut, key };
 }

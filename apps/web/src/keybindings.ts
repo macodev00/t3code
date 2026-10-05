@@ -81,17 +81,156 @@ const EVENT_CODE_SHORTCUT_KEYS: Readonly<Record<string, string>> = {
   Slash: "/",
 };
 
+/** What a US layout types at the same positions with Shift held. */
+const US_SHIFTED_EVENT_CODE_KEYS: Readonly<Record<string, string>> = {
+  Backquote: "~",
+  Backslash: "|",
+  BracketLeft: "{",
+  BracketRight: "}",
+  Comma: "<",
+  Digit0: ")",
+  Digit1: "!",
+  Digit2: "@",
+  Digit3: "#",
+  Digit4: "$",
+  Digit5: "%",
+  Digit6: "^",
+  Digit7: "&",
+  Digit8: "*",
+  Digit9: "(",
+  Equal: "+",
+  Minus: "_",
+  Period: ">",
+  Quote: '"',
+  Semicolon: ":",
+  Slash: "?",
+};
+
+/** Unshifted character the active layout types for a physical `code`. */
+export interface ShortcutLayoutMap {
+  get(code: string): string | undefined;
+}
+
+let shortcutLayoutMap: ShortcutLayoutMap | null = null;
+let shortcutLayoutVersion = 0;
+let shortcutLayoutLoad: Promise<void> | null = null;
+const shortcutLayoutListeners = new Set<() => void>();
+
+/**
+ * Remembers the active layout's unshifted characters so a recorded `ü` is the
+ * same chord as the US name `[` of that key. Pass null to forget the map.
+ */
+export function installShortcutLayoutMap(map: ShortcutLayoutMap | null): void {
+  shortcutLayoutMap = map;
+  shortcutLayoutVersion += 1;
+  for (const listener of shortcutLayoutListeners) listener();
+}
+
+/**
+ * Subscribes to layout-map changes. The version from `getShortcutLayoutVersion`
+ * changes after each `installShortcutLayoutMap` call.
+ */
+export function subscribeShortcutLayout(listener: () => void): () => void {
+  shortcutLayoutListeners.add(listener);
+  return () => {
+    shortcutLayoutListeners.delete(listener);
+  };
+}
+
+/** Counter bumped whenever the shortcut layout map is installed or cleared. */
+export function getShortcutLayoutVersion(): number {
+  return shortcutLayoutVersion;
+}
+
+/**
+ * Loads `navigator.keyboard.getLayoutMap` once, when the browser exposes it,
+ * and installs the result for chord conflict checks.
+ */
+export function ensureShortcutLayoutLoaded(): void {
+  if (shortcutLayoutLoad) return;
+  const keyboard = (
+    globalThis.navigator as Navigator & {
+      keyboard?: { getLayoutMap?: () => Promise<ShortcutLayoutMap> };
+    }
+  )?.keyboard;
+  if (!keyboard?.getLayoutMap) {
+    shortcutLayoutLoad = Promise.resolve();
+    return;
+  }
+  shortcutLayoutLoad = keyboard
+    .getLayoutMap()
+    .then((map) => {
+      installShortcutLayoutMap(map);
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * US name of the physical key that types `key` on the active layout.
+ * Latin letters stay themselves: a layout that types `m` on the `;` key is not
+ * an alias of `;`, because matching follows the letter the layout produced.
+ */
+export function canonicalShortcutKey(key: string): string {
+  const map = shortcutLayoutMap;
+  if (!map) return key;
+  const normalized = normalizeEventKey(key);
+  if (/^[a-z]$/.test(normalized)) return key;
+  for (const code of Object.keys(EVENT_CODE_SHORTCUT_KEYS)) {
+    const usKey = EVENT_CODE_SHORTCUT_KEYS[code];
+    const layoutKey = map.get(code);
+    if (!usKey || !layoutKey || layoutKey.length !== 1) continue;
+    if (normalizeEventKey(layoutKey) === normalized && normalized !== usKey) return usKey;
+  }
+  return key;
+}
+
 function normalizeEventKey(key: string): string {
   const normalized = key.toLowerCase();
   if (normalized === "esc") return "escape";
   return normalized;
 }
 
-export function shortcutKeyFromEvent(event: Pick<ShortcutEventLike, "key" | "code">): string {
+/**
+ * Key token used when matching a chord. Latin letters follow the layout.
+ * Every other mapped position uses the US character for `event.code`, so
+ * default chords such as `mod+[` keep firing on layouts that type something else.
+ */
+function shortcutKeyFromEvent(event: Pick<ShortcutEventLike, "key" | "code">): string {
   const layoutKey = normalizeEventKey(event.key);
   if (/^[a-z]$/.test(layoutKey)) return layoutKey;
   const physicalKey = event.code ? EVENT_CODE_SHORTCUT_KEYS[event.code] : undefined;
   return physicalKey ?? layoutKey;
+}
+
+/**
+ * Key token a settings chord is saved as. Where the layout types a character the
+ * US layout does not type at that position (`#`, `ü`, `+`), that character is
+ * kept. A US layout keeps the key's own name (`mod+shift+[`, not `mod+shift+{`)
+ * so its label still matches the default chord. Option and AltGr keep the US
+ * name too, because they type a symbol for the same key (`“` for `[`).
+ */
+export function recordedShortcutKeyFromEvent(
+  event: Pick<ShortcutEventLike, "key" | "code" | "altKey">,
+): string {
+  const layoutKey = normalizeEventKey(event.key);
+  const code = event.code ?? "";
+  const typesUsCharacter =
+    layoutKey === EVENT_CODE_SHORTCUT_KEYS[code] || layoutKey === US_SHIFTED_EVENT_CODE_KEYS[code];
+  if (layoutKey.length === 1 && !event.altKey && !typesUsCharacter) return layoutKey;
+  return shortcutKeyFromEvent(event);
+}
+
+/**
+ * US key name for a physical position. Letters come from `KeyA`–`KeyZ`, so a
+ * remapped layout records the key Electron's accelerator names rather than the
+ * character that key types.
+ */
+export function physicalShortcutKeyFromEvent(
+  event: Pick<ShortcutEventLike, "key" | "code">,
+): string {
+  const letter = event.code?.match(/^Key([A-Z])$/)?.[1];
+  if (letter) return letter.toLowerCase();
+  return shortcutKeyFromEvent(event);
 }
 
 function resolveEventKeys(event: ShortcutEventLike): Set<string> {
@@ -126,19 +265,28 @@ function matchesShortcutModifiers(
   );
 }
 
-function matchesShortcut(
+/**
+ * 2 when the shortcut key is the character the layout typed, 1 when it only
+ * matches the US name of that position, 0 when the chord does not match.
+ * The typed character outranks the US alias so a recorded `ü` and a default
+ * `[` do not depend on which binding appears later in the config.
+ */
+function shortcutMatchRank(
   event: ShortcutEventLike,
   shortcut: KeybindingShortcut,
-  platform = navigator.platform,
-): boolean {
+  platform: string,
+  eventKeys: ReadonlySet<string>,
+): number {
   if (
     !isMacPlatform(platform) &&
     event.getModifierState?.("AltGraph") &&
     !/^[a-z0-9]$/i.test(event.key)
-  )
-    return false;
-  if (!matchesShortcutModifiers(event, shortcut, platform)) return false;
-  return resolveEventKeys(event).has(shortcut.key);
+  ) {
+    return 0;
+  }
+  if (!matchesShortcutModifiers(event, shortcut, platform)) return 0;
+  if (!eventKeys.has(shortcut.key)) return 0;
+  return shortcut.key === normalizeEventKey(event.key) ? 2 : 1;
 }
 
 function resolvePlatform(options: ShortcutMatchOptions | undefined): string {
@@ -234,6 +382,11 @@ function matchesCommandShortcut(
   return resolveShortcutCommand(event, keybindings, options) === command;
 }
 
+/**
+ * Command bound to this keypress, or null. A binding whose key is the character
+ * the layout typed wins over one that only matches the US name of that position.
+ * Ties keep the later binding in the config.
+ */
 export function resolveShortcutCommand(
   event: ShortcutEventLike,
   keybindings: ResolvedKeybindingsConfig,
@@ -241,15 +394,21 @@ export function resolveShortcutCommand(
 ): KeybindingCommand | null {
   const platform = resolvePlatform(options);
   const context = resolveContext(options);
+  const eventKeys = resolveEventKeys(event);
+  let selected: KeybindingCommand | null = null;
+  let selectedRank = 0;
 
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
     if (!binding) continue;
     if (!matchesWhenClause(binding.whenAst, context)) continue;
-    if (!matchesShortcut(event, binding.shortcut, platform)) continue;
-    return binding.command;
+    const rank = shortcutMatchRank(event, binding.shortcut, platform, eventKeys);
+    if (rank <= selectedRank) continue;
+    selected = binding.command;
+    selectedRank = rank;
+    if (rank === 2) break;
   }
-  return null;
+  return selected;
 }
 
 export function formatShortcutKeyLabel(key: string): string {

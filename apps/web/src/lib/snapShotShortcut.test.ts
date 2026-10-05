@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { installShortcutLayoutMap } from "../keybindings";
 import {
   formatSnapShotShortcutLabel,
   parseDesktopSnapShotShortcut,
@@ -134,6 +135,44 @@ describe("window capture keybinding conflicts", () => {
 
   it("does not conflict with regular keybindings for both Shift keys", () => {
     expect(snapShotKeybindingConflict({ kind: "both-shift-keys" }, [], "Linux")).toBeNull();
+  });
+
+  it("treats a layout character as the US key a snapshot accelerator uses", () => {
+    installShortcutLayoutMap({
+      get(code) {
+        return code === "BracketRight" ? "+" : undefined;
+      },
+    });
+    try {
+      expect(
+        snapShotKeybindingConflict(
+          {
+            key: "]",
+            metaKey: false,
+            ctrlKey: false,
+            shiftKey: false,
+            altKey: false,
+            modKey: true,
+          },
+          [
+            {
+              command: "chat.new",
+              shortcut: {
+                key: "+",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+            },
+          ],
+          "MacIntel",
+        ),
+      ).toBe("chat.new");
+    } finally {
+      installShortcutLayoutMap(null);
+    }
   });
 
   it("keeps symbols on different physical keys distinct", () => {

@@ -108,7 +108,9 @@ export function useSnapShotShortcutRecorder({
     }
     // A global shortcut without a modifier would take that key from every app.
     if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) return;
-    const input = keybindingFromKeyboardEvent(event, navigator.platform);
+    // Electron names accelerator keys by US position (`#` means Shift+3, `ü` is
+    // invalid), so a global shortcut is recorded by the key's position.
+    const input = keybindingFromKeyboardEvent(event, navigator.platform, { physicalKeys: true });
     if (!input) return;
     const next = parseKeybindingShortcut(input);
     if (!next) return;

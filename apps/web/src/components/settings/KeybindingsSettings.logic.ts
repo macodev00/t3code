@@ -8,10 +8,16 @@ import {
 } from "@t3tools/contracts";
 import {
   DEFAULT_RESOLVED_KEYBINDINGS,
+  parseKeybindingShortcut,
   parseKeybindingWhenExpression,
 } from "@t3tools/shared/keybindings";
 
-import { shortcutKeyFromEvent } from "../../keybindings";
+import {
+  canonicalShortcutKey,
+  getShortcutLayoutVersion,
+  physicalShortcutKeyFromEvent,
+  recordedShortcutKeyFromEvent,
+} from "../../keybindings";
 import { isMacPlatform } from "../../lib/utils";
 import { METRIC_OPTIONS, WINDOW_OPTIONS } from "../usage/usageShortcuts";
 
@@ -183,6 +189,34 @@ function conflictsWithWhen(leftWhen: string, rightWhen: string): boolean {
   return leftWhen.length === 0 || rightWhen.length === 0 || leftWhen === rightWhen;
 }
 
+/**
+ * True when both strings are the same chord, including a layout character and
+ * the US name of that physical key (`ü` and `[` once the layout map is known).
+ * Modifier order is not rewritten: `mod+k` and `meta+k` stay distinct.
+ */
+function sameShortcutChord(left: string, right: string): boolean {
+  if (left === right) return true;
+  const leftParsed = parseKeybindingShortcut(left);
+  const rightParsed = parseKeybindingShortcut(right);
+  if (!leftParsed || !rightParsed) return false;
+  const leftKey = canonicalShortcutKey(leftParsed.key);
+  const rightKey = canonicalShortcutKey(rightParsed.key);
+  if (leftKey === leftParsed.key && rightKey === rightParsed.key) return false;
+  if (leftKey !== rightKey) return false;
+  return (
+    leftParsed.modKey === rightParsed.modKey &&
+    leftParsed.metaKey === rightParsed.metaKey &&
+    leftParsed.ctrlKey === rightParsed.ctrlKey &&
+    leftParsed.altKey === rightParsed.altKey &&
+    leftParsed.shiftKey === rightParsed.shiftKey
+  );
+}
+
+/**
+ * Commands whose chord matches `input` in an overlapping when-clause.
+ * A layout character conflicts with the US name of the same key, so recording
+ * `mod+ü` warns about the default `mod+[`.
+ */
 export function keybindingConflictLabels(
   rows: ReadonlyArray<KeybindingRow>,
   input: { readonly rowId: string; readonly key: string; readonly when: string },
@@ -192,7 +226,7 @@ export function keybindingConflictLabels(
   for (const candidate of rows) {
     if (
       candidate.id !== input.rowId &&
-      candidate.key === input.key &&
+      sameShortcutChord(candidate.key, input.key) &&
       conflictsWithWhen(candidate.when, input.when)
     ) {
       conflicts.push(commandLabel(candidate.command));
@@ -201,10 +235,16 @@ export function keybindingConflictLabels(
   return [...new Set(conflicts)].toSorted();
 }
 
+/**
+ * Searchable keybinding rows. `layoutVersion` is the shortcut layout epoch:
+ * rows read that map for alias conflicts, and a new epoch must rebuild them.
+ */
 export function buildKeybindingRows(
   keybindings: ResolvedKeybindingsConfig,
   query: string,
+  layoutVersion = getShortcutLayoutVersion(),
 ): ReadonlyArray<KeybindingRow> {
+  void layoutVersion;
   const normalizedQuery = query.trim().toLowerCase();
   const rows = keybindings.map((binding, index) => {
     const defaultBinding = defaultBindingForBinding(binding);
@@ -369,12 +409,25 @@ function normalizeShortcutKeyToken(key: string): string | null {
   return null;
 }
 
-/** Turns a keydown into a binding such as `mod+shift+k` or `tab`. Null for modifier-only presses. */
+/**
+ * Turns a keydown into a binding such as `mod+shift+k` or `tab`. Null for
+ * modifier-only presses. The key is the character the layout typed, unless
+ * `physicalKeys` is set, which records the US name of the position for
+ * Electron global shortcuts.
+ */
 export function keybindingFromKeyboardEvent(
   event: Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
   platform: string,
+  options?: {
+    /** Record US key names by position, for shortcuts registered outside the app. */
+    readonly physicalKeys?: boolean;
+  },
 ): string | null {
-  const keyToken = normalizeShortcutKeyToken(shortcutKeyFromEvent(event));
+  const keyToken = normalizeShortcutKeyToken(
+    options?.physicalKeys
+      ? physicalShortcutKeyFromEvent(event)
+      : recordedShortcutKeyFromEvent(event),
+  );
   if (!keyToken) return null;
 
   const parts: string[] = [];

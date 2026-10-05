@@ -997,6 +997,55 @@ describe("resolveShortcutCommand", () => {
     );
   });
 
+  it("prefers a recorded layout character over the US name of that key", () => {
+    const pressed = event({ key: "ü", code: "BracketLeft", metaKey: true });
+    const layout = { shortcut: modShortcut("ü"), command: "chat.new" as const };
+    const physical = { shortcut: modShortcut("["), command: "navigation.back" as const };
+
+    assert.strictEqual(
+      resolveShortcutCommand(pressed, compile([physical, layout]), { platform: "MacIntel" }),
+      "chat.new",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(pressed, compile([layout, physical]), { platform: "MacIntel" }),
+      "chat.new",
+    );
+  });
+
+  it("keeps the later binding when two chords use the typed character", () => {
+    const pressed = event({ key: "ü", code: "BracketLeft", metaKey: true });
+    assert.strictEqual(
+      resolveShortcutCommand(
+        pressed,
+        compile([
+          { shortcut: modShortcut("ü"), command: "chat.new" },
+          { shortcut: modShortcut("ü"), command: "chat.newLocal" },
+        ]),
+        { platform: "MacIntel" },
+      ),
+      "chat.newLocal",
+    );
+  });
+
+  it("still matches default bracket chords from the physical key", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "ü", code: "BracketLeft", metaKey: true }),
+        DEFAULT_RESOLVED_KEYBINDINGS,
+        { platform: "MacIntel" },
+      ),
+      "navigation.back",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "+", code: "BracketRight", metaKey: true }),
+        DEFAULT_RESOLVED_KEYBINDINGS,
+        { platform: "MacIntel" },
+      ),
+      "navigation.forward",
+    );
+  });
+
   it("does not let a punctuation position shadow a Latin layout key", () => {
     const keybindings = compile([
       { shortcut: modShortcut("m"), command: "diff.toggle" },

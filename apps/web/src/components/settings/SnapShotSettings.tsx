@@ -11,6 +11,7 @@ import { PlayIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useClientSettings, useUpdateClientSettings } from "../../hooks/useSettings";
+import { useShortcutLayoutVersion } from "../../hooks/useShortcutLayout";
 import { getDesktopSnapShotBridge } from "../../lib/desktopSnapShot";
 import {
   readSnapShotSetupResume,
@@ -96,6 +97,9 @@ export function SnapShotSettings() {
   const managedShortcut = state?.linuxBackend === "niri" || state?.linuxBackend === "hyprland";
   const shortcutChanged = !managedShortcut && !sameSnapShotShortcut(candidate, savedShortcut);
   const displayShortcut = shortcutChanged ? candidate : (state?.shortcut ?? savedShortcut);
+  // Re-render once the layout map loads so a layout character conflicts with
+  // the US name of that key. The conflict check reads the map itself.
+  useShortcutLayoutVersion();
   const candidateConflict = shortcutChanged
     ? snapShotKeybindingConflict(candidate, keybindings)
     : null;

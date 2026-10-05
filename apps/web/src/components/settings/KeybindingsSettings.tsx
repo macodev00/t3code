@@ -35,6 +35,7 @@ import {
 
 import { isElectron } from "../../env";
 import { useOpenInPreferredEditor } from "../../editorPreferences";
+import { useShortcutLayoutVersion } from "../../hooks/useShortcutLayout";
 import { formatShortcutLabel } from "../../keybindings";
 import { cn } from "../../lib/utils";
 import { serverEnvironment } from "../../state/server";
@@ -1351,7 +1352,11 @@ export function KeybindingsSettingsPanel() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [savingCommand, setSavingCommand] = useState<KeybindingCommand | null>(null);
   const [isAddingBinding, setIsAddingBinding] = useState(false);
-  const rows = useMemo(() => buildKeybindingRows(keybindings, query), [keybindings, query]);
+  const shortcutLayoutVersion = useShortcutLayoutVersion();
+  const rows = useMemo(
+    () => buildKeybindingRows(keybindings, query, shortcutLayoutVersion),
+    [keybindings, query, shortcutLayoutVersion],
+  );
   // The search-target context is provided by this panel's own page container,
   // so the jump target is read from the route hash here.
   const searchTargetId = useLocation({ select: (location) => location.hash.replace(/^#/, "") });
