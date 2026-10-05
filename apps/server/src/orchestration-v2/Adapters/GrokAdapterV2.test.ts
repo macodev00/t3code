@@ -19,6 +19,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
@@ -28,7 +30,10 @@ import { buildInitialGrokProviderSnapshot } from "../../provider/Layers/GrokProv
 import type { ProviderInstance } from "../../provider/ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../../provider/Services/ProviderInstanceRegistry.ts";
 import * as IdAllocator from "../IdAllocator.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
+import {
+  ProviderAdapterV2RuntimePolicy,
+  type ProviderAdapterV2TurnInput,
+} from "../ProviderAdapter.ts";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
 import { acpPermissionDisposition } from "../../provider/acp/AcpClientPolicy.ts";
 import {
@@ -46,6 +51,9 @@ import {
 
 const LAUNCH_TEST_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({
   binaryPath: "grok-launch-test",
+});
+const SKILL_TEST_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({
+  binaryPath: "grok",
 });
 
 function permissionRequest(
@@ -463,6 +471,66 @@ describe("Grok launch permission mode", () => {
         yield* launchArgs(policy("full-access", { approvalPolicy: "on-request" })),
         asking,
       );
+    }),
+  );
+});
+
+describe("Grok skill mentions", () => {
+  const turn = { runtimePolicy: { cwd: "/workspace/demo" } } as ProviderAdapterV2TurnInput;
+
+  const inspectSpawner = (stdout: string, exitCode = 0) =>
+    ChildProcessSpawner.make(() =>
+      Effect.succeed(
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.encodeText(Stream.make(stdout)),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      ),
+    );
+
+  const flavorFor = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
+    makeGrokAcpAdapterFlavor({
+      settings: SKILL_TEST_GROK_SETTINGS,
+      environment: {},
+      childProcessSpawner: spawner,
+      makeRuntime: () => Effect.never,
+    } as unknown as GrokAdapterV2Options);
+
+  it.effect("sends a picked $skill as the slash command Grok expands", () =>
+    Effect.gen(function* () {
+      const flavor = flavorFor(
+        inspectSpawner('{"skills":[{"name":"poteto-mode","userInvocable":true}]}'),
+      );
+      const prepare = flavor.preparePromptText;
+      assert.isTrue(prepare !== undefined);
+      if (prepare === undefined) return;
+      assert.equal(
+        yield* prepare("$poteto-mode reply with the single word hi", turn),
+        "/poteto-mode reply with the single word hi",
+      );
+      assert.equal(
+        yield* prepare("please $poteto-mode reply hi", turn),
+        "/poteto-mode please reply hi",
+      );
+    }),
+  );
+
+  it.effect("leaves the mention unchanged when skill discovery fails", () =>
+    Effect.gen(function* () {
+      const flavor = flavorFor(inspectSpawner("not json", 1));
+      const prepare = flavor.preparePromptText;
+      assert.isTrue(prepare !== undefined);
+      if (prepare === undefined) return;
+      assert.equal(yield* prepare("$poteto-mode reply hi", turn), "$poteto-mode reply hi");
     }),
   );
 });

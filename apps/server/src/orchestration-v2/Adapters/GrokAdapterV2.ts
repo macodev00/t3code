@@ -53,6 +53,7 @@ import {
   XAiAskUserQuestionRequest,
   XAiExitPlanModeRequest,
 } from "../../provider/acp/XAiAcpExtension.ts";
+import { prepareGrokSkillPrompt } from "../../provider/Drivers/GrokSkills.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { acpPermissionDisposition } from "../../provider/acp/AcpClientPolicy.ts";
 import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
@@ -229,7 +230,13 @@ export function grokLaunchRuntimeMode(
     : "approval-required";
 }
 
+/**
+ * Build the ACP flavor Grok sessions run on. Shared turn execution stays in
+ * `makeAcpAdapterV2`; this supplies Grok's launch mode, permission policy, and
+ * the prompt rewrite that turns composer `$skill` mentions into slash commands.
+ */
 export function makeGrokAcpAdapterFlavor(options: GrokAdapterV2Options): AcpAdapterV2Flavor {
+  const skillCommandsByCwd = new Map<string, ReadonlyMap<string, string>>();
   return {
     driver: GROK_PROVIDER,
     runtimeHarness: "Grok",
@@ -325,6 +332,16 @@ export function makeGrokAcpAdapterFlavor(options: GrokAdapterV2Options): AcpAdap
     isProviderWakeNotification: isXAiTaskCompletedWakeNotification,
     deferFinalizeForBackgroundWork: true,
     enablePostSettleContinuation: true,
+    preparePromptText: (text, turn) =>
+      prepareGrokSkillPrompt({
+        text,
+        cwd: turn.runtimePolicy.cwd,
+        grokSettings: options.settings,
+        environment: options.environment,
+        cache: skillCommandsByCwd,
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, options.childProcessSpawner),
+      ),
     ...(options.assertComplete === undefined ? {} : { assertComplete: options.assertComplete }),
   };
 }

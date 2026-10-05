@@ -429,6 +429,15 @@ export interface AcpAdapterV2Flavor {
    * false; without this override, screenshot turns fail before `session/prompt`.
    */
   readonly supportsImagePrompts?: boolean;
+  /**
+   * Rewrite the user prompt before T3 instructions are applied. Grok lowers
+   * composer `$skill` mentions to the leading `/skill` form its CLI expands.
+   * Other providers leave this unset.
+   */
+  readonly preparePromptText?: (
+    text: string,
+    turn: ProviderAdapter.ProviderAdapterV2TurnInput,
+  ) => Effect.Effect<string>;
 }
 
 /** Whether image attachment blocks may be included in session/prompt. */
@@ -6728,8 +6737,11 @@ export function makeAcpAdapterV2(
             hasT3Mcp: acpMcpServers(turnInput.threadId, self).length > 0,
           } satisfies T3AcpInstructionState;
           const previousInstructionState = (yield* Ref.get(promptInstructionStates)).get(sessionId);
+          const userText = flavor.preparePromptText
+            ? yield* flavor.preparePromptText(turnInput.message.text, turnInput)
+            : turnInput.message.text;
           const messageText = providerMessageTextWithAttachmentPaths({
-            text: turnInput.message.text,
+            text: userText,
             attachments: turnInput.message.attachments,
             attachmentsDir: serverConfig.attachmentsDir,
           });
