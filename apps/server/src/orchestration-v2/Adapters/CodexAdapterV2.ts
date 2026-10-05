@@ -1,3 +1,4 @@
+import { makeCodexMcpStartupGate } from "../../provider/CodexMcpCatalog.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -1546,6 +1547,7 @@ export interface CodexAdapterV2Options {
   };
 }
 
+/** Build the Codex app-server adapter for one provider instance. */
 export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): ProviderAdapterV2Shape {
   const { clientFactory, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
@@ -1665,6 +1667,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ).hasSubagents = true;
         };
         const pendingRootTurns = yield* Ref.make(new Map<string, ProviderAdapterV2TurnInput>());
+        const mcpStartup = yield* makeCodexMcpStartupGate();
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
         const subagentModels = new Map<string, string>();
@@ -3709,6 +3712,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             return { node, request, turnItem };
           });
 
+        yield* client.handleServerNotification("mcpServer/startupStatus/updated", (payload) =>
+          mcpStartup.note({
+            threadId: payload.threadId ?? null,
+            name: payload.name,
+            status: payload.status,
+          }),
+        );
+
         yield* client.handleServerNotification("item/agentMessage/delta", (payload) =>
           Effect.gen(function* () {
             const context = (yield* Ref.get(activeTurns)).get(payload.turnId);
@@ -5545,9 +5556,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   }),
               ),
             ),
+          /**
+           * Start a Codex turn after MCP servers that already reported
+           * `starting` have left that phase, so `turn/start` does not snapshot
+           * a partial tool catalog.
+           */
           startTurn: (turnInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
+              yield* mcpStartup.wait(threadId);
 
               const codexInput =
                 turnInput.restartContinuationOfRunId === undefined
