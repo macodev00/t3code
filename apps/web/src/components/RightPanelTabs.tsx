@@ -165,17 +165,33 @@ const SURFACE_DISABLED_REASONS = {
   device: "Devices are only available from a thread.",
 } as const;
 
-/** Overlays that must win over the launcher's letter shortcuts. */
+/**
+ * Overlays that must win over the launcher's letter shortcuts.
+ * Each popup matches only while open or animating closed. A closed popup
+ * can stay mounted (`keepMounted`); matching it by slot alone made the
+ * chat header actions menu swallow every launcher letter.
+ */
 const LAUNCHER_SHORTCUT_BLOCKING_LAYERS = [
-  '[data-slot="dialog-popup"]',
-  '[data-slot="alert-dialog-popup"]',
-  '[data-slot="command-dialog-popup"]',
-  '[data-slot="menu-popup"]',
-  '[data-slot="select-popup"]',
-  '[data-slot="popover-popup"]',
-  '[data-slot="combobox-popup"]',
-  '[data-slot="autocomplete-popup"]',
+  '[data-slot="dialog-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="alert-dialog-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="command-dialog-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="menu-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="select-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="popover-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="combobox-popup"]:is([data-open],[data-ending-style])',
+  '[data-slot="autocomplete-popup"]:is([data-open],[data-ending-style])',
 ].join(",");
+
+/**
+ * Whether a launcher letter should be ignored because an overlay is open
+ * or still animating closed.
+ *
+ * Closed popups that stay mounted do not count. The chat header actions
+ * menu used to, and every launcher letter was dead on every thread.
+ */
+export function launcherShortcutBlockedByOverlay(root: ParentNode = document): boolean {
+  return root.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS) !== null;
+}
 
 /** One-line unavailability hints for the empty-state rows. */
 const SURFACE_UNAVAILABLE_HINTS = {
@@ -414,7 +430,7 @@ function RightPanelEmptyState(props: {
     const handler = (event: KeyboardEvent) => {
       const action = surfaceShortcutActionForKey(shortcutActionsRef.current, event);
       if (!action) return;
-      if (document.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS)) return;
+      if (launcherShortcutBlockedByOverlay()) return;
       // The composed path starts at the real target, which may sit inside a shadow root.
       const target = event.composedPath()[0] ?? event.target;
       if (target instanceof Element && surfaceShortcutTargetsTypingContext(target)) return;
@@ -818,7 +834,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       }) !== "rightPanel.new"
     )
       return;
-    if (!addSurfaceMenuOpen && document.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS)) return;
+    if (!addSurfaceMenuOpen && launcherShortcutBlockedByOverlay()) return;
     event.preventDefault();
     event.stopPropagation();
     if (!event.repeat) {
