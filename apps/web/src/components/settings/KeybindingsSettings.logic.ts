@@ -329,6 +329,7 @@ export function commandLabel(command: KeybindingCommand): string {
   return raw.split(".").map(titleCaseCommandSegment).join(": ");
 }
 
+/** Title-cases one command id segment, splitting camelCase, `-`, `_`, and spaces into words. */
 function titleCaseCommandSegment(segment: string): string {
   const words: Array<string> = [];
   for (const part of segment.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[-_\s]+/)) {
@@ -382,6 +383,7 @@ function recordedLayoutShortcutKey(
   return shortcutKeyFromEvent(event);
 }
 
+/** Lowercases a key into a supported shortcut token (`space`, `esc`, `f1`). Null for modifiers and unsupported keys. */
 function normalizeShortcutKeyToken(key: string): string | null {
   const normalized = key.toLowerCase();
   if (
