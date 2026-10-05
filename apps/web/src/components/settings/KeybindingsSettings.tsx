@@ -767,6 +767,7 @@ function useKeybindingRowEditor({
     });
   };
 
+  /** Stores the character the active layout typed, then leaves recording. Escape restores the saved shortcut. */
   const captureKeybinding = (event: KeyboardEvent<HTMLInputElement>) => {
     // Tab is recorded like any key while recording; after that it moves focus on.
     if (event.key === "Tab" && !isRecording) return;
@@ -775,7 +776,9 @@ function useKeybindingRowEditor({
       setDraft({ keyDraft: row.key, isRecording: false });
       return;
     }
-    const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform);
+    const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform, {
+      layoutCharacter: true,
+    });
     if (!next) return;
     setDraft({ keyDraft: next, isRecording: false });
   };
@@ -1083,6 +1086,7 @@ function useNewKeybindingDraft({
     });
   };
 
+  /** Stores the character the active layout typed, then leaves recording. Escape clears the draft. */
   const captureKeybinding = (event: KeyboardEvent<HTMLInputElement>) => {
     // Tab is recorded like any key while recording; after that it moves focus on.
     if (event.key === "Tab" && !isRecording) return;
@@ -1091,7 +1095,9 @@ function useNewKeybindingDraft({
       setDraft({ keyDraft: "", isRecording: false });
       return;
     }
-    const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform);
+    const next = keybindingFromKeyboardEvent(event.nativeEvent, navigator.platform, {
+      layoutCharacter: true,
+    });
     if (!next) return;
     setDraft({ keyDraft: next, isRecording: false });
   };
