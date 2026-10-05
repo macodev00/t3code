@@ -1776,6 +1776,127 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       };
     });
 
+  it.effect("does not send turn/start when Stop arrives during the MCP startup wait", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeThreadId = "mcp-stop-thread";
+        const requests: Array<string> = [];
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "mcp-stop-turn",
+          prompt: "hello",
+        });
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "mcp-stop-during-startup",
+            entries: [
+              ...preamble.slice(0, 4),
+              {
+                type: "emit_inbound",
+                label: "mcp-starting",
+                frame: {
+                  method: "mcpServer/startupStatus/updated",
+                  params: {
+                    threadId: nativeThreadId,
+                    name: "slow-mcp",
+                    status: "starting",
+                  },
+                },
+              },
+              preamble[4]!,
+            ],
+          }),
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              requests.push(method);
+            }),
+        );
+        const now = yield* DateTime.now;
+        const started = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-mcp-stop"),
+              text: "hello",
+            }),
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        assert.equal(started.pollUnsafe(), undefined);
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: ProviderTurnId.make("stop-before-turn-start"),
+          requestRuntimeRestart: true,
+        });
+        yield* Fiber.join(started);
+        assert.deepEqual(
+          requests.filter((method) => method === "turn/start"),
+          [],
+        );
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("sends turn/start once a reported MCP server has left starting", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeThreadId = "mcp-ready-thread";
+        const requests: Array<string> = [];
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "mcp-ready-turn",
+          prompt: "hello",
+        });
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "mcp-ready-before-turn",
+            entries: [
+              ...preamble.slice(0, 4),
+              {
+                type: "emit_inbound",
+                label: "mcp-starting",
+                frame: {
+                  method: "mcpServer/startupStatus/updated",
+                  params: { threadId: nativeThreadId, name: "slow-mcp", status: "starting" },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "mcp-ready",
+                frame: {
+                  method: "mcpServer/startupStatus/updated",
+                  params: { threadId: nativeThreadId, name: "slow-mcp", status: "ready" },
+                },
+              },
+              ...preamble.slice(4),
+            ],
+          }),
+          () => Effect.void,
+          (method) =>
+            Effect.sync(() => {
+              requests.push(method);
+            }),
+        );
+        const now = yield* DateTime.now;
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-mcp-ready"),
+            text: "hello",
+          }),
+        );
+        assert.deepEqual(
+          requests.filter((method) => method === "turn/start"),
+          ["turn/start"],
+        );
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
   it.effect.each(["supported", "unsupported", "invalid"] as const)(
     "delivers native history with %s app-server protocol",
     (response) =>

@@ -1,3 +1,4 @@
+import { makeCodexMcpStartupGate } from "../../provider/CodexMcpCatalog.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -1546,6 +1547,7 @@ export interface CodexAdapterV2Options {
   };
 }
 
+/** Build the Codex app-server adapter for one provider instance. */
 export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): ProviderAdapterV2Shape {
   const { clientFactory, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
@@ -1665,6 +1667,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ).hasSubagents = true;
         };
         const pendingRootTurns = yield* Ref.make(new Map<string, ProviderAdapterV2TurnInput>());
+        const mcpStartup = yield* makeCodexMcpStartupGate();
+        // Stop completes this while startTurn is still waiting on MCP startup.
+        const pendingStartCancels = yield* Ref.make(new Map<string, Deferred.Deferred<void>>());
+        // Threads whose pendingRootTurns entry is only a cancel handle. turn/started
+        // must not bind it until turn/start is about to be sent.
+        const catalogWaitThreads = yield* Ref.make(new Set<string>());
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
         const subagentModels = new Map<string, string>();
@@ -3887,6 +3895,14 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           updateSubagentModel(payload.threadId, payload.toModel),
         );
 
+        yield* client.handleServerNotification("mcpServer/startupStatus/updated", (payload) =>
+          mcpStartup.note({
+            threadId: payload.threadId ?? null,
+            name: payload.name,
+            status: payload.status,
+          }),
+        );
+
         yield* client.handleServerNotification("turn/started", (payload) =>
           Effect.gen(function* () {
             const context = (yield* Ref.get(activeTurns)).get(payload.turn.id);
@@ -3897,7 +3913,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               return;
             }
             const pendingRootTurn = (yield* Ref.get(pendingRootTurns)).get(payload.threadId);
-            if (pendingRootTurn !== undefined) {
+            if (
+              pendingRootTurn !== undefined &&
+              !(yield* Ref.get(catalogWaitThreads)).has(payload.threadId)
+            ) {
               yield* registerRootTurn({
                 turnInput: pendingRootTurn,
                 nativeTurnId: payload.turn.id,
@@ -5555,6 +5574,19 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           startTurn: (turnInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
+              const cancelStart = yield* Deferred.make<void>();
+              yield* Ref.update(pendingStartCancels, (current) =>
+                new Map(current).set(threadId, cancelStart),
+              );
+              yield* Ref.update(catalogWaitThreads, (current) => new Set(current).add(threadId));
+              yield* Ref.update(pendingRootTurns, (current) =>
+                new Map(current).set(threadId, turnInput),
+              );
+              const startup = yield* Effect.raceFirst(
+                mcpStartup.wait(threadId),
+                Deferred.await(cancelStart).pipe(Effect.as("cancelled" as const)),
+              );
+              if (startup === "cancelled") return;
 
               const codexInput =
                 turnInput.restartContinuationOfRunId === undefined
@@ -5571,9 +5603,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
                 omitServiceTier: adapterOptions.resolveRuntime !== undefined,
               });
-              yield* Ref.update(pendingRootTurns, (current) => {
-                const updated = new Map(current);
-                updated.set(threadId, turnInput);
+              if (yield* Deferred.isDone(cancelStart)) return;
+              yield* Ref.update(catalogWaitThreads, (current) => {
+                const updated = new Set(current);
+                updated.delete(threadId);
                 return updated;
               });
               yield* Ref.update(additionalContextByThread, (current) => {
@@ -5583,6 +5616,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 else next.delete(threadId);
                 return next;
               });
+              if (yield* Deferred.isDone(cancelStart)) return;
               const started = yield* client.request("turn/start", turnStartParams);
               const nativeTurnId = started.turn.id;
               const startedAt = codexTimestamp(started.turn.startedAt);
@@ -5600,10 +5634,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }).pipe(
               Effect.ensuring(
                 Effect.flatMap(getNativeThreadId(turnInput.providerThread), (threadId) =>
-                  Ref.update(pendingRootTurns, (current) => {
-                    const updated = new Map(current);
-                    updated.delete(threadId);
-                    return updated;
+                  Effect.gen(function* () {
+                    yield* Ref.update(pendingRootTurns, (current) => {
+                      const updated = new Map(current);
+                      updated.delete(threadId);
+                      return updated;
+                    });
+                    yield* Ref.update(pendingStartCancels, (current) => {
+                      const updated = new Map(current);
+                      updated.delete(threadId);
+                      return updated;
+                    });
+                    yield* Ref.update(catalogWaitThreads, (current) => {
+                      const updated = new Set(current);
+                      updated.delete(threadId);
+                      return updated;
+                    });
                   }),
                 ).pipe(Effect.ignore),
               ),
@@ -5667,6 +5713,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             ),
           interruptTurn: (turnInput) =>
             Effect.gen(function* () {
+              if (turnInput.requestRuntimeRestart === true) {
+                const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId;
+                if (nativeThreadId) {
+                  const cancelStart = (yield* Ref.get(pendingStartCancels)).get(nativeThreadId);
+                  if (cancelStart !== undefined) {
+                    yield* Deferred.succeed(cancelStart, undefined).pipe(Effect.ignore);
+                  }
+                }
+              }
               const [activeTurnContexts, settledTurnContexts] =
                 yield* turnTerminalizationPermit.withPermits(1)(
                   Effect.gen(function* () {
