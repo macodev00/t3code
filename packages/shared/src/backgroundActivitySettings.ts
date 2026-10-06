@@ -4,6 +4,7 @@ import {
   DEFAULT_BACKGROUND_ACTIVITY_PROFILE,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL,
+  MIN_PROVIDER_HEALTH_REFRESH_INTERVAL,
   type ServerSettings,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
@@ -73,6 +74,22 @@ export function getBackgroundActivityBaseProfile(
     return backgroundActivity.baseProfile ?? DEFAULT_BACKGROUND_ACTIVITY_PROFILE;
   }
   return backgroundActivity.profile;
+}
+
+/**
+ * Interval a provider health probe may be scheduled on.
+ *
+ * Zero and negative durations stay disabled. Any shorter positive interval is
+ * raised to {@link MIN_PROVIDER_HEALTH_REFRESH_INTERVAL} (Antigravity's
+ * health-check timeout), so the one-minute performance preset and a custom or
+ * patched interval cannot start another probe before that timeout. Longer
+ * intervals are unchanged. Stored settings are left as saved.
+ */
+export function floorProviderHealthRefreshInterval(interval: Duration.Duration): Duration.Duration {
+  if (Duration.toMillis(interval) <= 0) {
+    return Duration.zero;
+  }
+  return Duration.max(interval, MIN_PROVIDER_HEALTH_REFRESH_INTERVAL);
 }
 
 export function resolveBackgroundActivitySettings(

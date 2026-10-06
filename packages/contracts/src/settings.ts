@@ -1050,6 +1050,13 @@ export interface BranchNamingOptions {
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
 export const DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL = Duration.minutes(5);
 
+/**
+ * Shortest enabled provider-health refresh. This is Antigravity's health-check
+ * timeout (`HEALTH_CHECK_TIMEOUT`): a positive interval below it is raised when
+ * probes are scheduled. Zero still disables periodic refresh.
+ */
+export const MIN_PROVIDER_HEALTH_REFRESH_INTERVAL = Duration.seconds(90);
+
 export const BackgroundActivityProfile = Schema.Literals([
   "balanced",
   "performance",

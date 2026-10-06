@@ -3,7 +3,10 @@ import {
   type ServerProvider,
   ServerSettingsError,
 } from "@t3tools/contracts";
-import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import {
+  floorProviderHealthRefreshInterval,
+  resolveServerBackgroundActivitySettings,
+} from "@t3tools/shared/backgroundActivitySettings";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -36,6 +39,15 @@ function withUsageLimits(
   return usageLimits ? { ...rest, usageLimits } : rest;
 }
 
+/**
+ * Owns one provider instance's published snapshot.
+ *
+ * Probes share a one-permit semaphore. With no explicit `refreshInterval`, the
+ * periodic loop sleeps the background-activity interval after
+ * {@link floorProviderHealthRefreshInterval}, so an enabled interval cannot be
+ * shorter than the health-check timeout. Zero disables that loop. An explicit
+ * `refreshInterval` is used as given.
+ */
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
   Settings,
 >(input: {
@@ -219,26 +231,31 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     return genericDemand || instanceDemand;
   });
 
+  /**
+   * Background-activity interval the periodic probe should sleep, floored at
+   * the health-check timeout when refresh is enabled.
+   */
+  const refreshIntervalFor = (
+    settings: Parameters<typeof resolveServerBackgroundActivitySettings>[0],
+  ) =>
+    floorProviderHealthRefreshInterval(
+      resolveServerBackgroundActivitySettings(settings).providerHealthRefreshInterval,
+    );
   const getRefreshInterval =
     input.refreshInterval !== undefined
       ? Effect.succeed(input.refreshInterval)
       : serverSettings.getSettings.pipe(
-          Effect.map(
-            (settings) =>
-              resolveServerBackgroundActivitySettings(settings).providerHealthRefreshInterval,
+          Effect.map(refreshIntervalFor),
+          Effect.orElseSucceed(() =>
+            floorProviderHealthRefreshInterval(DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL),
           ),
-          Effect.orElseSucceed(() => DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL),
         );
 
   const refreshIntervalChanges = yield* Queue.sliding<void>(1);
   if (input.refreshInterval === undefined) {
     const serverSettingsChanges = yield* serverSettings.subscribeChanges;
     yield* serverSettingsChanges.pipe(
-      Stream.map((settings) =>
-        Duration.toMillis(
-          resolveServerBackgroundActivitySettings(settings).providerHealthRefreshInterval,
-        ),
-      ),
+      Stream.map((settings) => Duration.toMillis(refreshIntervalFor(settings))),
       Stream.changes,
       Stream.runForEach(() => Queue.offer(refreshIntervalChanges, undefined).pipe(Effect.asVoid)),
       Effect.forkScoped,

@@ -1,6 +1,7 @@
 import { describe, it, assert } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  MIN_PROVIDER_HEALTH_REFRESH_INTERVAL,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -329,21 +330,91 @@ describe("makeManagedServerProvider", () => {
         }).pipe(Effect.provide(Layer.merge(layerBackgroundPolicyAlwaysRun, layerServerSettings)));
 
         yield* Deferred.await(initialCheckDone);
+        // Above the health-check floor. A shorter saved interval is covered below.
+        const nextInterval = Duration.minutes(2);
         const nextServerSettings = {
           ...initialServerSettings,
-          providerHealthRefreshInterval: Duration.seconds(1),
+          providerHealthRefreshInterval: nextInterval,
         };
         yield* Ref.set(serverSettingsRef, nextServerSettings);
         yield* PubSub.publish(serverSettingsChanges, nextServerSettings);
         yield* Effect.yieldNow;
 
-        yield* TestClock.adjust("999 millis");
+        yield* TestClock.adjust(Duration.subtract(nextInterval, Duration.millis(1)));
         assert.strictEqual(yield* Ref.get(checkCalls), 1);
-        yield* TestClock.adjust("1 millis");
+        yield* TestClock.adjust(Duration.millis(1));
         yield* Deferred.await(periodicCheckDone);
         assert.strictEqual(yield* Ref.get(checkCalls), 2);
       }),
     ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect(
+    "does not schedule another probe before the health-check timeout when the saved interval is shorter",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const initialServerSettings = {
+            ...DEFAULT_SERVER_SETTINGS,
+            backgroundActivity: {
+              schemaVersion: 1 as const,
+              profile: "custom" as const,
+              baseProfile: "balanced" as const,
+              overrides: {
+                providerHealthRefreshInterval: Duration.seconds(5),
+              },
+            },
+          };
+          const serverSettingsRef = yield* Ref.make(initialServerSettings);
+          const serverSettingsChanges = yield* PubSub.unbounded<typeof initialServerSettings>();
+          const layerServerSettings = Layer.succeed(
+            ServerSettings.ServerSettingsService,
+            ServerSettings.ServerSettingsService.of({
+              start: Effect.void,
+              ready: Effect.void,
+              getSettings: Ref.get(serverSettingsRef),
+              updateSettings: () => Effect.die(new Error("unused in this test")),
+              updateProviderInstance: () => Effect.die(new Error("unused in this test")),
+              withSettingsSnapshot: (use) => Ref.get(serverSettingsRef).pipe(Effect.flatMap(use)),
+              streamChanges: Stream.empty,
+              subscribeChanges: PubSub.subscribe(serverSettingsChanges).pipe(
+                Effect.map((subscription) => Stream.fromSubscription(subscription)),
+              ),
+            }),
+          );
+          const checkCalls = yield* Ref.make(0);
+          const initialCheckDone = yield* Deferred.make<void>();
+          const periodicCheckDone = yield* Deferred.make<void>();
+
+          yield* makeManagedServerProvider<TestSettings>({
+            resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+            getSettings: Effect.succeed({ enabled: true }),
+            streamSettings: Stream.empty,
+            haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+            initialSnapshot: () => Effect.succeed(initialSnapshot),
+            checkProvider: Ref.updateAndGet(checkCalls, (count) => count + 1).pipe(
+              Effect.tap((count) =>
+                count === 1
+                  ? Deferred.succeed(initialCheckDone, undefined).pipe(Effect.ignore)
+                  : Deferred.succeed(periodicCheckDone, undefined).pipe(Effect.ignore),
+              ),
+              Effect.as(refreshedSnapshot),
+            ),
+          }).pipe(Effect.provide(Layer.merge(layerBackgroundPolicyAlwaysRun, layerServerSettings)));
+
+          yield* Deferred.await(initialCheckDone);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(
+            Duration.subtract(MIN_PROVIDER_HEALTH_REFRESH_INTERVAL, Duration.millis(1)),
+          );
+          yield* Effect.yieldNow;
+          assert.strictEqual(yield* Ref.get(checkCalls), 1);
+
+          yield* TestClock.adjust(Duration.millis(1));
+          yield* Deferred.await(periodicCheckDone);
+          assert.strictEqual(yield* Ref.get(checkCalls), 2);
+        }),
+      ).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("reruns the provider check when streamed settings change", () =>

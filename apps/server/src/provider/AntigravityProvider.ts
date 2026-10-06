@@ -1,5 +1,6 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
+  MIN_PROVIDER_HEALTH_REFRESH_INTERVAL,
   ProviderDriverKind,
   type AntigravitySettings,
   type ProviderSetupError,
@@ -9,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -32,7 +34,8 @@ import {
 
 const EMPTY_MODEL_CAPABILITIES = createModelCapabilities({ optionDescriptors: [] });
 const MAX_WORKSPACE_SNAPSHOTS = 32;
-const HEALTH_CHECK_TIMEOUT = "90 seconds";
+const HEALTH_CHECK_TIMEOUT = MIN_PROVIDER_HEALTH_REFRESH_INTERVAL;
+const HEALTH_CHECK_TIMEOUT_LABEL = `${Duration.toMillis(HEALTH_CHECK_TIMEOUT) / 1000} seconds`;
 const SIGN_IN_MESSAGE = "Sign in with Google to use Antigravity.";
 const AUTH_UNCHECKED_MESSAGE =
   "Antigravity is installed. Google account access is not checked yet.";
@@ -169,6 +172,10 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     Effect.flatMap((state) => options.stampIdentity(state.draft)),
   );
 
+  /**
+   * Probes once and publishes the snapshot. The probe is interrupted at the
+   * shared health-check timeout.
+   */
   const checkProvider = Effect.fn("checkAntigravityProvider")(function* () {
     if (!settings.enabled) return yield* getSnapshot;
     const before = yield* SubscriptionRef.get(metadata);
@@ -189,7 +196,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             ? "Antigravity is not installed or its executable could not be found."
             : failure
               ? "Antigravity could not complete its local health check."
-              : `Antigravity did not respond to its local health check within ${HEALTH_CHECK_TIMEOUT}.`;
+              : `Antigravity did not respond to its local health check within ${HEALTH_CHECK_TIMEOUT_LABEL}.`;
     const supportsTextGeneration =
       initialized !== undefined ? yield* options.supportsTextGeneration : false;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
