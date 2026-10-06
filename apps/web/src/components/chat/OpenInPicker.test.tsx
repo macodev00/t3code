@@ -54,6 +54,14 @@ vi.mock("../../keybindings", () => ({
   shortcutLabelForCommand: () => "Ctrl+O",
 }));
 vi.mock("../ui/button", () => ({ Button: "button" }));
+// The permission tests render without a DOM. The real tooltip trigger needs
+// Element, so pass the control through and let the accessible-name test cover hover copy.
+vi.mock("../ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => children,
+  TooltipPopup: () => null,
+  TooltipTrigger: ({ render, children }: { render?: ReactElement; children?: ReactNode }) =>
+    render ? cloneElement(render, undefined, children) : children,
+}));
 vi.mock("../ui/group", () => ({ Group: "div", GroupSeparator: "span" }));
 vi.mock("../ui/menu", () => ({
   Menu: ({
@@ -146,7 +154,7 @@ async function renderPicker() {
 }
 
 function primaryButton() {
-  return renderer!.root.findByProps({ "aria-label": "Open file in preferred editor" });
+  return renderer!.root.findByProps({ "aria-label": "Open in VS Code" });
 }
 
 function keyboardEvent() {

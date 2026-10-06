@@ -4,7 +4,7 @@ import { resolveOpenInOptions } from "./OpenInPicker";
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { shouldShowOpenInPicker } from "./OpenInPicker.logic";
+import { resolveOpenInTooltipLabel, shouldShowOpenInPicker } from "./OpenInPicker.logic";
 
 describe("shouldShowOpenInPicker", () => {
   const primaryEnvironmentId = EnvironmentId.make("environment-primary");
@@ -83,5 +83,44 @@ describe("resolveOpenInOptions", () => {
       expect.objectContaining({ value: "vscode" }),
     ]);
     expect(resolveOpenInOptions("MacIntel", [])).toEqual([]);
+  });
+});
+
+describe("resolveOpenInTooltipLabel", () => {
+  it("names the selected editor in the accessible label", () => {
+    expect(
+      resolveOpenInTooltipLabel({
+        editorLabel: "VS Code",
+        compact: false,
+        openLabel: "Open",
+      }),
+    ).toBe("Open in VS Code");
+    expect(
+      resolveOpenInTooltipLabel({
+        editorLabel: "VS Code",
+        compact: true,
+        openLabel: "Open",
+      }),
+    ).toBe("Open in VS Code");
+  });
+
+  it("keeps the file-preview label when no editor is chosen", () => {
+    expect(
+      resolveOpenInTooltipLabel({
+        editorLabel: undefined,
+        compact: true,
+        openLabel: "Open",
+      }),
+    ).toBe("Open file in preferred editor");
+  });
+
+  it("falls back to the existing open label", () => {
+    expect(
+      resolveOpenInTooltipLabel({
+        editorLabel: undefined,
+        compact: false,
+        openLabel: "Open",
+      }),
+    ).toBe("Open");
   });
 });

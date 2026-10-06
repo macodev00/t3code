@@ -1062,6 +1062,7 @@ function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   );
 }
 
+/** Git quick action and overflow menu in the chat header and thread details panel. */
 export default function GitActionsControl({
   presentation = "toolbar",
   gitCwd,
@@ -1886,28 +1887,38 @@ export default function GitActionsControl({
               </PopoverPopup>
             </Popover>
           ) : (
-            <ThreadDetailsControl
-              variant={isPanel ? "ghost" : "outline"}
-              size="xs"
-              part="primary"
-              panel={isPanel}
-              disabled={!canWriteSourceControl || isGitActionRunning || quickAction.disabled}
-              onClick={runQuickAction}
-            >
-              <GitQuickActionIcon
-                quickAction={quickAction}
-                SourceControlIcon={SourceControlIcon}
-                {...(isPanel ? { className: THREAD_DETAILS_PANEL_ICON_CLASS } : {})}
-              />
-              <span
-                className={cn(
-                  "sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5",
-                  isPanel && "not-sr-only ml-0 truncate",
-                )}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <ThreadDetailsControl
+                    variant={isPanel ? "ghost" : "outline"}
+                    size="xs"
+                    part="primary"
+                    panel={isPanel}
+                    // The tooltip wrapper replaces data-slot="button", so themed
+                    // toolbar styling needs its own hook.
+                    data-toolbar-control=""
+                    disabled={!canWriteSourceControl || isGitActionRunning || quickAction.disabled}
+                    onClick={runQuickAction}
+                  />
+                }
               >
-                {quickAction.label}
-              </span>
-            </ThreadDetailsControl>
+                <GitQuickActionIcon
+                  quickAction={quickAction}
+                  SourceControlIcon={SourceControlIcon}
+                  {...(isPanel ? { className: THREAD_DETAILS_PANEL_ICON_CLASS } : {})}
+                />
+                <span
+                  className={cn(
+                    "sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5",
+                    isPanel && "not-sr-only ml-0 truncate",
+                  )}
+                >
+                  {quickAction.label}
+                </span>
+              </TooltipTrigger>
+              <TooltipPopup side="top">{quickAction.label}</TooltipPopup>
+            </Tooltip>
           )}
           {isPanel && gitActionProgress ? (
             // The menu is disabled while an action runs, so its chevron slot
@@ -1932,23 +1943,33 @@ export default function GitActionsControl({
                   }
                 }}
               >
-                <MenuTrigger
-                  render={
-                    <ThreadDetailsControl
-                      aria-label="Git action options"
-                      size={isPanel ? "sm" : "icon-xs"}
-                      variant={isPanel ? "ghost" : "outline"}
-                      part="secondary"
-                      panel={isPanel}
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <MenuTrigger
+                        render={
+                          <ThreadDetailsControl
+                            aria-label="Git action options"
+                            size={isPanel ? "sm" : "icon-xs"}
+                            variant={isPanel ? "ghost" : "outline"}
+                            part="secondary"
+                            panel={isPanel}
+                            // The tooltip wrapper replaces data-slot="button", so themed
+                            // toolbar styling needs its own hook.
+                            data-toolbar-control=""
+                          />
+                        }
+                        disabled={isGitActionRunning}
+                      />
+                    }
+                  >
+                    <ChevronDownIcon
+                      aria-hidden="true"
+                      className={isPanel ? THREAD_DETAILS_PANEL_CHEVRON_CLASS : "size-4"}
                     />
-                  }
-                  disabled={isGitActionRunning}
-                >
-                  <ChevronDownIcon
-                    aria-hidden="true"
-                    className={isPanel ? THREAD_DETAILS_PANEL_CHEVRON_CLASS : "size-4"}
-                  />
-                </MenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipPopup side="top">Git action options</TooltipPopup>
+                </Tooltip>
                 <MenuPopup
                   align="end"
                   {...(isPanel ? { anchor: panelAnchorRef } : {})}
