@@ -84,6 +84,12 @@ export function resolveMarkdownFileLinkTarget(
  * `origin/main`) rather than deliberate link destinations, so auto-linking
  * them demands stronger path evidence than an explicit markdown link does:
  * an unambiguous path prefix, a file extension, or a :line suffix.
+ *
+ * A file preview passes the open file's directory as `baseDir`. Multi-segment
+ * paths that do not start with `./` or `../` still resolve from the workspace
+ * root (`cwd`), matching chat. Single-segment names (`design.md:12`), `./` and
+ * `../` paths, and files outside the workspace keep resolving from `baseDir`.
+ * Images and explicit markdown links do not use this choice.
  */
 export function resolveInlineCodeFileLinkMeta(
   codeText: string,
@@ -93,7 +99,55 @@ export function resolveInlineCodeFileLinkMeta(
   const candidate = inlineCodeFilePathCandidate(codeText);
   if (candidate === null) return null;
 
-  return resolveMarkdownFileLinkMeta(candidate, cwd, baseDir);
+  return resolveMarkdownFileLinkMeta(
+    candidate,
+    cwd,
+    inlineCodeFileLinkBaseDir(candidate, cwd, baseDir),
+  );
+}
+
+/**
+ * Directory a relative inline-code path is joined onto.
+ *
+ * Explicit links keep the caller's `baseDir`. Inline code uses the workspace
+ * root for repo-shaped paths inside a workspace file, and the file's directory
+ * otherwise — including the #9140 case where the file itself sits outside the
+ * workspace. No existence check distinguishes a package-relative `src/index.ts`
+ * from a root-relative one; `./src/index.ts` is the file-relative spelling.
+ */
+function inlineCodeFileLinkBaseDir(
+  candidate: string,
+  cwd: string | undefined,
+  baseDir: string | undefined,
+): string | undefined {
+  if (
+    cwd === undefined ||
+    baseDir === undefined ||
+    workspaceRelativeFilePath(baseDir, cwd) === null
+  ) {
+    return baseDir;
+  }
+
+  const { path } = splitFilePathPosition(candidate);
+  if (!isWorkspaceRootInlineCodePath(path)) return baseDir;
+  return cwd;
+}
+
+/**
+ * True when an inline-code path is written from the workspace root
+ * (`docs/ai/design.md`) rather than from the file that contains it.
+ */
+function isWorkspaceRootInlineCodePath(path: string): boolean {
+  if (!isRelativeFilePath(path)) return false;
+  if (
+    path.startsWith("./") ||
+    path.startsWith("../") ||
+    path.startsWith(".\\") ||
+    path.startsWith("..\\")
+  ) {
+    return false;
+  }
+  return path.includes("/") || path.includes("\\");
 }
 
 export function resolveMarkdownFileLinkMeta(

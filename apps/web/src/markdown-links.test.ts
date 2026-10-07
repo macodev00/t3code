@@ -351,6 +351,82 @@ describe("relative links inside a rendered host file", () => {
       workspaceRelativePath: "docs/src/main.ts",
     });
   });
+
+  it("resolves multi-segment inline code from the workspace root", () => {
+    expect(
+      resolveInlineCodeFileLinkMeta("docs/ai/design.md", "/repo", "/repo/docs/ai"),
+    ).toMatchObject({
+      filePath: "/repo/docs/ai/design.md",
+      workspaceRelativePath: "docs/ai/design.md",
+    });
+    expect(
+      resolveInlineCodeFileLinkMeta("docs/ai/design.md:12", "/repo", "/repo/docs/ai"),
+    ).toMatchObject({
+      filePath: "/repo/docs/ai/design.md",
+      line: 12,
+    });
+    expect(resolveInlineCodeFileLinkMeta("src\\main.ts", "/repo", "/repo/docs")).toMatchObject({
+      filePath: "/repo/src/main.ts",
+    });
+  });
+
+  it("keeps explicit markdown links file-relative", () => {
+    expect(resolveMarkdownFileLinkMeta("src/main.ts", "/repo", "/repo/docs")).toMatchObject({
+      filePath: "/repo/docs/src/main.ts",
+    });
+    expect(
+      resolveMarkdownFileLinkMeta("docs/ai/design.md", "/repo", "/repo/docs/ai"),
+    ).toMatchObject({
+      filePath: "/repo/docs/ai/docs/ai/design.md",
+    });
+  });
+
+  it("keeps single-segment inline code beside the file", () => {
+    expect(resolveInlineCodeFileLinkMeta("design.md:12", "/repo", "/repo/docs/ai")).toMatchObject({
+      filePath: "/repo/docs/ai/design.md",
+      line: 12,
+    });
+    expect(resolveInlineCodeFileLinkMeta("Makefile:12", "/repo", "/repo/docs")).toMatchObject({
+      filePath: "/repo/docs/Makefile",
+      line: 12,
+    });
+    expect(resolveInlineCodeFileLinkMeta("design.md", "/repo", "/repo/docs/ai")).toBeNull();
+  });
+
+  it("keeps ./ and ../ inline code relative to the file", () => {
+    expect(
+      resolveInlineCodeFileLinkMeta("./src/index.ts", "/repo", "/repo/packages/foo"),
+    ).toMatchObject({
+      filePath: "/repo/packages/foo/./src/index.ts",
+    });
+    expect(resolveInlineCodeFileLinkMeta("../design.md", "/repo", "/repo/docs/ai")).toMatchObject({
+      filePath: "/repo/docs/ai/../design.md",
+    });
+    expect(resolveInlineCodeFileLinkMeta(".\\src\\index.ts", "/repo", "/repo/docs")).toMatchObject({
+      filePath: "/repo/docs/./src/index.ts",
+    });
+  });
+
+  it("treats a package-relative src/index.ts as workspace-root without an existence check", () => {
+    expect(
+      resolveInlineCodeFileLinkMeta("src/index.ts", "/repo", "/repo/packages/foo"),
+    ).toMatchObject({
+      filePath: "/repo/src/index.ts",
+    });
+  });
+
+  it("keeps inline code in a file outside the workspace beside that file", () => {
+    expect(
+      resolveInlineCodeFileLinkMeta("docs/ai/design.md", "/repo", "/tmp/report"),
+    ).toMatchObject({
+      filePath: "/tmp/report/docs/ai/design.md",
+      workspaceRelativePath: null,
+    });
+    expect(resolveInlineCodeFileLinkMeta("./notes.md", "/repo", "/tmp/report")).toMatchObject({
+      filePath: "/tmp/report/./notes.md",
+      workspaceRelativePath: null,
+    });
+  });
 });
 
 describe("resolveInlineCodeFileLinkMeta", () => {
