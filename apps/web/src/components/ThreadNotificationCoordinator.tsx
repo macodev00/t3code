@@ -19,11 +19,13 @@ import {
   hasNotificationSound,
   playNotificationSound,
   setNotificationBadge,
+  threadNotificationTag,
   unlockNotificationAudio,
 } from "../threadNotifications";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
 import { toastManager } from "./ui/toast";
 
+/** Shows desktop and in-app notifications when live threads need attention or complete. */
 export function ThreadNotificationCoordinator() {
   const environmentIds = useEnvironmentIds();
   const mode = useClientSettings((settings) => settings.notificationMode);
@@ -88,6 +90,7 @@ export function ThreadNotificationCoordinator() {
   ));
 }
 
+/** Emits toasts and desktop notifications for thread status changes in one environment. */
 function EnvironmentNotifications({
   environmentId,
   onNotification,
@@ -200,9 +203,10 @@ function EnvironmentNotifications({
       )
         continue;
       try {
+        const tag = threadNotificationTag(environmentId, thread.id);
         const notification = new Notification(title, {
           body: thread.title,
-          tag: `${environmentId}:${thread.id}`,
+          tag,
           silent: true,
         });
         onNotification(environmentId, notification);
