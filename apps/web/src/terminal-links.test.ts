@@ -198,6 +198,57 @@ describe("resolvePathLinkTarget", () => {
       "/Users/julius/project/main.c:10:5",
     );
   });
+
+  it("collapses a parent link that leaves the workspace", () => {
+    expect(resolvePathLinkTarget("../other/notes.md", "/home/me/project")).toBe(
+      "/home/me/other/notes.md",
+    );
+  });
+
+  it("collapses an in-workspace parent segment", () => {
+    expect(resolvePathLinkTarget("docs/guide/../readme.md", "/home/me/project")).toBe(
+      "/home/me/project/docs/readme.md",
+    );
+    expect(resolvePathLinkTarget("docs/./readme.md", "/home/me/project")).toBe(
+      "/home/me/project/docs/readme.md",
+    );
+  });
+
+  it("keeps a line and column suffix while collapsing the path", () => {
+    expect(resolvePathLinkTarget("../other/notes.md:12:3", "/home/me/project")).toBe(
+      "/home/me/other/notes.md:12:3",
+    );
+    expect(resolvePathLinkTarget("docs/guide/../readme.md:4", "/home/me/project")).toBe(
+      "/home/me/project/docs/readme.md:4",
+    );
+  });
+
+  it("collapses an absolute path that still contains parent segments", () => {
+    expect(resolvePathLinkTarget("/home/me/project/../other/notes.md:8", "/home/me/project")).toBe(
+      "/home/me/other/notes.md:8",
+    );
+  });
+
+  it("expands a home path before collapsing parent segments", () => {
+    expect(resolvePathLinkTarget("~/other/../notes.md:4", "/home/me/project")).toBe(
+      "/home/me/notes.md:4",
+    );
+    expect(resolvePathLinkTarget("~/other/../notes.md", "C:\\Users\\me\\project")).toBe(
+      "C:\\Users\\me\\notes.md",
+    );
+  });
+
+  it("does not climb above a Windows drive root or a UNC share", () => {
+    expect(resolvePathLinkTarget("C:\\foo\\..\\..\\bar.md", "C:\\repo")).toBe("C:\\bar.md");
+    expect(resolvePathLinkTarget("C:/foo/../../bar.md", "D:\\repo")).toBe("C:/bar.md");
+    expect(resolvePathLinkTarget("..\\notes.md", "C:\\")).toBe("C:\\notes.md");
+    expect(resolvePathLinkTarget("\\\\server\\share\\project\\..\\..\\notes.md", "C:\\repo")).toBe(
+      "\\\\server\\share\\notes.md",
+    );
+    expect(resolvePathLinkTarget("\\\\server\\share\\..\\notes.md", "C:\\repo")).toBe(
+      "\\\\server\\share\\notes.md",
+    );
+  });
 });
 
 describe("isTerminalLinkActivation", () => {

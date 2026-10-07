@@ -62,7 +62,9 @@ export function rewriteMarkdownFileUriHref(href: string | undefined): string | n
 /**
  * `baseDir` anchors relative links; it defaults to the workspace root and is the
  * file's own directory when rendering a markdown file. `cwd` stays the workspace
- * root so the result still knows whether the target is inside it.
+ * root so the result still knows whether the target is inside it. Absolute
+ * links collapse `.` and `..` the same way, so `/repo/../other` is not treated
+ * as a file inside `/repo`.
  */
 export function resolveMarkdownFileLinkTarget(
   href: string | undefined,
@@ -74,7 +76,9 @@ export function resolveMarkdownFileLinkTarget(
   if (!target) return null;
 
   const pathWithPosition = formatFilePathPosition(target);
-  if (!isRelativeFilePath(pathWithPosition)) return pathWithPosition;
+  if (!isRelativeFilePath(pathWithPosition)) {
+    return resolvePathLinkTarget(pathWithPosition, baseDir ?? "");
+  }
   if (!baseDir) return null;
   return resolvePathLinkTarget(pathWithPosition, baseDir);
 }

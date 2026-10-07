@@ -254,6 +254,50 @@ describe("resolveMarkdownFileLinkTarget", () => {
     });
   });
 
+  it("opens a parent link outside the workspace as a host file", () => {
+    expect(resolveMarkdownFileLinkMeta("../other/notes.md", "/home/me/project")).toMatchObject({
+      filePath: "/home/me/other/notes.md",
+      targetPath: "/home/me/other/notes.md",
+      workspaceRelativePath: null,
+    });
+    expect(
+      resolveMarkdownFileLinkMeta("/home/me/project/../other/notes.md", "/home/me/project"),
+    ).toMatchObject({
+      filePath: "/home/me/other/notes.md",
+      workspaceRelativePath: null,
+    });
+  });
+
+  it("keeps an in-workspace parent link inside the workspace", () => {
+    expect(
+      resolveMarkdownFileLinkMeta("docs/guide/../readme.md", "/home/me/project"),
+    ).toMatchObject({
+      filePath: "/home/me/project/docs/readme.md",
+      targetPath: "/home/me/project/docs/readme.md",
+      workspaceRelativePath: "docs/readme.md",
+    });
+  });
+
+  it("keeps a line suffix on a collapsed parent link", () => {
+    expect(resolveMarkdownFileLinkMeta("../other/notes.md:12:3", "/home/me/project")).toMatchObject(
+      {
+        filePath: "/home/me/other/notes.md",
+        targetPath: "/home/me/other/notes.md:12:3",
+        line: 12,
+        column: 3,
+        workspaceRelativePath: null,
+      },
+    );
+    expect(
+      resolveMarkdownFileLinkMeta("docs/guide/../readme.md:4", "/home/me/project"),
+    ).toMatchObject({
+      filePath: "/home/me/project/docs/readme.md",
+      targetPath: "/home/me/project/docs/readme.md:4",
+      line: 4,
+      workspaceRelativePath: "docs/readme.md",
+    });
+  });
+
   it("does not classify a case-distinct POSIX sibling as a workspace file", () => {
     expect(
       resolveMarkdownFileLinkMeta(

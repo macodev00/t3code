@@ -204,6 +204,15 @@ export function isTerminalLinkActivation(
     : event.ctrlKey && !event.metaKey;
 }
 
+/**
+ * Resolves a path link against `cwd` for the file viewer.
+ *
+ * `~/` expands from the home directory implied by `cwd` before `.` and `..`
+ * collapse. The collapse is lexical and does not read the filesystem, so a
+ * link such as `../other/notes.md` becomes a host path instead of a
+ * workspace-relative path that still contains `..`. A `:line` or
+ * `:line:column` suffix is not part of the collapse.
+ */
 export function resolvePathLinkTarget(rawPath: string, cwd: string): string {
   const position = splitFilePathPosition(rawPath);
   const { path } = position;
@@ -220,5 +229,116 @@ export function resolvePathLinkTarget(rawPath: string, cwd: string): string {
     resolvedPath = joinPath(cwd, path, separator);
   }
 
-  return formatFilePathPosition({ ...position, path: resolvedPath });
+  return formatFilePathPosition({ ...position, path: collapseLexicalPath(resolvedPath) });
+}
+
+/**
+ * Collapses `.` and `..` without reading the filesystem.
+ * `..` stops at a POSIX root, a Windows drive root, or a UNC share.
+ * A path with no dot segments is returned unchanged, separators included.
+ */
+function collapseLexicalPath(path: string): string {
+  if (!hasLexicalDotSegment(path)) return path;
+
+  const root = splitLexicalRoot(path);
+  const segments: string[] = [];
+  for (const segment of root.segments) {
+    if (segment.length === 0 || segment === ".") continue;
+    if (segment === "..") {
+      const parent = segments.at(-1);
+      if (parent !== undefined && parent !== "..") {
+        segments.pop();
+      } else if (!root.rooted) {
+        segments.push("..");
+      }
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  return joinLexicalPath(root, segments);
+}
+
+/** True when some path segment is exactly `.` or `..`, not a dotted filename. */
+function hasLexicalDotSegment(path: string): boolean {
+  return path.split(/[\\/]/).some((segment) => segment === "." || segment === "..");
+}
+
+interface LexicalRoot {
+  readonly prefix: string;
+  readonly separator: "/" | "\\";
+  readonly rooted: boolean;
+  readonly segments: readonly string[];
+  readonly trailingSeparator: boolean;
+}
+
+/** Splits a path into the root that `..` may not climb past, plus its segments. */
+function splitLexicalRoot(path: string): LexicalRoot {
+  const trailingSeparator = /[\\/]$/.test(path);
+  const unc = /^\\\\[^\\]+\\[^\\]+/.exec(path);
+  if (unc?.[0]) {
+    return {
+      prefix: unc[0],
+      separator: "\\",
+      rooted: true,
+      segments: path.slice(unc[0].length).split(/[\\/]/),
+      trailingSeparator,
+    };
+  }
+
+  const drive = /^[A-Za-z]:/.exec(path);
+  if (drive?.[0]) {
+    const separatorChar = path.charAt(drive[0].length);
+    const rooted = separatorChar === "/" || separatorChar === "\\";
+    const separator: "/" | "\\" =
+      separatorChar === "\\" || (!rooted && path.includes("\\")) ? "\\" : "/";
+    return {
+      prefix: drive[0],
+      separator,
+      rooted,
+      segments: path.slice(drive[0].length).split(/[\\/]/),
+      trailingSeparator,
+    };
+  }
+
+  if (path.startsWith("/")) {
+    return {
+      prefix: "/",
+      separator: "/",
+      rooted: true,
+      segments: path.slice(1).split(/[\\/]/),
+      trailingSeparator,
+    };
+  }
+
+  return {
+    prefix: "",
+    separator: path.includes("\\") ? "\\" : "/",
+    rooted: false,
+    segments: path.split(/[\\/]/),
+    trailingSeparator,
+  };
+}
+
+/** Joins collapsed segments back onto a lexical root, keeping its separator. */
+function joinLexicalPath(root: LexicalRoot, segments: readonly string[]): string {
+  if (segments.length === 0) {
+    if (root.prefix === "/") return "/";
+    if (/^[A-Za-z]:$/.test(root.prefix)) {
+      return root.rooted ? `${root.prefix}${root.separator}` : root.prefix;
+    }
+    if (root.prefix.startsWith("\\\\")) return `${root.prefix}\\`;
+    return root.prefix.length > 0 ? root.prefix : ".";
+  }
+
+  const body = segments.join(root.separator);
+  const prefixIncludesSeparator =
+    root.prefix === "/" || root.prefix.endsWith("/") || root.prefix.endsWith("\\");
+  const joined =
+    root.prefix.length === 0
+      ? body
+      : root.rooted && !prefixIncludesSeparator
+        ? `${root.prefix}${root.separator}${body}`
+        : `${root.prefix}${body}`;
+  return root.trailingSeparator ? `${joined}${root.separator}` : joined;
 }
