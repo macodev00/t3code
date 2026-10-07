@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  collapseLexicalDotSegments,
   collectWrappedTerminalLinkLine,
   extractTerminalLinks,
   isTerminalLinkActivation,
@@ -197,6 +198,96 @@ describe("resolvePathLinkTarget", () => {
     expect(resolvePathLinkTarget(link?.text ?? "", "/Users/julius/project")).toBe(
       "/Users/julius/project/main.c:10:5",
     );
+  });
+});
+
+describe("collapseLexicalDotSegments", () => {
+  it("collapses a parent link that leaves the workspace", () => {
+    expect(collapseLexicalDotSegments("/home/me/project/../other/notes.md")).toBe(
+      "/home/me/other/notes.md",
+    );
+  });
+
+  it("collapses an in-workspace parent segment", () => {
+    expect(collapseLexicalDotSegments("/home/me/project/docs/guide/../readme.md")).toBe(
+      "/home/me/project/docs/readme.md",
+    );
+    expect(collapseLexicalDotSegments("/home/me/project/docs/./readme.md")).toBe(
+      "/home/me/project/docs/readme.md",
+    );
+  });
+
+  it("keeps a line and column suffix while collapsing the path", () => {
+    expect(collapseLexicalDotSegments("/home/me/project/../other/notes.md:12:3")).toBe(
+      "/home/me/other/notes.md:12:3",
+    );
+    expect(collapseLexicalDotSegments("/home/me/project/docs/guide/../readme.md:4")).toBe(
+      "/home/me/project/docs/readme.md:4",
+    );
+  });
+
+  it("keeps a forward-slash UNC share when collapsing parent segments", () => {
+    expect(collapseLexicalDotSegments("//server/share/dir/../file.md")).toBe(
+      "//server/share/file.md",
+    );
+    expect(collapseLexicalDotSegments("//server/share/../file.md")).toBe("//server/share/file.md");
+    expect(collapseLexicalDotSegments("//server/share/dir/../../file.md")).toBe(
+      "//server/share/file.md",
+    );
+    expect(collapseLexicalDotSegments("//server/share/dir/../file.md:12:3")).toBe(
+      "//server/share/file.md:12:3",
+    );
+  });
+
+  it("keeps a backslash UNC share when collapsing parent segments", () => {
+    expect(collapseLexicalDotSegments("\\\\server\\share\\dir\\..\\file.md")).toBe(
+      "\\\\server\\share\\file.md",
+    );
+    expect(collapseLexicalDotSegments("\\\\server\\share\\..\\file.md")).toBe(
+      "\\\\server\\share\\file.md",
+    );
+    expect(collapseLexicalDotSegments("\\\\server\\share\\dir\\..\\..\\file.md")).toBe(
+      "\\\\server\\share\\file.md",
+    );
+  });
+
+  it("does not climb above a POSIX root or a Windows drive root", () => {
+    expect(collapseLexicalDotSegments("/../file.md")).toBe("/file.md");
+    expect(collapseLexicalDotSegments("/../../file.md")).toBe("/file.md");
+    expect(collapseLexicalDotSegments("C:\\foo\\..\\..\\bar.md")).toBe("C:\\bar.md");
+    expect(collapseLexicalDotSegments("C:/foo/../../bar.md")).toBe("C:/bar.md");
+    expect(collapseLexicalDotSegments("C:\\..\\bar.md")).toBe("C:\\bar.md");
+    expect(collapseLexicalDotSegments("C:/../bar.md")).toBe("C:/bar.md");
+  });
+
+  it("leaves an incomplete UNC path unchanged", () => {
+    expect(collapseLexicalDotSegments("//server/../file.md")).toBe("//server/../file.md");
+    expect(collapseLexicalDotSegments("\\\\server\\..\\file.md")).toBe("\\\\server\\..\\file.md");
+  });
+
+  it("preserves separators on a path with no dot segment", () => {
+    expect(collapseLexicalDotSegments("/tmp/favicons/")).toBe("/tmp/favicons/");
+    expect(collapseLexicalDotSegments("//server/share/file.md")).toBe("//server/share/file.md");
+    expect(collapseLexicalDotSegments("\\\\server\\share\\file.md")).toBe(
+      "\\\\server\\share\\file.md",
+    );
+    expect(collapseLexicalDotSegments("C:/foo/bar.md:12")).toBe("C:/foo/bar.md:12");
+    expect(collapseLexicalDotSegments("C:\\foo\\bar\\")).toBe("C:\\foo\\bar\\");
+    expect(collapseLexicalDotSegments("docs/my.file/readme.md")).toBe("docs/my.file/readme.md");
+  });
+
+  it("preserves a trailing separator after collapsing", () => {
+    expect(collapseLexicalDotSegments("/proj/docs/guide/../")).toBe("/proj/docs/");
+    expect(collapseLexicalDotSegments("C:\\foo\\..\\")).toBe("C:\\");
+    expect(collapseLexicalDotSegments("//server/share/dir/../")).toBe("//server/share/");
+    expect(collapseLexicalDotSegments("\\\\server\\share\\dir\\..\\")).toBe("\\\\server\\share\\");
+    expect(collapseLexicalDotSegments("docs/guide/../")).toBe("docs/");
+    expect(collapseLexicalDotSegments("foo/../")).toBe("./");
+  });
+
+  it("collapses a home-relative path without climbing above ~", () => {
+    expect(collapseLexicalDotSegments("~/other/../notes.md:4")).toBe("~/notes.md:4");
+    expect(collapseLexicalDotSegments("~\\other\\..\\notes.md")).toBe("~\\notes.md");
   });
 });
 

@@ -254,6 +254,119 @@ describe("resolveMarkdownFileLinkTarget", () => {
     });
   });
 
+  it("opens a parent link outside the workspace as a host file", () => {
+    expect(resolveMarkdownFileLinkMeta("../other/notes.md", "/home/me/project")).toMatchObject({
+      filePath: "/home/me/other/notes.md",
+      targetPath: "/home/me/other/notes.md",
+      workspaceRelativePath: null,
+    });
+    expect(resolveInlineCodeFileLinkMeta("../other/notes.md", "/home/me/project")).toMatchObject({
+      filePath: "/home/me/other/notes.md",
+      workspaceRelativePath: null,
+    });
+    expect(
+      resolveMarkdownFileLinkMeta("/home/me/project/../other/notes.md", "/home/me/project"),
+    ).toMatchObject({
+      filePath: "/home/me/other/notes.md",
+      workspaceRelativePath: null,
+    });
+  });
+
+  it("keeps an in-workspace parent link inside the workspace", () => {
+    expect(
+      resolveMarkdownFileLinkMeta("docs/guide/../readme.md", "/home/me/project"),
+    ).toMatchObject({
+      filePath: "/home/me/project/docs/readme.md",
+      targetPath: "/home/me/project/docs/readme.md",
+      workspaceRelativePath: "docs/readme.md",
+    });
+    expect(
+      resolveMarkdownFileLinkMeta(
+        "../readme.md",
+        "/home/me/project",
+        "/home/me/project/docs/guide",
+      ),
+    ).toMatchObject({
+      filePath: "/home/me/project/docs/readme.md",
+      workspaceRelativePath: "docs/readme.md",
+    });
+  });
+
+  it("keeps a line suffix on a collapsed parent link", () => {
+    expect(resolveMarkdownFileLinkMeta("../other/notes.md:12:3", "/home/me/project")).toMatchObject(
+      {
+        filePath: "/home/me/other/notes.md",
+        targetPath: "/home/me/other/notes.md:12:3",
+        line: 12,
+        column: 3,
+        workspaceRelativePath: null,
+      },
+    );
+    expect(
+      resolveMarkdownFileLinkMeta("docs/guide/../readme.md:4", "/home/me/project"),
+    ).toMatchObject({
+      filePath: "/home/me/project/docs/readme.md",
+      targetPath: "/home/me/project/docs/readme.md:4",
+      line: 4,
+      workspaceRelativePath: "docs/readme.md",
+    });
+  });
+
+  it("expands a home path before collapsing parent segments", () => {
+    expect(resolveMarkdownFileLinkMeta("~/other/../notes.md:4", "/home/me/project")).toMatchObject({
+      filePath: "/home/me/notes.md",
+      targetPath: "/home/me/notes.md:4",
+      line: 4,
+      workspaceRelativePath: null,
+    });
+    expect(
+      resolveMarkdownFileLinkMeta("~/other/../notes.md", "C:\\Users\\me\\project"),
+    ).toMatchObject({
+      filePath: "C:\\Users\\me\\notes.md",
+      workspaceRelativePath: null,
+    });
+  });
+
+  it("does not climb above a Windows drive root", () => {
+    expect(resolveMarkdownFileLinkMeta("../notes.md", "C:\\")).toMatchObject({
+      filePath: "C:\\notes.md",
+      workspaceRelativePath: "notes.md",
+    });
+    expect(resolveMarkdownFileLinkMeta("../../notes.md", "C:\\repo")).toMatchObject({
+      filePath: "C:\\notes.md",
+      workspaceRelativePath: null,
+    });
+    expect(resolveMarkdownFileLinkMeta("C:/foo/../../bar.md", "D:\\repo")).toMatchObject({
+      filePath: "C:/bar.md",
+      workspaceRelativePath: null,
+    });
+  });
+
+  it("keeps a UNC share when a relative link climbs out of the project", () => {
+    expect(resolveMarkdownFileLinkMeta("../file.md", "//server/share/project")).toMatchObject({
+      filePath: "//server/share/file.md",
+      targetPath: "//server/share/file.md",
+      workspaceRelativePath: null,
+    });
+    expect(resolveMarkdownFileLinkMeta("../file.md", "\\\\server\\share\\project")).toMatchObject({
+      filePath: "\\\\server\\share\\file.md",
+      workspaceRelativePath: null,
+    });
+    expect(
+      resolveMarkdownFileLinkMeta(
+        "\\\\server\\share\\project\\..\\file.md",
+        "\\\\server\\share\\project",
+      ),
+    ).toMatchObject({
+      filePath: "\\\\server\\share\\file.md",
+      workspaceRelativePath: null,
+    });
+    expect(resolveMarkdownFileLinkMeta("dir/../file.md", "//server/share/project")).toMatchObject({
+      filePath: "//server/share/project/file.md",
+      workspaceRelativePath: "file.md",
+    });
+  });
+
   it("does not classify a case-distinct POSIX sibling as a workspace file", () => {
     expect(
       resolveMarkdownFileLinkMeta(

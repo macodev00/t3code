@@ -12,7 +12,11 @@ import {
 } from "@t3tools/client-runtime/markdown-links";
 
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
-import { isTerminalLinkActivation, resolvePathLinkTarget } from "./terminal-links";
+import {
+  collapseLexicalDotSegments,
+  isTerminalLinkActivation,
+  resolvePathLinkTarget,
+} from "./terminal-links";
 
 export { normalizeMarkdownLinkDestination };
 
@@ -63,6 +67,10 @@ export function rewriteMarkdownFileUriHref(href: string | undefined): string | n
  * `baseDir` anchors relative links; it defaults to the workspace root and is the
  * file's own directory when rendering a markdown file. `cwd` stays the workspace
  * root so the result still knows whether the target is inside it.
+ *
+ * `.` and `..` collapse lexically on the resolved path, after `~/` expansion,
+ * before workspace membership is decided. A link that climbs out of the workspace
+ * becomes an absolute host path. A `:line` or `:line:column` suffix is kept.
  */
 export function resolveMarkdownFileLinkTarget(
   href: string | undefined,
@@ -74,9 +82,11 @@ export function resolveMarkdownFileLinkTarget(
   if (!target) return null;
 
   const pathWithPosition = formatFilePathPosition(target);
-  if (!isRelativeFilePath(pathWithPosition)) return pathWithPosition;
+  if (!isRelativeFilePath(pathWithPosition)) {
+    return collapseLexicalDotSegments(pathWithPosition);
+  }
   if (!baseDir) return null;
-  return resolvePathLinkTarget(pathWithPosition, baseDir);
+  return collapseLexicalDotSegments(resolvePathLinkTarget(pathWithPosition, baseDir));
 }
 
 /**

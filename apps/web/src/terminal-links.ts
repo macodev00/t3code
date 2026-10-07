@@ -222,3 +222,116 @@ export function resolvePathLinkTarget(rawPath: string, cwd: string): string {
 
   return formatFilePathPosition({ ...position, path: resolvedPath });
 }
+
+/**
+ * Collapses `.` and `..` on a markdown file-link path before workspace membership
+ * is decided. The collapse is lexical and does not read the filesystem.
+ *
+ * POSIX `/`, a Windows drive root (`C:\` or `C:/`), a backslash UNC share
+ * (`\\server\share`), and a forward-slash UNC share (`//server/share`) stay
+ * intact, and `..` does not climb above them. A `:line` or `:line:column`
+ * suffix is preserved. A path with no `.` or `..` segment is returned unchanged.
+ */
+export function collapseLexicalDotSegments(pathWithPosition: string): string {
+  const position = splitFilePathPosition(pathWithPosition);
+  if (!position.path.split(/[\\/]/).some((segment) => segment === "." || segment === "..")) {
+    return pathWithPosition;
+  }
+  return formatFilePathPosition({
+    ...position,
+    path: collapseDotSegments(position.path),
+  });
+}
+
+/**
+ * Removes `.` and `..` under the path's root. A complete UNC share is recognized
+ * before a single `/`, so `//server/share/dir/..` stays on that share. An
+ * incomplete UNC path is returned unchanged.
+ */
+function collapseDotSegments(path: string): string {
+  const unc = uncSharePrefix(path);
+  if ((path.startsWith("//") || path.startsWith("\\\\")) && !unc) return path;
+
+  const trailing = /[\\/]$/.test(path);
+  let prefix = "";
+  let rest = path;
+  let separator: "/" | "\\" = path.includes("\\") ? "\\" : "/";
+  let rooted = false;
+
+  if (unc) {
+    prefix = unc.prefix;
+    separator = unc.separator;
+    rooted = true;
+    rest = path.slice(prefix.length);
+  } else {
+    const drive = /^[A-Za-z]:/.exec(path);
+    if (drive?.[0]) {
+      prefix = drive[0];
+      const driveSeparator = path.charAt(prefix.length);
+      rooted = driveSeparator === "/" || driveSeparator === "\\";
+      separator = driveSeparator === "\\" || (!rooted && path.includes("\\")) ? "\\" : "/";
+      rest = path.slice(prefix.length);
+    } else if (path.startsWith("/")) {
+      prefix = "/";
+      separator = "/";
+      rooted = true;
+      rest = path.slice(1);
+    } else if (path.startsWith("~/") || path.startsWith("~\\")) {
+      separator = path.charAt(1) === "\\" ? "\\" : "/";
+      prefix = path.slice(0, 2);
+      rooted = true;
+      rest = path.slice(2);
+    }
+  }
+
+  const segments: string[] = [];
+  for (const segment of rest.split(/[\\/]/)) {
+    if (segment.length === 0 || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length > 0 && segments.at(-1) !== "..") segments.pop();
+      else if (!rooted) segments.push("..");
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  if (segments.length === 0) {
+    if (prefix === "/") return "/";
+    if (/^[A-Za-z]:$/.test(prefix)) return rooted ? `${prefix}${separator}` : prefix;
+    if (prefix.startsWith("//") || prefix.startsWith("\\\\")) return `${prefix}${separator}`;
+    if (prefix === "~/" || prefix === "~\\") return prefix;
+    return prefix.length > 0 ? prefix : trailing ? `.${separator}` : ".";
+  }
+
+  const body = segments.join(separator);
+  const joined =
+    prefix.length === 0
+      ? body
+      : prefix.endsWith("/") || prefix.endsWith("\\")
+        ? `${prefix}${body}`
+        : rooted
+          ? `${prefix}${separator}${body}`
+          : `${prefix}${body}`;
+  return trailing ? `${joined}${separator}` : joined;
+}
+
+/** `\\server\share` or `//server/share` when both names are real path segments. */
+function uncSharePrefix(
+  path: string,
+): { readonly prefix: string; readonly separator: "/" | "\\" } | null {
+  if (!path.startsWith("//") && !path.startsWith("\\\\")) return null;
+  const body = path.slice(2);
+  const serverEnd = body.search(/[\\/]/);
+  if (serverEnd <= 0) return null;
+  const server = body.slice(0, serverEnd);
+  const afterServer = body.slice(serverEnd + 1);
+  const shareEnd = afterServer.search(/[\\/]/);
+  const share = shareEnd === -1 ? afterServer : afterServer.slice(0, shareEnd);
+  if (server === "." || server === ".." || share.length === 0 || share === "." || share === "..") {
+    return null;
+  }
+  return {
+    prefix: path.slice(0, 2 + server.length + 1 + share.length),
+    separator: body.charAt(serverEnd) as "/" | "\\",
+  };
+}
