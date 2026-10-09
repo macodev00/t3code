@@ -18,20 +18,22 @@ raw request, including the hook token in the path, in a Durable Object for
 that link's managed endpoint (named by its endpoint key), with SQLite storage.
 Each link has its own endpoint key, so two accounts that link the same
 environment get separate inboxes. The object pushes held requests back
-through the tunnel from its alarm, oldest first, and backs off while the
-environment stays away. When the tunnel reconnects, the environment asks the
-relay to deliver right away. Requests are deleted once the environment
-answers, after 24 hours, when that link is unlinked, or when the environment
-turns `hold_webhooks_while_offline` off. The relay still never checks the
-token; delivery goes through the same environment route.
+through the tunnel from its alarm, oldest first within each hook, and backs
+off while the environment stays away. When the tunnel reconnects, the
+environment asks the relay to deliver right away. A request is deleted once
+the environment answers it with any status other than 429 or 500; those
+answers, an unreachable tunnel, and timeouts keep it queued for retry. Held
+requests are also deleted after 24 hours, when that link is unlinked, or when
+the environment turns `hold_webhooks_while_offline` off. The relay still never
+checks the token; delivery goes through the same environment route.
 Every forward carries `x-t3-relay-delivery-id`, so a request that reached the
 environment before a timeout and is delivered again later runs once
 ([inbox object](../../infra/relay/src/hooks/HookInboxObject.ts)).
 
 A Durable Object, not Postgres or Queues, because held requests are write-once,
-read-once bodies of up to 1 MiB that need per-endpoint (per-link) order, caps,
-and retry timing. Queues cap messages at 128 KB and cannot hold one endpoint's
-requests back while its environment is away.
+read-once bodies of up to 1 MiB that need per-hook order, per-endpoint
+(per-link) caps, and retry timing. Queues cap messages at 128 KB and cannot
+hold one endpoint's requests back while its environment is away.
 
 Clerk, deployment, and native authentication setup live in the
 [Connect setup runbook](../operations/connect-setup.md).
