@@ -8,6 +8,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { collapseExpandedComposerCursor } from "./composer-logic";
 
+import { markAsClipboardEdit } from "./composer-undo-grouping";
 import {
   buildDocJson,
   buildTiptapContent,
@@ -16,6 +17,7 @@ import {
   ComposerCodeBlockExtension,
   ComposerListExtensions,
   collapsedToFlat,
+  composerCodeBacktickPairPlugin,
   ComposerCodeExtension,
   ComposerTaskItemExtension,
   flatToCollapsed,
@@ -1030,5 +1032,87 @@ describe("caret stops at styled edges", () => {
     expect(stepCaretAcrossStyledEdge(stateAt("**bold** tail", 3), -1)).toBeNull();
     expect(stepCaretAcrossStyledEdge(stateAt("plain text", 1), -1)).toBeNull();
     expect(caretTakesMarksBefore(stateAt("plain text", 1))).toBe(false);
+  });
+});
+
+describe("typing between backticks", () => {
+  function editorAt(text: string, pmPos: number) {
+    const doc = schema.node("doc", null, [schema.node("paragraph", null, [schema.text(text)])]);
+    return EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, pmPos),
+      plugins: [composerCodeBacktickPairPlugin(schema.marks.code!)],
+    });
+  }
+
+  function typeChars(state: EditorState, text: string) {
+    let next = state;
+    for (const char of text) next = next.apply(next.tr.insertText(char));
+    return next;
+  }
+
+  function inlineParts(doc: ProseMirrorNode) {
+    const parts: { text: string; marks: string[] }[] = [];
+    doc.firstChild!.forEach((node) => {
+      if (!node.isText) return;
+      parts.push({ text: node.text!, marks: node.marks.map((mark) => mark.type.name) });
+    });
+    return parts;
+  }
+
+  it("marks text inserted between an existing backtick pair", () => {
+    const typed = typeChars(editorAt("``", 2), "not working");
+    expect(serializeEditorDoc(typed.doc).value).toBe("`not working`");
+    expect(inlineParts(typed.doc)).toEqual([{ text: "not working", marks: ["code"] }]);
+
+    const once = editorAt("``", 2);
+    const inserted = once.apply(once.tr.insertText("not working"));
+    expect(serializeEditorDoc(inserted.doc).value).toBe("`not working`");
+    expect(inlineParts(inserted.doc)).toEqual([{ text: "not working", marks: ["code"] }]);
+  });
+
+  it("pairs only the span parseInlineMarkdown would, leaving an earlier pair literal", () => {
+    // "`a` b ``" with the caret between the last two backticks.
+    const state = editorAt("`a` b ``", 8);
+    const next = state.apply(state.tr.insertText("c"));
+    expect(serializeEditorDoc(next.doc).value).toBe("`a` b `c`");
+    expect(inlineParts(next.doc)).toEqual([
+      { text: "`a` b ", marks: [] },
+      { text: "c", marks: ["code"] },
+    ]);
+  });
+
+  it("does not convert a paste, a controlled update, or doubled backticks", () => {
+    const between = editorAt("``", 2);
+    const pasted = between.apply(
+      markAsClipboardEdit(between.tr.insertText("not working"), "paste"),
+    );
+    expect(pasted.doc.textContent).toBe("`not working`");
+    expect(inlineParts(pasted.doc)).toEqual([{ text: "`not working`", marks: [] }]);
+
+    const controlled = between.apply(
+      between.tr.insertText("not working").setMeta("preventUpdate", true),
+    );
+    expect(controlled.doc.textContent).toBe("`not working`");
+    expect(inlineParts(controlled.doc)).toEqual([{ text: "`not working`", marks: [] }]);
+
+    const doubled = editorAt("````", 3);
+    const after = doubled.apply(doubled.tr.insertText("code"));
+    expect(after.doc.textContent).toBe("``code``");
+    expect(inlineParts(after.doc)).toEqual([{ text: "``code``", marks: [] }]);
+  });
+
+  it("leaves backticks typed inside a fenced code block literal", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("codeBlock", { language: "", fence: "```", close: "\n```" }, [schema.text("``")]),
+    ]);
+    const state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, 2),
+      plugins: [composerCodeBacktickPairPlugin(schema.marks.code!)],
+    });
+    const next = state.apply(state.tr.insertText("x"));
+    expect(next.doc.firstChild!.textContent).toBe("`x`");
+    expect(next.doc.firstChild!.firstChild!.marks).toEqual([]);
   });
 });

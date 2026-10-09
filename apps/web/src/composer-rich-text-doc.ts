@@ -1,5 +1,12 @@
 import { joinBackward, joinTextblockBackward, joinTextblockForward } from "@tiptap/pm/commands";
-import { Fragment, Mark, type Node as ProseMirrorNode, type ResolvedPos } from "@tiptap/pm/model";
+import {
+  Fragment,
+  Mark,
+  type MarkType,
+  type Node as ProseMirrorNode,
+  type ResolvedPos,
+} from "@tiptap/pm/model";
+import { ReplaceStep } from "@tiptap/pm/transform";
 import { Code } from "@tiptap/extension-code";
 import { Blockquote } from "@tiptap/extension-blockquote";
 import { CodeBlock } from "@tiptap/extension-code-block";
@@ -12,6 +19,7 @@ import { TaskList } from "@tiptap/extension-task-list";
 import {
   type EditorState,
   Plugin,
+  PluginKey,
   Selection,
   TextSelection,
   type Transaction,
@@ -58,16 +66,233 @@ const TIPTAP_TO_MARK: Record<string, RichTextMark> = {
   code: "code",
 };
 
+const composerCodeBacktickPairKey = new PluginKey("composerCodeBacktickPair");
+
+/**
+ * The range of a single typed insert, in the document after `tr`.
+ *
+ * Paste, drop, cut, and a controlled `setContent` (`preventUpdate`, or any
+ * replace of existing text) are not typed text. A selection replace is the
+ * wrap-selection case and is left to that path.
+ */
+function typedTextInsertion(tr: Transaction): { from: number; to: number } | null {
+  if (!tr.docChanged || !tr.selection.empty) return null;
+  const uiEvent = tr.getMeta("uiEvent");
+  if (uiEvent === "paste" || uiEvent === "drop" || uiEvent === "cut") return null;
+  if (tr.getMeta("paste") || tr.getMeta("preventUpdate")) return null;
+  if (tr.steps.length !== 1) return null;
+  const step = tr.steps[0];
+  if (!(step instanceof ReplaceStep) || step.from !== step.to) return null;
+  if (step.slice.openStart !== 0 || step.slice.openEnd !== 0) return null;
+  const inserted = step.slice.content.firstChild;
+  if (!inserted?.isText || !inserted.text) return null;
+  return { from: step.from, to: step.from + inserted.text.length };
+}
+
+/**
+ * Maps a typed insert through any transactions applied after it, so the
+ * range is in the document `appendTransaction` is looking at.
+ */
+function insertedRangeInFinalDoc(
+  transactions: readonly Transaction[],
+): { from: number; to: number } | null {
+  for (let index = transactions.length - 1; index >= 0; index -= 1) {
+    const range = typedTextInsertion(transactions[index]!);
+    if (!range) continue;
+    let from = range.from;
+    let to = range.to;
+    for (let later = index + 1; later < transactions.length; later += 1) {
+      const mapping = transactions[later]!.mapping;
+      from = mapping.map(from, 1);
+      to = mapping.map(to, -1);
+    }
+    return from < to ? { from, to } : null;
+  }
+  return null;
+}
+
+/**
+ * Plain text of a textblock, with a document position for every source
+ * index (and one past the end). Hard breaks and atoms become newlines so a
+ * pair cannot cross them, matching `parseInlineMarkdown`'s single-line rule.
+ */
+function textblockChars($from: ResolvedPos): { text: string; posAt: number[] } | null {
+  const block = $from.parent;
+  if (!block.isTextblock || block.type.spec.code) return null;
+  const start = $from.start();
+  let text = "";
+  const posAt: number[] = [];
+  block.forEach((node, offset) => {
+    const pos = start + offset;
+    if (node.isText && node.text) {
+      for (let index = 0; index < node.text.length; index += 1) {
+        posAt.push(pos + index);
+        text += node.text[index];
+      }
+      return;
+    }
+    posAt.push(pos);
+    text += "\n";
+  });
+  posAt.push(start + block.content.size);
+  return { text, posAt };
+}
+
+/** Source indexes of `text` covered by the inserted document range. */
+function sourceRangeForInsert(
+  posAt: readonly number[],
+  from: number,
+  to: number,
+): { from: number; to: number } | null {
+  let srcFrom = -1;
+  let srcTo = -1;
+  for (let index = 0; index < posAt.length - 1; index += 1) {
+    const pos = posAt[index]!;
+    if (pos >= from && pos < to) {
+      if (srcFrom < 0) srcFrom = index;
+      srcTo = index + 1;
+    }
+  }
+  return srcFrom < 0 ? null : { from: srcFrom, to: srcTo };
+}
+
+/**
+ * True when `parseInlineMarkdown` treats `[contentFrom, contentTo)` as
+ * inline code. The probe character is how a span is tied back to that
+ * source range without reimplementing emphasis.
+ */
+function parserMarksContentAsCode(text: string, contentFrom: number, contentTo: number): boolean {
+  let probe = "";
+  for (let codePoint = 0xe000; codePoint <= 0xf8ff; codePoint += 1) {
+    const candidate = String.fromCodePoint(codePoint);
+    if (!text.includes(candidate)) {
+      probe = candidate;
+      break;
+    }
+  }
+  if (!probe) return false;
+  const probed =
+    text.slice(0, contentFrom) + probe + text.slice(contentFrom, contentTo) + text.slice(contentTo);
+  const content = text.slice(contentFrom, contentTo);
+  return parseInlineMarkdown(probed).some(
+    (span) => span.marks.includes("code") && span.text.split(probe).join("") === content,
+  );
+}
+
+/**
+ * The unmarked single-backtick pair around a typed insert.
+ *
+ * Backtick boundaries follow the same left-to-right rule as
+ * `parseInlineMarkdown` (one line, a single backtick, no adjacent closer).
+ * The parser then confirms the span, so an ambiguous line like `` `a` b `c` ``
+ * converts only the pair it would mark.
+ */
+function inlineCodePairCovering(
+  text: string,
+  insertFrom: number,
+  insertTo: number,
+): { open: number; contentFrom: number; contentTo: number; close: number } | null {
+  let index = 0;
+  while (index < text.length) {
+    if (text[index] === "\\") {
+      index += 2;
+      continue;
+    }
+    if (text[index] !== "`") {
+      index += 1;
+      continue;
+    }
+    const run = /^`+/.exec(text.slice(index))![0];
+    const close = text.indexOf(run, index + run.length);
+    const paired =
+      run.length === 1 &&
+      close > index + 1 &&
+      !text.slice(index, close).includes("\n") &&
+      text[close + 1] !== "`";
+    if (!paired) {
+      index += run.length;
+      continue;
+    }
+    const contentFrom = index + 1;
+    const contentTo = close;
+    const coversInsert = insertFrom < contentTo && insertTo > contentFrom;
+    if (coversInsert && parserMarksContentAsCode(text, contentFrom, contentTo)) {
+      return { open: index, contentFrom, contentTo, close };
+    }
+    index = close + 1;
+  }
+  return null;
+}
+
+/**
+ * Drops the backticks and applies the code mark, the way `markInputRule`
+ * does. The stored mark stays active because the caret is still inside the
+ * span; the stock rule removes it only when the typed character is the closer.
+ */
+function applyInlineCodePair(
+  state: EditorState,
+  posAt: readonly number[],
+  pair: { open: number; contentFrom: number; contentTo: number; close: number },
+  markType: MarkType,
+): Transaction | null {
+  const openFrom = posAt[pair.open]!;
+  const openTo = posAt[pair.contentFrom]!;
+  const closeFrom = posAt[pair.contentTo]!;
+  const closeTo = posAt[pair.close + 1]!;
+  const contentLen = closeFrom - openTo;
+  if (openTo !== openFrom + 1 || closeTo !== closeFrom + 1 || contentLen <= 0) return null;
+  if (state.doc.rangeHasMark(openFrom, closeTo, markType)) return null;
+  const tr = state.tr;
+  // `delete` and `addMark` address the document as it is now, not the
+  // original positions. Drop the closer first so the opener's position
+  // stays put; the content then slides into the opener's place.
+  tr.delete(closeFrom, closeTo);
+  tr.delete(openFrom, openTo);
+  tr.addMark(openFrom, openFrom + contentLen, markType.create());
+  tr.addStoredMark(markType.create());
+  return tr;
+}
+
+/**
+ * Marks text typed between an existing pair of backticks as inline code.
+ *
+ * Tiptap's code input rule only matches when the closing backtick is the
+ * character just typed, so a pair that was already closed never fires.
+ * Paste and controlled `setContent` are ignored; a rebuilt document already
+ * went through `parseInlineMarkdown`.
+ */
+export function composerCodeBacktickPairPlugin(markType: MarkType): Plugin {
+  return new Plugin({
+    key: composerCodeBacktickPairKey,
+    appendTransaction(transactions, _oldState, newState) {
+      const inserted = insertedRangeInFinalDoc(transactions);
+      if (!inserted) return null;
+      const $from = newState.selection.$from;
+      const source = textblockChars($from);
+      if (!source) return null;
+      const src = sourceRangeForInsert(source.posAt, inserted.from, inserted.to);
+      if (!src) return null;
+      const pair = inlineCodePairCovering(source.text, src.from, src.to);
+      if (!pair) return null;
+      return applyInlineCodePair(newState, source.posAt, pair, markType);
+    },
+  });
+}
+
 /**
  * Tiptap's code mark excludes every other mark, which rejects the `bold+code`
  * spans markdown like `**\`x\`**` parses into and drops the whole insert.
  * Code nests inside emphasis here, so it only excludes itself like the rest.
+ *
+ * ArrowRight leaves code through the caret stops at styled edges, so the
+ * stock exit (inserting a space at the end of a line) is not needed.
  */
 export const ComposerCodeExtension = Code.extend({
   excludes: "code",
-  // ArrowRight leaves code through the caret stops at styled edges, so the
-  // stock exit (inserting a space at the end of a line) is not needed.
   exitable: false,
+  addProseMirrorPlugins() {
+    return [composerCodeBacktickPairPlugin(this.type)];
+  },
 });
 
 /**
