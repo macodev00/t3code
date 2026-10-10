@@ -5,12 +5,14 @@ import {
   xAiRateLimitedErrorCode,
 } from "./xaiAcpExtension.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 import { resolveSelfInvocation, type SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   type OrchestrationV2ProviderCapabilities,
   type RuntimeMode,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { GrokSettings } from "../settings.ts";
 import * as Crypto from "effect/Crypto";
@@ -330,12 +332,89 @@ export function makeGrokAcpAdapterFlavor(
   };
 }
 
+// Same composer skill token, anchored at the start. The shared pattern is global.
+const LEADING_GROK_SKILL_MENTION = new RegExp(`^${SKILL_MENTION_PATTERN.source}`, "u");
+
+/** Command row from an ACP `available_commands` update. */
+type GrokAvailableCommand = Parameters<
+  NonNullable<AcpAdapterV2Flavor["onAvailableCommandsUpdate"]>
+>[0][number];
+
+/**
+ * Skill names from an ACP `available_commands` update. A command counts only
+ * when Grok marked it as a skill (`SKILL.md` path or `bareName`). Built-in
+ * slash commands such as `compact` are left out, so a literal `$compact` is
+ * not sent as conversation compaction.
+ */
+export function grokSkillNamesFromAvailableCommands(
+  commands: ReadonlyArray<GrokAvailableCommand>,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const command of commands) {
+    const meta = command._meta;
+    const path = metaString(meta, "path").replaceAll("\\", "/");
+    const bareName = metaString(meta, "bareName");
+    if (!path.endsWith("/SKILL.md") && bareName.length === 0) continue;
+    const commandName = command.name.trim();
+    if (commandName.length > 0) names.add(commandName);
+    if (bareName.length > 0) names.add(bareName);
+  }
+  return names;
+}
+
+/** String field on an ACP command's `_meta`, or `""` when it is absent. */
+function metaString(meta: GrokAvailableCommand["_meta"], key: string): string {
+  if (meta == null) return "";
+  const value = meta[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Rewrite a leading composer skill token to `/name` when `skillNames` contains
+ * that name. Any other opening token, including `$compact` and `$HOME`, stays
+ * literal, as do mentions after other text and amounts such as `$20`.
+ */
+export function grokLeadingSkillPrompt(text: string, skillNames: ReadonlySet<string>): string {
+  const indent = text.length - text.trimStart().length;
+  const match = LEADING_GROK_SKILL_MENTION.exec(text.slice(indent));
+  const name = match?.[2];
+  if (match === null || name === undefined || name.length === 0 || !skillNames.has(name)) {
+    return text;
+  }
+  const delimiterLength = match[1]?.length ?? 0;
+  const sigilLength = match[0].length - delimiterLength - name.length;
+  const tokenStart = indent + delimiterLength;
+  return `${text.slice(0, tokenStart)}/${name}${text.slice(tokenStart + sigilLength + name.length)}`;
+}
+
+const NO_GROK_SKILLS: ReadonlySet<string> = new Set();
+
+/**
+ * Grok ACP adapter. A leading `$name` is sent as `/name` only when that name
+ * is a skill the same live session advertised. Each session's latest
+ * advertisement replaces its own catalog and is dropped when the session
+ * closes. Literal text stays unchanged.
+ */
 export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
   options: GrokAdapterV2Options,
 ) {
+  const skillNamesByThreadId = new Map<ThreadId, ReadonlySet<string>>();
+  const flavor: AcpAdapterV2Flavor = {
+    ...makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory),
+    onAvailableCommandsUpdate: (commands, threadId) =>
+      Effect.sync(() => {
+        skillNamesByThreadId.set(threadId, grokSkillNamesFromAvailableCommands(commands));
+      }),
+    onSessionClosed: (threadId) =>
+      Effect.sync(() => {
+        skillNamesByThreadId.delete(threadId);
+      }),
+    rewriteUserPrompt: (text, threadId) =>
+      grokLeadingSkillPrompt(text, skillNamesByThreadId.get(threadId) ?? NO_GROK_SKILLS),
+  };
   return yield* makeAcpAdapterV2({
     instanceId: options.instanceId,
-    flavor: makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory),
+    flavor,
     selfInvocation: options.selfInvocation,
     ...(options.nativeLogging === undefined ? {} : { nativeLogging: options.nativeLogging }),
     ...(options.continuationRequests === undefined

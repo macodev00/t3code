@@ -111,6 +111,10 @@ const requiresAuthentication = process.env.T3_ACP_REQUIRE_AUTH === "1";
 const commandAdvertisementDelayMs = Number(
   process.env.T3_ACP_COMMAND_ADVERTISEMENT_DELAY_MS ?? "-1",
 );
+const advertisedGrokSkillNames = (process.env.T3_ACP_ADVERTISED_SKILLS ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name.length > 0);
 const permissionOptionIds = {
   allowOnce: process.env.T3_ACP_ALLOW_ONCE_OPTION_ID ?? "allow-once",
   allowAlways: process.env.T3_ACP_ALLOW_ALWAYS_OPTION_ID ?? "allow-always",
@@ -457,6 +461,32 @@ const program = Effect.gen(function* () {
       },
     });
 
+  /**
+   * Advertise test skills before `session/new` returns, the same order as a
+   * live Grok session. `compact` is a built-in command, not a skill.
+   */
+  const publishAdvertisedGrokSkills = (targetSessionId: string) => {
+    if (advertisedGrokSkillNames.length === 0) return Effect.void;
+    return agent.client.sessionUpdate({
+      sessionId: targetSessionId,
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          { name: "compact", description: "Compress conversation history" },
+          ...advertisedGrokSkillNames.map((name) => ({
+            name,
+            description: `Skill ${name}`,
+            _meta: {
+              scope: "project",
+              path: `/tmp/skills/${name}/SKILL.md`,
+              bareName: name,
+            },
+          })),
+        ],
+      },
+    });
+  };
+
   const finishPrompt = (
     targetSessionId: string,
     stopReason: AcpSchema.StopReason,
@@ -554,6 +584,7 @@ const program = Effect.gen(function* () {
   yield* agent.handleCreateSession(() =>
     Effect.gen(function* () {
       yield* requireAuthentication();
+      yield* publishAdvertisedGrokSkills(sessionId);
       if (antigravityProfile) {
         yield* publishAntigravityCommands(sessionId);
       }

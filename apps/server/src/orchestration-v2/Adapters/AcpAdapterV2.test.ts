@@ -600,6 +600,83 @@ function makeTurnInput(input: {
   };
 }
 
+/**
+ * One Grok adapter backed by the mock ACP agent. `environment` picks each
+ * spawned runtime's advertised skills by spawn order. `openThread` opens a
+ * session in the ambient scope; its `sendPrompt` runs one turn and returns the
+ * `session/prompt` text Grok received.
+ */
+const makeGrokSkillPromptHarness = Effect.fnUntraced(function* (
+  environment: (runtimeOrdinal: number) => Readonly<Record<string, string>>,
+) {
+  const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const path = yield* Path.Path;
+  const mockAgentPath = yield* path.fromFileUrl(
+    new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+  );
+  const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+  const instanceId = ProviderInstanceId.make("grok-skill-sessions");
+  const mockRuntime = makeMockRuntime({
+    childProcessSpawner,
+    mockAgentPath,
+    protocolEvents,
+    environment,
+  });
+  const adapter = yield* makeGrokAdapterV2({
+    instanceId,
+    settings: DEFAULT_GROK_SETTINGS,
+    environment: {},
+    hostPlatform: yield* HostProcess.Platform,
+    selfInvocation: yield* resolveSelfInvocation(),
+    makeRuntime: (input) => mockRuntime(input).pipe(Effect.flatMap(makeXAiPromptCompletionRuntime)),
+  });
+  const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd: process.cwd(),
+  });
+  const modelSelection = { instanceId, model: "grok-build" } as const;
+  const openThread = Effect.fnUntraced(function* (rawThreadId: string) {
+    const threadId = ThreadId.make(rawThreadId);
+    const runtime = yield* adapter.openSession({
+      threadId,
+      providerSessionId: ProviderSessionId.make(`provider-${rawThreadId}`),
+      modelSelection,
+      runtimePolicy,
+    });
+    const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+    const sendPrompt = Effect.fnUntraced(function* (ordinal: number, messageText: string) {
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+          ordinal,
+          modelSelection,
+          messageText,
+        }),
+      );
+      yield* runtime.events.pipe(
+        Stream.filter((event) => event.type === "turn.terminal"),
+        Stream.runHead,
+      );
+      const prompt = (yield* Queue.takeAll(protocolEvents))
+        .flatMap((event) =>
+          event.direction === "outgoing" && rawProtocolMethod(event) === "session/prompt"
+            ? [rawProtocolPromptText(event)]
+            : [],
+        )
+        .at(-1);
+      if (prompt === undefined) return yield* Effect.die("Grok turn did not send session/prompt");
+      return prompt;
+    });
+    return { sendPrompt };
+  });
+  return { openThread };
+});
+
 describe("AcpAdapterV2", () => {
   it.live.each(["failed", "recovered", "completed", "cancelled"] as const)(
     "projects Mistral retry notices and their %s outcome",
@@ -3204,6 +3281,164 @@ describe("AcpAdapterV2", () => {
         3,
       );
     }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live(
+    "sends a leading $skill mention as the slash command Grok expands",
+    /**
+     * An advertised leading `$skill` is sent as `/skill` before ACP instructions
+     * wrap the prompt. `$compact` and `$HOME` stay literal, as does a mention
+     * later in the text.
+     */
+    () =>
+      Effect.gen(
+        /**
+         * Drive the mock Grok session and read the `session/prompt` text.
+         */
+        function* () {
+          const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+          const path = yield* Path.Path;
+          const mockAgentPath = yield* path.fromFileUrl(
+            new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+          );
+          const protocolEvents = yield* Queue.unbounded<EffectAcpProtocol.AcpProtocolLogEvent>();
+          const instanceId = ProviderInstanceId.make("grok-skill-mention");
+          const adapter = yield* makeGrokAdapterV2({
+            instanceId,
+            settings: DEFAULT_GROK_SETTINGS,
+            environment: {},
+            hostPlatform: yield* HostProcess.Platform,
+            selfInvocation: yield* resolveSelfInvocation(),
+            makeRuntime: (input) =>
+              makeMockRuntime({
+                childProcessSpawner,
+                mockAgentPath,
+                protocolEvents,
+                environment: { T3_ACP_ADVERTISED_SKILLS: "poteto-mode" },
+              })(input).pipe(Effect.flatMap(makeXAiPromptCompletionRuntime)),
+          });
+          const threadId = ThreadId.make("grok-skill-mention");
+          const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: process.cwd(),
+          });
+          const modelSelection = { instanceId, model: "grok-build" } as const;
+          const runtime = yield* adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("grok-skill-mention"),
+            modelSelection,
+            runtimePolicy,
+          });
+          const providerThread = yield* runtime.ensureThread({
+            threadId,
+            modelSelection,
+            runtimePolicy,
+          });
+          const prompts: Array<string> = [];
+          for (const [ordinal, messageText] of [
+            [1, "$poteto-mode reply with hi"],
+            [2, "$compact now"],
+            [3, "$HOME stays"],
+            [4, "please $poteto-mode later"],
+          ] as const) {
+            yield* runtime.startTurn(
+              makeTurnInput({
+                threadId,
+                providerThread,
+                instanceId,
+                runtimePolicy,
+                now: yield* DateTime.now,
+                ordinal,
+                modelSelection,
+                messageText,
+              }),
+            );
+            yield* runtime.events.pipe(
+              Stream.filter((event) => event.type === "turn.terminal"),
+              Stream.runHead,
+            );
+            const sent = (yield* Queue.takeAll(protocolEvents)).flatMap((event) =>
+              event.direction === "outgoing" && rawProtocolMethod(event) === "session/prompt"
+                ? [rawProtocolPromptText(event)]
+                : [],
+            );
+            const prompt = sent.at(-1);
+            if (prompt === undefined)
+              return yield* Effect.die("Grok turn did not send session/prompt");
+            prompts.push(prompt);
+          }
+          assert.isTrue(prompts[0]?.startsWith("/poteto-mode reply with hi\n"));
+          assert.notInclude(prompts[0], "<t3_code_instructions>");
+          assert.notInclude(prompts[0], "$poteto-mode");
+          assert.include(prompts[1], "<user_request>\n$compact now\n</user_request>");
+          assert.notInclude(prompts[1] ?? "", "/compact");
+          assert.include(prompts[2] ?? "", "$HOME stays");
+          assert.notInclude(prompts[2] ?? "", "/HOME");
+          assert.include(prompts[3] ?? "", "please $poteto-mode later");
+          assert.notInclude(prompts[3] ?? "", "/poteto-mode");
+        },
+      ).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live(
+    "rewrites a leading $skill only for the Grok session that advertised it",
+    /**
+     * Two sessions on one adapter advertise different skills. Session B opens
+     * first, then A's advertisement arrives; B's leading `$poteto-mode` stays
+     * literal because only A advertised it, while A's own mention is rewritten.
+     */
+    () =>
+      Effect.gen(
+        /**
+         * Open both mock Grok sessions and compare each session's prompt text.
+         */
+        function* () {
+          const harness = yield* makeGrokSkillPromptHarness((runtimeOrdinal) => ({
+            T3_ACP_ADVERTISED_SKILLS: runtimeOrdinal === 1 ? "review" : "poteto-mode",
+          }));
+          const sessionB = yield* harness.openThread("grok-skill-session-b");
+          const sessionA = yield* harness.openThread("grok-skill-session-a");
+          const promptB = yield* sessionB.sendPrompt(1, "$poteto-mode reply with hi");
+          const promptA = yield* sessionA.sendPrompt(1, "$poteto-mode reply with hi");
+          const reviewB = yield* sessionB.sendPrompt(2, "$review the diff");
+          assert.include(promptB, "<user_request>\n$poteto-mode reply with hi\n</user_request>");
+          assert.notInclude(promptB, "/poteto-mode");
+          assert.isTrue(promptA.startsWith("/poteto-mode reply with hi\n"));
+          assert.isTrue(reviewB.startsWith("/review the diff\n"));
+        },
+      ).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live(
+    "forgets a Grok session's advertised skills when the session closes",
+    /**
+     * Only the first runtime advertises `poteto-mode`. After that session
+     * closes, a reopened session on the same thread that advertised nothing
+     * sends `$poteto-mode` literally.
+     */
+    () =>
+      Effect.gen(
+        /**
+         * Close the advertising session, reopen the thread, and read the prompt.
+         */
+        function* () {
+          const harness = yield* makeGrokSkillPromptHarness((runtimeOrdinal) =>
+            runtimeOrdinal === 1 ? { T3_ACP_ADVERTISED_SKILLS: "poteto-mode" } : {},
+          );
+          const firstScope = yield* Scope.make();
+          const first = yield* harness
+            .openThread("grok-skill-session-reopen")
+            .pipe(Effect.provideService(Scope.Scope, firstScope));
+          const before = yield* first.sendPrompt(1, "$poteto-mode reply with hi");
+          yield* Scope.close(firstScope, Exit.void);
+          const reopened = yield* harness.openThread("grok-skill-session-reopen");
+          const after = yield* reopened.sendPrompt(2, "$poteto-mode reply with hi");
+          assert.isTrue(before.startsWith("/poteto-mode reply with hi\n"));
+          assert.include(after, "<user_request>\n$poteto-mode reply with hi\n</user_request>");
+          assert.notInclude(after, "/poteto-mode");
+        },
+      ).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
   it.effect("skips requested options that the active ACP session does not expose", () =>
