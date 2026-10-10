@@ -1,4 +1,5 @@
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { linuxCliExecFormatErrorHint } from "@t3tools/shared/legacyCliLauncher";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -6,10 +7,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
   buildNpmPlatformPackages,
+  NPM_LAUNCHER_SCRIPT,
   NpmPackagesArchivesMissingError,
 } from "./build-npm-platform-packages.ts";
 
@@ -203,8 +205,8 @@ it.layer(NodeServices.layer)("build-npm-platform-packages", (it) => {
 
       // NODE_PATH stands in for node_modules: require.resolve finds the
       // platform package there exactly as it would after `npm install`.
-      const hostPlatform = yield* HostProcessPlatform;
-      const hostArch = yield* HostProcessArchitecture;
+      const hostPlatform = yield* HostProcess.Platform;
+      const hostArch = yield* HostProcess.Architecture;
       const env = { ...process.env, NODE_PATH: fixture.outputDir } as Record<string, string>;
       if (KEYS.some((key) => key === `${hostPlatform}-${hostArch}`)) {
         const passthrough = yield* run(process.execPath, ["bin/t3.js", "serve", "--port", "1234"], {
@@ -257,5 +259,56 @@ it.layer(NodeServices.layer)("build-npm-platform-packages", (it) => {
       assert.include(unsupported.stderr, "win32-arm64");
       assert.include(unsupported.stderr, "https://github.com/pingdotgg/t3code/releases");
     }),
+  );
+
+  it.effect.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
+    "hints at UEK8 when the platform executable cannot exec",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const hostPlatform = yield* HostProcess.Platform;
+        const hostArch = yield* HostProcess.Architecture;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-npm-enoexec-" });
+        const platformDir = path.join(root, `@t3code/t3-${hostPlatform}-${hostArch}`);
+        const launcherDir = path.join(root, "t3");
+        yield* fs.makeDirectory(platformDir, { recursive: true });
+        yield* fs.makeDirectory(path.join(launcherDir, "bin"), { recursive: true });
+        yield* fs.writeFileString(path.join(platformDir, "package.json"), '{"type":"commonjs"}');
+        yield* fs.writeFileString(path.join(platformDir, "t3"), "#!/bin/sh\nexit 126\n");
+        yield* fs.chmod(path.join(platformDir, "t3"), 0o755);
+        yield* fs.writeFileString(path.join(launcherDir, "bin/t3.js"), NPM_LAUNCHER_SCRIPT);
+        const env = { ...process.env, NODE_PATH: root } as Record<string, string>;
+        const execvpFallback = yield* run(process.execPath, ["bin/t3.js", "--version"], {
+          cwd: launcherDir,
+          env,
+        });
+        assert.equal(execvpFallback.exitCode, 126);
+        assert.include(execvpFallback.stderr, linuxCliExecFormatErrorHint);
+
+        // Node spawnSync uses execvp, which retries ENOEXEC via /bin/sh. The
+        // raw error is still possible if that fallback is skipped.
+        yield* fs.writeFileString(
+          path.join(root, "enoexec-preload.cjs"),
+          [
+            '"use strict";',
+            'const childProcess = require("node:child_process");',
+            "childProcess.spawnSync = () => {",
+            '  const error = new Error("spawnSync ENOEXEC");',
+            '  error.code = "ENOEXEC";',
+            "  return { error, status: null, signal: null };",
+            "};",
+            "",
+          ].join("\n"),
+        );
+        const enoexec = yield* run(
+          process.execPath,
+          ["-r", path.join(root, "enoexec-preload.cjs"), "bin/t3.js", "--version"],
+          { cwd: launcherDir, env },
+        );
+        assert.equal(enoexec.exitCode, 1);
+        assert.include(enoexec.stderr, "failed to start");
+        assert.include(enoexec.stderr, linuxCliExecFormatErrorHint);
+      }),
   );
 });

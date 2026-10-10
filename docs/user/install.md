@@ -20,7 +20,7 @@ On Windows, in PowerShell:
 irm https://t3.codes/install.ps1 | iex
 ```
 
-This puts `t3` in `~/.local/bin`. If your shell reports `command not found`
+This installs the `t3` binary to `~/.local/bin`. If your shell reports `command not found`
 afterwards, that directory is not on your `PATH` yet; the installer prints the
 line to add. Set `T3CODE_CHANNEL=nightly` to install the nightly train, or
 `T3CODE_VERSION` to pin an exact version.
@@ -33,7 +33,13 @@ line to add. Set `T3CODE_CHANNEL=nightly` to install the nightly train, or
 | Move to the newest release                       | `t3 update`                                               |
 | Remove it again                                  | `t3 uninstall`                                            |
 
-Run `t3 --help` for the full reference.
+Run `t3 help` or `t3 --help` for the full reference. To start in a new working
+directory, use an explicit path such as `t3 ./my-project`. A bare directory name
+is accepted only if it already exists.
+
+If `t3` or `t3 start` reports an already running server, connect to that server
+instead. Stop it before starting a replacement, or use a different `--base-dir`
+for an independent server.
 
 To try T3 Code once without installing it, run `npx t3@latest` instead (needs
 Node.js for `npx`).
@@ -53,6 +59,25 @@ node apps/server/dist/bin.mjs
 `t3 update` and the background service do not apply to a server run this way;
 update it with `git pull` and a rebuild.
 
+### Oracle Linux (UEK8)
+
+Oracle's UEK8 kernel refuses to run the `t3` CLI (`ENOEXEC` / "Exec format
+error"). The CLI is a Node single-executable whose embedded JavaScript is a
+`PT_NOTE` larger than 4 MB, and UEK8 rejects notes that size. The desktop app
+is unaffected.
+
+Boot Oracle's RHCK (or any mainline-based kernel) instead of UEK8, or build
+from source the same way as Intel Macs above and run
+`node apps/server/dist/bin.mjs`.
+
+You can also keep the installed binary by lowering its oversized `PT_NOTE`
+program header `p_filesz` to 4 MB and leaving `p_memsz` unchanged. `readelf -l`
+on that `t3` lists the header as the `NOTE` row whose file size is above 4 MB.
+Node finds the embedded application using `p_memsz`; UEK8 checks `p_filesz`.
+Reapply the edit after every update. The kernel limit and this field change
+are described in
+[oracle/linux-uek#46](https://github.com/oracle/linux-uek/issues/46).
+
 ## Desktop app
 
 Download a release from [GitHub Releases](https://github.com/pingdotgg/t3code/releases),
@@ -69,6 +94,15 @@ or use a package manager:
 The `.deb` updates itself like the other desktop builds. It asks for your
 password to install each update. If your desktop has no password prompt, the
 update fails. Download the new `.deb` and install it the same way.
+
+### The `t3` command
+
+The desktop app includes the `t3` command-line tool. To run it from any
+terminal, open **Settings → General → About** and choose **Install** next to
+**t3 command**. On macOS and Linux it adds a `t3` link to a folder on your
+`PATH`; on Windows it adds the app's command folder to your `PATH`. Open a new
+terminal afterwards. **Remove** takes it off again. If you already have `t3`
+from npm, it stays as it is.
 
 ### Windows Subsystem for Linux
 
@@ -128,6 +162,7 @@ computer.
 | OpenCode    | Install [OpenCode](https://opencode.ai), then run `opencode auth login`.                                                                                  |
 | Antigravity | Install and sign in with Google from T3 Code's provider settings.                                                                                         |
 | Pi          | Install [Pi](https://pi.dev), then run `pi` once to finish its login or API-key setup.                                                                    |
+| Muse Code   | Install [Muse Code](https://dev.meta.ai/docs/muse-code) on the server, run `muse login`, then enable it in Settings → Providers.                          |
 
 Provider CLIs must be on the server's `PATH`. If T3 Code cannot find one, set its
 **Binary path** in provider settings, especially when using a version manager.
@@ -156,7 +191,8 @@ their original values.
 
 For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
-[Antigravity](./providers-antigravity.md), and [Pi](./providers-pi.md).
+[Antigravity](./providers-antigravity.md), [Pi](./providers-pi.md), and
+[Muse Code](./providers-muse.md).
 
 ## Next steps
 

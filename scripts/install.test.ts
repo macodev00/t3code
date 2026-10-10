@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Drives the real shell installer through a PTY and a gated HTTP fixture.
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -9,13 +9,13 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 // util-linux's script gives the real installer a terminal without a browser or extra packages.
-describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer terminal", () => {
+describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer terminal", () => {
   it.each([false, true])(
     "preserves download and install behavior (HTTP failure: %s)",
     async (fail) => {
       const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-progress-"));
       const version = "1.2.3";
-      const stem = `t3-${version}-linux-${HostProcessArchitecture.defaultValue()}`;
+      const stem = `t3-${version}-linux-${HostProcess.Architecture.defaultValue()}`;
       const archiveName = `${stem}.tar.gz`;
       let resumeDownload: (() => void) | undefined;
       let sawPartialProgress = false;
@@ -112,4 +112,147 @@ describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer termi
       }
     },
   );
+
+  it("hints at UEK8 when the extracted executable cannot exec", async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-enoexec-"));
+    const version = "1.2.3";
+    const installerPlatform = HostProcess.Platform.defaultValue() === "darwin" ? "darwin" : "linux";
+    const stem = `t3-${version}-${installerPlatform}-${HostProcess.Architecture.defaultValue()}`;
+    const archiveName = `${stem}.tar.gz`;
+    await NodeFSP.mkdir(NodePath.join(root, stem));
+    const elf = Buffer.alloc(64);
+    elf.write("\x7fELF");
+    elf[4] = 2;
+    elf[5] = 1;
+    elf[6] = 1;
+    await NodeFSP.writeFile(NodePath.join(root, stem, "t3"), elf, { mode: 0o755 });
+    NodeChildProcess.execFileSync("tar", [
+      "-czf",
+      NodePath.join(root, archiveName),
+      "-C",
+      root,
+      stem,
+    ]);
+    const archive = await NodeFSP.readFile(NodePath.join(root, archiveName));
+    const checksum = NodeCrypto.createHash("sha256").update(archive).digest("hex");
+    const server = NodeHttp.createServer((request, response) => {
+      if (request.url?.endsWith("/SHA256SUMS")) {
+        response.end(`${checksum}  ${archiveName}\n`);
+      } else {
+        response.end(archive);
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+    const child = NodeChildProcess.spawn(
+      "sh",
+      [NodePath.resolve(import.meta.dirname, "install.sh")],
+      {
+        env: {
+          ...process.env,
+          T3CODE_VERSION: version,
+          T3CODE_HOME: NodePath.join(root, "home"),
+          T3CODE_INSTALL_BIN_DIR: NodePath.join(root, "bin"),
+          T3CODE_RELEASE_BASE_URL: `http://127.0.0.1:${address.port}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let output = "";
+    const collect = (chunk: Buffer) => {
+      output += chunk.toString();
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", resolve);
+      });
+      expect(code).not.toBe(0);
+      expect(output).toContain("the downloaded executable does not run");
+      expect(output).toContain("UEK8");
+      expect(output).toContain("RHCK");
+      expect(output).toContain("PT_NOTE");
+      expect(output).toContain("p_filesz");
+      expect(output).toContain("node apps/server/dist/bin.mjs");
+      expect(await NodeFSP.readdir(NodePath.join(root, "home/runtime/versions"))).toEqual([]);
+    } finally {
+      if (child.exitCode === null) child.kill();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("shows the executable stderr when the smoke test fails", async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-install-stderr-"));
+    const version = "1.2.3";
+    const installerPlatform = HostProcess.Platform.defaultValue() === "darwin" ? "darwin" : "linux";
+    const stem = `t3-${version}-${installerPlatform}-${HostProcess.Architecture.defaultValue()}`;
+    const archiveName = `${stem}.tar.gz`;
+    await NodeFSP.mkdir(NodePath.join(root, stem));
+    await NodeFSP.writeFile(
+      NodePath.join(root, stem, "t3"),
+      "#!/bin/sh\necho 't3-smoke-stdout-should-stay-hidden'\necho 't3-smoke-stderr-missing-config' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    NodeChildProcess.execFileSync("tar", [
+      "-czf",
+      NodePath.join(root, archiveName),
+      "-C",
+      root,
+      stem,
+    ]);
+    const archive = await NodeFSP.readFile(NodePath.join(root, archiveName));
+    const checksum = NodeCrypto.createHash("sha256").update(archive).digest("hex");
+    const server = NodeHttp.createServer((request, response) => {
+      if (request.url?.endsWith("/SHA256SUMS")) {
+        response.end(`${checksum}  ${archiveName}\n`);
+      } else {
+        response.end(archive);
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
+    const child = NodeChildProcess.spawn(
+      "sh",
+      [NodePath.resolve(import.meta.dirname, "install.sh")],
+      {
+        env: {
+          ...process.env,
+          T3CODE_VERSION: version,
+          T3CODE_HOME: NodePath.join(root, "home"),
+          T3CODE_INSTALL_BIN_DIR: NodePath.join(root, "bin"),
+          T3CODE_RELEASE_BASE_URL: `http://127.0.0.1:${address.port}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let output = "";
+    const collect = (chunk: Buffer) => {
+      output += chunk.toString();
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", resolve);
+      });
+      expect(code).not.toBe(0);
+      expect(output).toContain("t3-smoke-stderr-missing-config");
+      expect(output).not.toContain("t3-smoke-stdout-should-stay-hidden");
+      expect(output).toContain("the downloaded executable does not run");
+      expect(output).toContain("UEK8");
+      expect(await NodeFSP.readdir(NodePath.join(root, "home/runtime/versions"))).toEqual([]);
+    } finally {
+      if (child.exitCode === null) child.kill();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  });
 });
