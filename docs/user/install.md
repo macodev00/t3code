@@ -59,6 +59,25 @@ node apps/server/dist/bin.mjs
 `t3 update` and the background service do not apply to a server run this way;
 update it with `git pull` and a rebuild.
 
+### Oracle Linux (UEK8)
+
+Oracle's UEK8 kernel refuses to run the `t3` CLI (`ENOEXEC` / "Exec format
+error"). The CLI is a Node single-executable whose embedded JavaScript is a
+`PT_NOTE` larger than 4 MB, and UEK8 rejects notes that size. The desktop app
+is unaffected.
+
+Boot Oracle's RHCK (or any mainline-based kernel) instead of UEK8, or build
+from source the same way as Intel Macs above and run
+`node apps/server/dist/bin.mjs`.
+
+You can also keep the installed binary by lowering its oversized `PT_NOTE`
+program header `p_filesz` to 4 MB and leaving `p_memsz` unchanged. `readelf -l`
+on that `t3` lists the header as the `NOTE` row whose file size is above 4 MB.
+Node finds the embedded application using `p_memsz`; UEK8 checks `p_filesz`.
+Reapply the edit after every update. The kernel limit and this field change
+are described in
+[oracle/linux-uek#46](https://github.com/oracle/linux-uek/issues/46).
+
 ## Desktop app
 
 Download a release from [GitHub Releases](https://github.com/pingdotgg/t3code/releases),
