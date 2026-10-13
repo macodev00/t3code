@@ -363,3 +363,51 @@ it.effect.each([
     });
   }).pipe(Effect.scoped),
 );
+
+it.effect("does not send viewers through browser setup when the server is running as root", () =>
+  Effect.gen(function* () {
+    const browser = ServerBrowser.ServerBrowser.of({
+      clearProfile: () => Effect.void,
+      reportProfiles: () => Effect.void,
+      openDownload: () => Effect.succeedNone,
+      answerFileChooser: () => Effect.succeed(false),
+      attachViewer: () =>
+        Effect.fail(
+          new ServerBrowser.ServerBrowserLaunchError({
+            cause: new PreviewBrowserHost.PreviewBrowserRootError(),
+          }),
+        ),
+    });
+    const services = yield* Layer.build(
+      HttpRouter.serve(
+        routeLayer.pipe(
+          Layer.provide(Layer.succeed(ServerBrowser.ServerBrowser, browser)),
+          Layer.provide(platformLayer),
+        ),
+        { disableListenLog: true },
+      ).pipe(
+        Layer.provideMerge(NodeHttpServer.layerTest),
+        Layer.provide(makeAuth([AuthOrchestrationReadScope]).layer),
+      ),
+    );
+    const server = Context.get(services, HttpServer.HttpServer);
+    const origin = HttpServer.formatAddress(server.address).replace(/^http/, "ws");
+    const closed = Promise.withResolvers<{ code: number; reason: string }>();
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        const socket = new WebSocket(
+          `${origin}/api/preview-stream/ws?threadId=thread&tabId=tab&wsTicket=one-use-ticket`,
+        );
+        socket.addEventListener("close", (event) =>
+          closed.resolve({ code: event.code, reason: event.reason }),
+        );
+        return socket;
+      }),
+      (socket) => Effect.sync(() => socket.close()),
+    );
+    const { code, reason } = yield* Effect.promise(() => closed.promise);
+    expect(code).not.toBe(PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE);
+    expect(reason).not.toContain("browser setup");
+    expect(reason).not.toContain("AppArmor");
+  }).pipe(Effect.scoped),
+);

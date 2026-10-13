@@ -228,8 +228,10 @@ desktop app installed, it names the full path of the app's own `t3` instead. It 
 any missing libraries with apt. It is safe to run again. Without `sudo`, it
 only reports what it would change.
 
-The browser always runs in Chrome's sandbox. Where you cannot change the host,
-set `T3CODE_SERVER_BROWSER_SANDBOX=0` for the environment to run without it.
+The browser always runs in Chrome's sandbox. Chrome refuses that sandbox when
+the server is running as root; run the service as a nonroot user. Where you
+cannot change the host, set `T3CODE_SERVER_BROWSER_SANDBOX=0` for the
+environment to run without the sandbox.
 
 ## Connect an outside agent
 

@@ -1,7 +1,11 @@
 /**
  * Host setup the shared headless browser needs, and the one command that does
- * it. Every failure here names that command, so the server log, an agent's tool
- * error, and the viewer all offer the same fix: `sudo t3 browser setup`.
+ * it. Sandbox and library failures name that command, so the server log, an
+ * agent's tool error, and the viewer all offer the same fix: `sudo t3 browser setup`.
+ *
+ * Running as root is a different failure. Chrome refuses to start its sandbox
+ * as uid 0, and setup cannot change that. That error names a nonroot `User=`
+ * or `T3CODE_SERVER_BROWSER_SANDBOX=0` instead of the AppArmor command.
  *
  * T3 never turns Chrome's sandbox off by itself. A host that cannot give it one
  * gets the command instead, and only the operator's explicit
@@ -23,6 +27,40 @@ export const NO_SANDBOX_SIGNATURE = "No usable sandbox";
 /** Whether an operator explicitly allowed Chrome to run without its sandbox. */
 export const sandboxDisabled = (env: Readonly<Record<string, string | undefined>>) =>
   env.T3CODE_SERVER_BROWSER_SANDBOX === "0";
+
+/**
+ * Chrome will not start its sandbox for a process whose uid is 0
+ * (crbug.com/638180). Playwright rewrites that abort to "Chromium sandboxing
+ * failed!", which otherwise looks like the AppArmor failure below.
+ */
+export const sandboxRefusedAsRoot = (input: {
+  readonly uid: number | undefined;
+  readonly env: Readonly<Record<string, string | undefined>>;
+}) => input.uid === 0 && !sandboxDisabled(input.env);
+
+/**
+ * `t3 browser setup` is often `sudo` for a normal user, so the setup process
+ * is uid 0 even when the server is not. A root shell or a root service has no
+ * non-root `SUDO_UID` / `SUDO_USER`.
+ */
+export const setupWarnsAboutRoot = (input: {
+  readonly uid: number | undefined;
+  readonly env: Readonly<Record<string, string | undefined>>;
+}) => {
+  const sudoUid = input.env.SUDO_UID?.trim();
+  const sudoUser = input.env.SUDO_USER?.trim();
+  const sudoFromNonRoot =
+    (sudoUid !== undefined && sudoUid !== "" && sudoUid !== "0") ||
+    (sudoUser !== undefined && sudoUser !== "" && sudoUser !== "root");
+  return sandboxRefusedAsRoot(input) && !sudoFromNonRoot;
+};
+
+/** What a launch or setup reports when Chrome will not sandbox uid 0. */
+export const ROOT_SANDBOX_MESSAGE =
+  "T3 is running as root, and Chrome refuses to start its sandbox as root. Run the service as a nonroot `User=`, or set `T3CODE_SERVER_BROWSER_SANDBOX=0` to run the browser without its sandbox.";
+
+/** Chrome's own abort when it is asked to sandbox uid 0. Playwright may hide this line. */
+const CHROME_ROOT_REFUSAL = /running as root without --no-sandbox|crbug\.com\/638180/i;
 
 /** Set on Ubuntu 23.10+: unprivileged user namespaces need an AppArmor profile. */
 const USERNS_RESTRICTION = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
@@ -87,7 +125,19 @@ export class PreviewBrowserLibrariesError extends Schema.TaggedError<PreviewBrow
   }
 }
 
-export type PreviewBrowserHostError = PreviewBrowserSandboxError | PreviewBrowserLibrariesError;
+export class PreviewBrowserRootError extends Schema.TaggedError<PreviewBrowserRootError>()(
+  "PreviewBrowserRootError",
+  {},
+) {
+  override get message(): string {
+    return ROOT_SANDBOX_MESSAGE;
+  }
+}
+
+export type PreviewBrowserHostError =
+  | PreviewBrowserSandboxError
+  | PreviewBrowserLibrariesError
+  | PreviewBrowserRootError;
 
 const MISSING_LIBRARY = /^\s*(\S+) => not found$/gm;
 /** glibc's loader abort, naming the first library it could not load. */
@@ -95,8 +145,9 @@ const LOADER_ERROR = /error while loading shared libraries: ([^:\s]+)/;
 
 /**
  * After a launch fails, names the host setup it is missing: the sandbox, from
- * Chrome's own abort message, or shared libraries the loader refuses. Undefined
- * when neither explains it. Linux only; other hosts never need either.
+ * Chrome's own abort message, or shared libraries the loader refuses. A sandbox
+ * failure while this process is root is Chrome refusing uid 0, not AppArmor.
+ * Undefined when none of these explain it. The library check is Linux only.
  */
 export const diagnoseLaunchFailure = Effect.fn("PreviewBrowserHost.diagnoseLaunchFailure")(
   function* (input: {
@@ -105,6 +156,17 @@ export const diagnoseLaunchFailure = Effect.fn("PreviewBrowserHost.diagnoseLaunc
     readonly setupCommand: string;
   }) {
     const { setupCommand } = input;
+    const sandboxFailure =
+      input.output.includes(NO_SANDBOX_SIGNATURE) || CHROME_ROOT_REFUSAL.test(input.output);
+    if (
+      sandboxFailure &&
+      sandboxRefusedAsRoot({
+        uid: yield* HostProcess.UserId,
+        env: yield* HostProcess.Environment,
+      })
+    ) {
+      return new PreviewBrowserRootError();
+    }
     if (input.output.includes(NO_SANDBOX_SIGNATURE)) {
       return new PreviewBrowserSandboxError({ setupCommand });
     }

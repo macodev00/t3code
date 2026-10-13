@@ -9,6 +9,11 @@
  *
  * Both need root. Without it, the command prints what it would change and the
  * `sudo` line to run. It is safe to run again; it skips what is already done.
+ *
+ * It cannot fix a server that is itself running as root. Chrome refuses its
+ * sandbox for uid 0, so that case warns instead of reporting the host ready.
+ * `sudo` from a non-root user is only root for this command and still reports
+ * ready when the checks pass.
  */
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
@@ -99,90 +104,98 @@ const installedBrowser = Effect.fn("browserSetup.installedBrowser")(function* (b
   return Option.none<string>();
 });
 
+/** Runs `t3 browser setup` for an explicit or default T3 home. */
+export const runBrowserSetup = Effect.fn("browserSetup")(function* (
+  baseDir: Option.Option<string>,
+) {
+  if ((yield* HostProcess.Platform) !== "linux") {
+    return yield* Console.log("Nothing to set up: T3's browser runs as is on this system.");
+  }
+  const fs = yield* FileSystem.FileSystem;
+  const env = yield* HostProcess.Environment;
+  const uid = yield* HostProcess.UserId;
+  const isRoot = uid === 0;
+  const warnsAboutRoot = PreviewBrowserHost.setupWarnsAboutRoot({ uid, env });
+
+  const needsProfile = yield* PreviewBrowserHost.sandboxBlocked;
+  const browser = yield* installedBrowser(yield* setupBaseDir(baseDir));
+  const missing = Option.isSome(browser)
+    ? yield* PreviewBrowserHost.missingLibraries(browser.value)
+    : [];
+  const hasApt = yield* fs.exists("/usr/bin/apt-get").pipe(Effect.orElseSucceed(() => false));
+  const reportReady = (message: string) =>
+    Console.log(warnsAboutRoot ? PreviewBrowserHost.ROOT_SANDBOX_MESSAGE : message);
+
+  if (!needsProfile && missing.length === 0) {
+    return yield* reportReady(
+      Option.isSome(browser)
+        ? "This host is ready for T3's browser."
+        : "Chrome's sandbox is allowed here. T3's browser installs on first use; if it then reports missing libraries, run this again.",
+    );
+  }
+
+  if (!isRoot) {
+    const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
+    if (needsProfile) {
+      yield* Console.log(
+        `This host blocks the sandbox T3's browser runs in. Setup installs an AppArmor profile at ${PreviewBrowserHost.APPARMOR_PROFILE_PATH} that allows it.`,
+      );
+    }
+    if (missing.length > 0) {
+      yield* Console.log(`T3's browser is missing ${missing.join(", ")}; setup installs them.`);
+    }
+    return yield* Console.log(`\nThis needs root. Run:\n\n  ${setupCommand}\n`);
+  }
+
+  if (needsProfile) {
+    yield* fs
+      .writeFileString(
+        PreviewBrowserHost.APPARMOR_PROFILE_PATH,
+        PreviewBrowserHost.APPARMOR_PROFILE,
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new BrowserSetupStepError({
+              step: `write ${PreviewBrowserHost.APPARMOR_PROFILE_PATH}`,
+              detail: cause.message,
+            }),
+        ),
+      );
+    yield* runStep("load the AppArmor profile", "apparmor_parser", [
+      "-r",
+      PreviewBrowserHost.APPARMOR_PROFILE_PATH,
+    ]);
+    yield* Console.log("Allowed Chrome's sandbox for T3's browser.");
+  }
+
+  if (missing.length > 0) {
+    if (!hasApt) {
+      return yield* Console.log(
+        `T3's browser is missing ${missing.join(", ")}. Install them with your package manager, then run this again.`,
+      );
+    }
+    yield* runStep("refresh the package lists", "apt-get", ["update"]);
+    const packages = yield* Effect.forEach(PreviewBrowserHost.DEBIAN_PACKAGES, (names) =>
+      Effect.findFirst(names, aptOffers).pipe(Effect.map(Option.getOrElse(() => names[0]!))),
+    );
+    yield* runStep("install the browser's libraries", "apt-get", [
+      "install",
+      "-y",
+      "--no-install-recommends",
+      ...packages,
+    ]);
+    yield* Console.log("Installed the browser's libraries.");
+  }
+
+  yield* reportReady("This host is ready for T3's browser.");
+});
+
 const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe(
   Command.withDescription(
     "Set up this Linux host for T3's browser: allow Chrome's sandbox and install its libraries.",
   ),
-  Command.withHandler(({ baseDir }) =>
-    Effect.gen(function* () {
-      if ((yield* HostProcess.Platform) !== "linux") {
-        return yield* Console.log("Nothing to set up: T3's browser runs as is on this system.");
-      }
-      const fs = yield* FileSystem.FileSystem;
-      const isRoot = (yield* HostProcess.UserId) === 0;
-      const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
-
-      const needsProfile = yield* PreviewBrowserHost.sandboxBlocked;
-      const browser = yield* installedBrowser(yield* setupBaseDir(baseDir));
-      const missing = Option.isSome(browser)
-        ? yield* PreviewBrowserHost.missingLibraries(browser.value)
-        : [];
-      const hasApt = yield* fs.exists("/usr/bin/apt-get").pipe(Effect.orElseSucceed(() => false));
-
-      if (!needsProfile && missing.length === 0) {
-        return yield* Console.log(
-          Option.isSome(browser)
-            ? "This host is ready for T3's browser."
-            : "Chrome's sandbox is allowed here. T3's browser installs on first use; if it then reports missing libraries, run this again.",
-        );
-      }
-
-      if (!isRoot) {
-        if (needsProfile) {
-          yield* Console.log(
-            `This host blocks the sandbox T3's browser runs in. Setup installs an AppArmor profile at ${PreviewBrowserHost.APPARMOR_PROFILE_PATH} that allows it.`,
-          );
-        }
-        if (missing.length > 0) {
-          yield* Console.log(`T3's browser is missing ${missing.join(", ")}; setup installs them.`);
-        }
-        return yield* Console.log(`\nThis needs root. Run:\n\n  ${setupCommand}\n`);
-      }
-
-      if (needsProfile) {
-        yield* fs
-          .writeFileString(
-            PreviewBrowserHost.APPARMOR_PROFILE_PATH,
-            PreviewBrowserHost.APPARMOR_PROFILE,
-          )
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new BrowserSetupStepError({
-                  step: `write ${PreviewBrowserHost.APPARMOR_PROFILE_PATH}`,
-                  detail: cause.message,
-                }),
-            ),
-          );
-        yield* runStep("load the AppArmor profile", "apparmor_parser", [
-          "-r",
-          PreviewBrowserHost.APPARMOR_PROFILE_PATH,
-        ]);
-        yield* Console.log("Allowed Chrome's sandbox for T3's browser.");
-      }
-
-      if (missing.length > 0) {
-        if (!hasApt) {
-          return yield* Console.log(
-            `T3's browser is missing ${missing.join(", ")}. Install them with your package manager, then run this again.`,
-          );
-        }
-        yield* runStep("refresh the package lists", "apt-get", ["update"]);
-        const packages = yield* Effect.forEach(PreviewBrowserHost.DEBIAN_PACKAGES, (names) =>
-          Effect.findFirst(names, aptOffers).pipe(Effect.map(Option.getOrElse(() => names[0]!))),
-        );
-        yield* runStep("install the browser's libraries", "apt-get", [
-          "install",
-          "-y",
-          "--no-install-recommends",
-          ...packages,
-        ]);
-        yield* Console.log("Installed the browser's libraries.");
-      }
-
-      yield* Console.log("This host is ready for T3's browser.");
-    }),
-  ),
+  Command.withHandler(({ baseDir }) => runBrowserSetup(baseDir)),
 );
 
 export const browserCommand = Command.make("browser").pipe(

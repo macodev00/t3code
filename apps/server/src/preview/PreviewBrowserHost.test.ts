@@ -51,11 +51,17 @@ const hostReporting = (output: { readonly version: string; readonly ldd: string 
   return { spawner, commands };
 };
 
+// What Chrome prints, and Playwright then rewrites, when uid 0 starts the sandbox.
+const ROOT_ABORT =
+  "[ERROR:content/browser/zygote_host/zygote_host_impl_linux.cc:102] Running as root without --no-sandbox is not supported. See https://crbug.com/638180.";
+
 const diagnose = (input: {
   platform: NodeJS.Platform;
   output: string;
   ldd: string;
   version?: string;
+  uid?: number;
+  env?: Record<string, string | undefined>;
 }) => {
   const { spawner, commands } = hostReporting({
     ldd: input.ldd,
@@ -68,8 +74,18 @@ const diagnose = (input: {
   }).pipe(
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     Effect.provideService(HostProcess.Platform, input.platform),
+    Effect.provideService(HostProcess.UserId, input.uid ?? 1000),
+    Effect.provideService(HostProcess.Environment, input.env ?? {}),
     Effect.map((error) => ({ error, commands })),
   );
+};
+
+const expectRootRefusal = (error: PreviewBrowserHost.PreviewBrowserHostError | undefined) => {
+  expect(error?._tag).toBe("PreviewBrowserRootError");
+  expect(error?.message).toContain("nonroot `User=`");
+  expect(error?.message).toContain("T3CODE_SERVER_BROWSER_SANDBOX=0");
+  expect(error?.message).not.toContain("AppArmor");
+  expect(error?.message).not.toContain("browser setup");
 };
 
 describe("diagnoseLaunchFailure", () => {
@@ -82,7 +98,57 @@ describe("diagnoseLaunchFailure", () => {
       });
       expect(error?._tag).toBe("PreviewBrowserSandboxError");
       expect(error?.message).toContain("Run `sudo t3 browser setup` on the host");
+      expect(error?.message).toContain("AppArmor");
       expect(commands).toEqual([]);
+    }),
+  );
+
+  it.effect("reports a root process instead of AppArmor when the sandbox is on", () =>
+    Effect.gen(function* () {
+      // Playwright rewrites Chrome's uid 0 abort to this signature.
+      const rewritten = yield* diagnose({
+        platform: "linux",
+        output: PreviewBrowserHost.NO_SANDBOX_SIGNATURE,
+        ldd: "",
+        uid: 0,
+      });
+      expectRootRefusal(rewritten.error);
+      expect(rewritten.commands).toEqual([]);
+
+      const chrome = yield* diagnose({
+        platform: "linux",
+        output: ROOT_ABORT,
+        ldd: "",
+        uid: 0,
+      });
+      expectRootRefusal(chrome.error);
+    }),
+  );
+
+  it.effect("keeps the AppArmor steps when root has turned the sandbox off", () =>
+    Effect.gen(function* () {
+      const { error } = yield* diagnose({
+        platform: "linux",
+        output: SANDBOX_ABORT,
+        ldd: "",
+        uid: 0,
+        env: { T3CODE_SERVER_BROWSER_SANDBOX: "0" },
+      });
+      expect(error?._tag).toBe("PreviewBrowserSandboxError");
+      expect(error?.message).toContain("AppArmor");
+    }),
+  );
+
+  it.effect("does not call a non-root sandbox failure a root refusal", () =>
+    Effect.gen(function* () {
+      const { error } = yield* diagnose({
+        platform: "linux",
+        output: ROOT_ABORT,
+        ldd: "",
+        version: "Google Chrome for Testing 154.0.8037.92\n",
+        uid: 1000,
+      });
+      expect(error).toBeUndefined();
     }),
   );
 
@@ -98,6 +164,20 @@ describe("diagnoseLaunchFailure", () => {
         libraries: ["libglib-2.0.so.0", "libnss3.so", "libX11.so.6"],
       });
       expect(error?.message).toContain("Run `sudo t3 browser setup` on the host");
+    }),
+  );
+
+  it.effect("still names missing libraries when the process is root", () =>
+    Effect.gen(function* () {
+      const { error } = yield* diagnose({
+        platform: "linux",
+        output: "error while loading shared libraries: libglib-2.0.so.0",
+        ldd: LDD_IN_BARE_DEBIAN,
+        uid: 0,
+      });
+      expect(error?._tag).toBe("PreviewBrowserLibrariesError");
+      expect(error?.message).toContain("libglib-2.0.so.0");
+      expect(error?.message).not.toContain("running as root");
     }),
   );
 

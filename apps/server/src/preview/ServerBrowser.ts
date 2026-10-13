@@ -136,10 +136,11 @@ export class ServerBrowserTabNotFoundError extends Schema.TaggedError<ServerBrow
 }
 
 const isTabNotFound = Schema.is(ServerBrowserTabNotFoundError);
-const isHostSetupError = Schema.is(
+const isExplainedLaunchError = Schema.is(
   Schema.Union([
     PreviewBrowserHost.PreviewBrowserSandboxError,
     PreviewBrowserHost.PreviewBrowserLibrariesError,
+    PreviewBrowserHost.PreviewBrowserRootError,
   ]),
 );
 
@@ -1191,7 +1192,7 @@ const make = Effect.gen(function* () {
       .catch((cause: unknown) => {
         runFork(
           Effect.logWarning(
-            isHostSetupError(cause) ? cause.message : "server preview tab failed to start",
+            isExplainedLaunchError(cause) ? cause.message : "server preview tab failed to start",
             { cause },
           ),
         );
@@ -2386,8 +2387,16 @@ const make = Effect.gen(function* () {
 
   yield* manager.events.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
   // Whoever runs the server learns the fix before anyone opens a tab.
+  const hostEnv = yield* HostProcess.Environment;
   if (
-    !PreviewBrowserHost.sandboxDisabled(yield* HostProcess.Environment) &&
+    PreviewBrowserHost.sandboxRefusedAsRoot({
+      uid: yield* HostProcess.UserId,
+      env: hostEnv,
+    })
+  ) {
+    yield* Effect.logWarning(PreviewBrowserHost.ROOT_SANDBOX_MESSAGE);
+  } else if (
+    !PreviewBrowserHost.sandboxDisabled(hostEnv) &&
     (yield* PreviewBrowserHost.sandboxBlocked)
   ) {
     yield* Effect.logWarning(
