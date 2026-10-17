@@ -395,18 +395,74 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           "package-tool",
         ]);
 
+        const calls: Array<readonly [string, ReadonlyArray<string>]> = [];
         const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
           packageToolUpdate,
           {
             binaryPath: link,
             env: { PATH: "" },
           },
-        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+        ).pipe(
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            stdoutSpawner((executable, args) => {
+              calls.push([executable, args]);
+              return "10.4.0\n";
+            }),
+          ),
+        );
 
+        expect(calls).toEqual([["pnpm", ["--version"]]]);
         expect(capabilities.update).toMatchObject({
-          command: "pnpm add -g @example/package-tool@latest",
+          command: "pnpm add -g --allow-build=@example/package-tool @example/package-tool@latest",
+          executable: "pnpm",
+          args: [
+            "add",
+            "-g",
+            "--allow-build=@example/package-tool",
+            "@example/package-tool@latest",
+          ],
           lockKey: "pnpm-global",
         });
+        expect(makeTargetedProviderUpdateAction(capabilities, "2.0.0")).toMatchObject({
+          command: "pnpm add -g --allow-build=@example/package-tool @example/package-tool@2.0.0",
+          args: ["add", "-g", "--allow-build=@example/package-tool", "@example/package-tool@2.0.0"],
+          lockKey: "pnpm-global",
+        });
+      }),
+  );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "omits --allow-build when pnpm is older than 10.4 or its version cannot be read",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-pnpm-capabilities-old");
+        const link = linkIntoPackage(tempDir, "package-tool", [
+          ".local",
+          "share",
+          "pnpm",
+          "global",
+          "5",
+          "node_modules",
+          "@example",
+          "package-tool",
+        ]);
+        const resolve = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
+          resolveProviderMaintenanceCapabilitiesEffect(packageToolUpdate, {
+            binaryPath: link,
+            env: { PATH: "" },
+          }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+        const plainArgs = ["add", "-g", "@example/package-tool@latest"];
+
+        for (const version of ["9.15.9", "10.0.0", "10.3.0"]) {
+          const capabilities = yield* resolve(stdoutSpawner(() => `${version}\n`));
+          expect(capabilities.update?.args).toEqual(plainArgs);
+        }
+
+        const unread = yield* resolve(stdoutSpawner(() => "not a version\n"));
+        expect(unread.update?.args).toEqual(plainArgs);
+        const unavailable = yield* resolve(noSpawn);
+        expect(unavailable.update?.args).toEqual(plainArgs);
       }),
   );
 

@@ -14,7 +14,7 @@ import {
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { causeErrorTag } from "@t3tools/shared/observability";
-import { resolveCommandPath } from "@t3tools/shared/shell";
+import { resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Cache from "effect/Cache";
 import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
@@ -34,6 +34,8 @@ import { collectUint8StreamText } from "./collectStreamText.ts";
 import * as ProviderLatestVersions from "./ProviderLatestVersions.ts";
 
 const LATEST_VERSION_TIMEOUT_MS = 4_000;
+const PNPM_VERSION_TIMEOUT_MS = 4_000;
+const PNPM_ALLOW_BUILD_MIN_VERSION = "10.4.0";
 const HOMEBREW_INFO_TIMEOUT_MS = 10_000;
 const HOMEBREW_INFO_MAX_BYTES = 256 * 1_024;
 const MISE_WRAPPER_MAX_BYTES = 16 * 1_024;
@@ -326,6 +328,47 @@ const runHomebrew = Effect.fn("runHomebrew")(function* (
   );
 });
 
+/** pnpm 10.4 added `--allow-build`. Older releases reject the option and exit 1. */
+function pnpmAcceptsAllowBuild(version: string | null): boolean {
+  const match = version?.match(/\d+\.\d+\.\d+/);
+  if (!match) {
+    return false;
+  }
+  return compareSemverVersions(match[0], PNPM_ALLOW_BUILD_MIN_VERSION) >= 0;
+}
+
+/** Reads `pnpm --version`, or null when pnpm cannot be run or the output is unusable. */
+const readPnpmVersion = Effect.fn("readPnpmVersion")(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const collect = Effect.gen(function* () {
+    // Same launch as the update runner, including Windows `.cmd` shims.
+    const resolved = yield* resolveSpawnCommand("pnpm", ["--version"]);
+    const child = yield* spawner.spawn(
+      ChildProcess.make(resolved.command, resolved.args, { shell: resolved.shell }),
+    );
+    yield* Effect.addFinalizer(() => child.kill().pipe(Effect.ignore));
+    const [stdout, exitCode] = yield* Effect.all(
+      [
+        collectUint8StreamText({ stream: child.stdout, maxBytes: 1_024 }),
+        child.exitCode,
+        Stream.runDrain(child.stderr),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return Number(exitCode) === 0 && !stdout.truncated ? stdout.text : null;
+  });
+  return yield* collect.pipe(
+    Effect.scoped,
+    Effect.timeoutOption(Duration.millis(PNPM_VERSION_TIMEOUT_MS)),
+    Effect.map(Option.getOrNull),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("pnpm version probe failed", { errorTag: causeErrorTag(cause) }).pipe(
+        Effect.as(null),
+      ),
+    ),
+  );
+});
+
 export const resolvePackageManagedProviderMaintenance = Effect.fn(
   "resolvePackageManagedProviderMaintenance",
 )(function* (
@@ -383,11 +426,20 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     });
   }
   if (commandPaths.some(isPnpmGlobalCommandPath)) {
+    // pnpm 10+ skips lifecycle scripts and still exits 0. `--allow-build`
+    // approves this package on 10.4+; older pnpm rejects the option, and a
+    // failed probe keeps the command without it.
+    const allowBuild = pnpmAcceptsAllowBuild(yield* readPnpmVersion());
     return makeProviderMaintenanceCapabilities({
       provider: definition.provider,
       packageName,
       updateExecutable: "pnpm",
-      updateArgs: ["add", "-g", `${packageName}@latest`],
+      updateArgs: [
+        "add",
+        "-g",
+        ...(allowBuild ? [`--allow-build=${packageName}`] : []),
+        `${packageName}@latest`,
+      ],
       updateLockKey: "pnpm-global",
     });
   }
