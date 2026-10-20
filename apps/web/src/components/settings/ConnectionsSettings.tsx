@@ -165,6 +165,7 @@ import { RemoveT3ConnectEnvironmentDialog } from "../clerk/RemoveT3ConnectEnviro
 import { useCloudLinkController } from "~/cloud/useCloudLinkController";
 import { authEnvironment } from "~/state/auth";
 import { environmentCatalog } from "~/connection/catalog";
+import { environmentReconnectActionLabel } from "~/connection/environmentReconnectAction";
 import {
   connectPairing as connectPairingAtom,
   connectSshEnvironment as connectSshEnvironmentAtom,
@@ -1424,6 +1425,7 @@ type SavedBackendListRowProps = {
   environment: EnvironmentPresentation;
   removingEnvironmentId: EnvironmentId | null;
   onSetEnabled: (environmentId: EnvironmentId, enabled: boolean) => void;
+  onRetry: (environmentId: EnvironmentId) => void;
   onRemove: (environment: EnvironmentPresentation) => void;
   onAddRoute: (environment: EnvironmentPresentation) => void;
 };
@@ -1463,6 +1465,7 @@ function SavedBackendListRow({
   environment,
   removingEnvironmentId,
   onSetEnabled,
+  onRetry,
   onRemove,
   onAddRoute,
 }: SavedBackendListRowProps) {
@@ -1521,6 +1524,12 @@ function SavedBackendListRow({
   const resumingServerUpdate =
     serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
   const status = savedBackendStatus(environment);
+  // Only the backoff wait gets a new control. Offline and failed connections
+  // keep the switch and their existing recovery.
+  const retryNowLabel =
+    environmentReconnectActionLabel(environment.connection.phase) === "Retry now"
+      ? "Retry now"
+      : null;
   const serverVersion = environment.serverConfig?.environment.serverVersion ?? null;
   // Discovery empties its map on every refresh, so hold the last descriptor
   // seen or the glyph would blink back to the generic one each time.
@@ -1701,6 +1710,16 @@ function SavedBackendListRow({
           label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
           appearance="icon"
         />
+      ) : null}
+      {retryNowLabel !== null ? (
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={isRemoving}
+          onClick={() => onRetry(environmentId)}
+        >
+          {retryNowLabel}
+        </Button>
       ) : null}
       <Tooltip>
         <TooltipTrigger
@@ -2032,6 +2051,7 @@ export function ConnectionsSettings() {
   const setEnvironmentEnabled = useAtomCommand(environmentCatalog.setEnabled, {
     reportFailure: false,
   });
+  const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
   const primarySessionState = usePrimarySessionState();
   const currentSessionScopes = primarySessionState.data?.authenticated
@@ -2650,6 +2670,20 @@ export function ConnectionsSettings() {
     ) {
       event.preventDefault();
       void handleAddSavedBackend();
+    }
+  };
+
+  const handleRetrySavedBackend = async (environmentId: EnvironmentId) => {
+    const result = await retryEnvironment(environmentId);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not reconnect environment",
+          description: error instanceof Error ? error.message : "Failed to reconnect.",
+        }),
+      );
     }
   };
 
@@ -3939,6 +3973,7 @@ export function ConnectionsSettings() {
             environment={environment}
             removingEnvironmentId={removingSavedEnvironmentId}
             onSetEnabled={handleSetSavedBackendEnabled}
+            onRetry={(environmentId) => void handleRetrySavedBackend(environmentId)}
             onRemove={handleRemoveSavedBackend}
             onAddRoute={(target) => {
               setRouteTarget(target);
