@@ -26,8 +26,10 @@ import {
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   detectComposerTrigger,
+  rememberComposerPathSearch,
   replaceTextRange,
   serializeComposerFileLink,
+  type ComposerPathSearch,
   type ComposerTrigger,
 } from "@t3tools/shared/composerTrigger";
 import {
@@ -206,6 +208,7 @@ export function useComposerCommandMenu({
 }) {
   const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
   const previousOwnerKeyRef = useRef(ownerKey);
+  const [heldPathSearch, setHeldPathSearch] = useState<ComposerPathSearch | null>(null);
   const onSelectionChange = (nextSelection: ComposerEditorSelection) => {
     setSelection(nextSelection);
   };
@@ -332,12 +335,20 @@ export function useComposerCommandMenu({
     workspaceRefreshRetry,
   ]);
 
-  const trigger = (() => {
-    if (!enabled || selection.start !== selection.end) {
-      return null;
-    }
-    return detectComposerTrigger(draftMessage, selection.end);
-  })();
+  const trigger =
+    enabled && selection.start === selection.end
+      ? detectComposerTrigger(draftMessage, selection.end, undefined, heldPathSearch)
+      : null;
+  const nextPathSearch = rememberComposerPathSearch(draftMessage, trigger, heldPathSearch);
+  if (
+    heldPathSearch?.text !== nextPathSearch?.text ||
+    heldPathSearch?.queryEnd !== nextPathSearch?.queryEnd ||
+    heldPathSearch?.trigger.query !== nextPathSearch?.trigger.query ||
+    heldPathSearch?.trigger.rangeStart !== nextPathSearch?.trigger.rangeStart ||
+    heldPathSearch?.trigger.rangeEnd !== nextPathSearch?.trigger.rangeEnd
+  ) {
+    setHeldPathSearch(nextPathSearch);
+  }
   const pathSearch = useComposerPathSearch({
     environmentId,
     cwd: trigger?.kind === "path" ? projectCwd : null,

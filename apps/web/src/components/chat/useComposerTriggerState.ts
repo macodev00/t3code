@@ -1,10 +1,38 @@
+import {
+  rememberComposerPathSearch,
+  type ComposerPathSearch,
+} from "@t3tools/shared/composerTrigger";
 import { useRef, useState } from "react";
 
-import type { ComposerTrigger } from "../../composer-logic";
+import { detectComposerTrigger, type ComposerTrigger } from "../../composer-logic";
 
-export function useComposerTriggerState(initialTrigger: () => ComposerTrigger | null) {
+function pathSearchFor(
+  text: string | undefined,
+  candidate: ComposerTrigger | null,
+): ComposerPathSearch | null {
+  if (text === undefined || candidate === null || candidate.kind !== "path") return null;
+  const trigger: ComposerTrigger & { kind: "path" } = {
+    kind: "path",
+    query: candidate.query,
+    rangeStart: candidate.rangeStart,
+    rangeEnd: candidate.rangeEnd,
+  };
+  return { text, trigger, queryEnd: trigger.rangeEnd };
+}
+
+export function useComposerTriggerState(
+  initialTrigger: () => ComposerTrigger | null,
+  initialText?: string,
+) {
   const [trigger, setActiveTrigger] = useState(initialTrigger);
+  const pathSearchRef = useRef(pathSearchFor(initialText, trigger));
   const dismissedTriggerRef = useRef<ComposerTrigger | null>(null);
+
+  const detectTrigger = (text: string, cursor: number) => {
+    const candidate = detectComposerTrigger(text, cursor, pathSearchRef.current);
+    pathSearchRef.current = rememberComposerPathSearch(text, candidate, pathSearchRef.current);
+    return candidate;
+  };
 
   const resolveTrigger = (candidate: ComposerTrigger | null) => {
     const dismissed = dismissedTriggerRef.current;
@@ -17,6 +45,7 @@ export function useComposerTriggerState(initialTrigger: () => ComposerTrigger | 
   };
 
   const setTrigger = (candidate: ComposerTrigger | null) => {
+    if (candidate === null) pathSearchRef.current = null;
     const activeTrigger = resolveTrigger(candidate);
     if (candidate === null || activeTrigger !== null) {
       dismissedTriggerRef.current = null;
@@ -29,10 +58,11 @@ export function useComposerTriggerState(initialTrigger: () => ComposerTrigger | 
     setActiveTrigger(null);
   };
 
-  const resetTrigger = (candidate: ComposerTrigger | null) => {
+  const resetTrigger = (candidate: ComposerTrigger | null, text?: string) => {
     dismissedTriggerRef.current = null;
     setActiveTrigger(candidate);
+    pathSearchRef.current = pathSearchFor(text, candidate);
   };
 
-  return { trigger, setTrigger, resolveTrigger, dismissTrigger, resetTrigger };
+  return { trigger, detectTrigger, setTrigger, resolveTrigger, dismissTrigger, resetTrigger };
 }

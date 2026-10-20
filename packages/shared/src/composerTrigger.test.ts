@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { detectComposerTrigger, serializeComposerFileLink } from "./composerTrigger.ts";
+import {
+  detectComposerTrigger,
+  rememberComposerPathSearch,
+  serializeComposerFileLink,
+  type ComposerPathSearch,
+} from "./composerTrigger.ts";
 
 describe("detectComposerTrigger", () => {
   it.each([
@@ -42,6 +47,26 @@ describe("detectComposerTrigger", () => {
     "does not trigger for %j",
     (text) => expect(detectComposerTrigger(text, text.length)).toBeNull(),
   );
+
+  it("keeps an open @ search across spaces without rediscovering one from prose", () => {
+    let search: ComposerPathSearch | null = null;
+    let trigger: ReturnType<typeof detectComposerTrigger> = null;
+    for (const text of ["@Foreign", "@Foreign ", "@Foreign Subsidiaries"]) {
+      trigger = detectComposerTrigger(text, text.length, undefined, search);
+      search = rememberComposerPathSearch(text, trigger, search);
+    }
+    expect(trigger?.query).toBe("Foreign Subsidiaries");
+
+    const full = "@Foreign Subsidiaries";
+    const moved = detectComposerTrigger(full, "@Foreign ".length, undefined, search);
+    search = rememberComposerPathSearch(full, moved, search);
+    expect(detectComposerTrigger(full, full.length, undefined, search)?.query).toBe(full.slice(1));
+    expect(detectComposerTrigger("See @README and explain", 23)).toBeNull();
+    expect(detectComposerTrigger("@Foreign\nNext", 13, undefined, search)).toBeNull();
+    expect(detectComposerTrigger("@Foreign @src", 13, undefined, search)?.query).toBe("src");
+    expect(detectComposerTrigger("$review notes", 13)).toBeNull();
+    expect(detectComposerTrigger("#12 notes", 9)).toBeNull();
+  });
 
   it.each(["$", "€", "𑿝"])("detects %s skill prefixes and their source range", (prefix) => {
     const text = `Use ${prefix}review`;

@@ -9,7 +9,12 @@ import {
   serializeAssistantCitation,
   withAssistantCitationComment,
 } from "@t3tools/shared/assistantCitations";
-import { isPathWord } from "@t3tools/shared/composerTrigger";
+import {
+  continueComposerPathTrigger,
+  isFreshComposerTriggerToken,
+  isPathWord,
+  type ComposerPathSearch,
+} from "@t3tools/shared/composerTrigger";
 import {
   splitPromptIntoComposerSegments,
   type ComposerPromptSegment,
@@ -103,12 +108,25 @@ function isWhitespace(char: string): boolean {
   return char === " " || char === "\n" || char === "\t" || char === "\r";
 }
 
-function tokenStartForCursor(text: string, cursor: number): number {
+function tokenStartForCursor(
+  text: string,
+  cursor: number,
+  activePathSearch?: ComposerPathSearch | null,
+): number {
   let index = cursor - 1;
   while (index >= 0 && !isWhitespace(text[index] ?? "")) {
     index -= 1;
   }
-  return index + 1;
+  const boundary = index + 1;
+  // $, /, and # stop at the first space. Only an already-open @ search continues.
+  if (
+    isFreshComposerTriggerToken(text.slice(boundary, cursor), text, boundary, cursor, isWhitespace)
+  ) {
+    return boundary;
+  }
+  const continued = continueComposerPathTrigger(text, cursor, activePathSearch);
+  if (continued !== null && continued.rangeStart < boundary) return continued.rangeStart;
+  return boundary;
 }
 
 export function expandCollapsedComposerCursor(
@@ -278,9 +296,13 @@ export function isCollapsedCursorAdjacentToInlineToken(
   return false;
 }
 
-export function detectComposerTrigger(text: string, cursorInput: number): ComposerTrigger | null {
+export function detectComposerTrigger(
+  text: string,
+  cursorInput: number,
+  activePathSearch?: ComposerPathSearch | null,
+): ComposerTrigger | null {
   const cursor = clampCursor(text, cursorInput);
-  const tokenStart = tokenStartForCursor(text, cursor);
+  const tokenStart = tokenStartForCursor(text, cursor, activePathSearch);
   const token = text.slice(tokenStart, cursor);
   if (token.startsWith("/")) {
     if (isPathWord(text, tokenStart, cursor, isWhitespace)) return null;
@@ -309,7 +331,7 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
       rangeEnd: cursor,
     };
   }
-  if (!token.startsWith("@")) {
+  if (!token.startsWith("@") || /[\r\n\t\uFFFC]/u.test(token.slice(1))) {
     return null;
   }
 

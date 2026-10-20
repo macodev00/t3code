@@ -11,8 +11,9 @@ let root: Root;
 let composer: ReturnType<typeof useComposerTriggerState>;
 
 function ComposerProbe() {
-  const state = useComposerTriggerState(() =>
-    detectComposerTrigger(initialPrompt, initialPrompt.length),
+  const state = useComposerTriggerState(
+    () => detectComposerTrigger(initialPrompt, initialPrompt.length),
+    initialPrompt,
   );
   useLayoutEffect(() => {
     composer = state;
@@ -106,6 +107,26 @@ describe("composer suggestion dismissal", () => {
     await updatePrompt(`${prefix}@`);
 
     expect(composer.trigger?.query).toBe("");
+  });
+
+  it("keeps a multi-word @ search open, and a dismissed one closed, until a new @", async () => {
+    const typed = `${initialPrompt} Subsidiaries`;
+    await act(() => composer.setTrigger(composer.detectTrigger(typed, typed.length)));
+    expect(composer.trigger).toMatchObject({
+      kind: "path",
+      query: "openai Subsidiaries",
+      rangeStart: initialPrompt.indexOf("@"),
+    });
+
+    await act(() => composer.dismissTrigger(composer.trigger));
+    const spaced = `${typed} `;
+    await act(() => composer.setTrigger(composer.detectTrigger(spaced, spaced.length)));
+    expect(composer.trigger).toBeNull();
+    expect(composer.resolveTrigger(composer.detectTrigger(spaced, spaced.length))).toBeNull();
+
+    const fresh = `${spaced}@src`;
+    await act(() => composer.setTrigger(composer.detectTrigger(fresh, fresh.length)));
+    expect(composer.trigger).toMatchObject({ kind: "path", query: "src" });
   });
 
   it("clears dismissal when switching drafts or pending questions", async () => {

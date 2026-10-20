@@ -405,6 +405,24 @@ describe("detectComposerTrigger", () => {
     });
   });
 
+  it("keeps an open @ search across spaces and ignores a mention that is not active", () => {
+    const text = "Inspect @Foreign Subsidiaries Motion Video/Script Notes";
+    const search = {
+      text: "Inspect @Foreign",
+      trigger: { kind: "path" as const, query: "Foreign", rangeStart: 8, rangeEnd: 16 },
+      queryEnd: 16,
+    };
+    expect(detectComposerTrigger(text, text.length, search)?.query).toBe(
+      "Foreign Subsidiaries Motion Video/Script Notes",
+    );
+    expect(detectComposerTrigger("See @README and explain", 23)).toBeNull();
+    expect(detectComposerTrigger("what's in my @AGENTS.md please", 30)).toBeNull();
+    expect(detectComposerTrigger("@Foreign\nNext", 14, search)).toBeNull();
+    expect(detectComposerTrigger("@Foreign @src", 13, search)?.query).toBe("src");
+    expect(detectComposerTrigger("$skill name", 11)).toBeNull();
+    expect(detectComposerTrigger("/plan now", 9)).toBeNull();
+  });
+
   it("detects slash command token while typing command name", () => {
     const text = "/mo";
     const trigger = detectComposerTrigger(text, text.length);
