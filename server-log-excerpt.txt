@@ -1,0 +1,8 @@
+[08:39:01.977] INFO (#1): [dev-runner] mode=dev source=default ports serverPort=13773 webPort=5733 baseDir=/tmp/t3-clone-e2e-home
+[08:39:07.988] INFO (#7062): Authentication required. Open T3 Code using the pairing URL.
+
+before, project cwd is the picked folder (no clone):
+    cause: "ProviderDriverError: Provider driver 'codex' failed to create instance 'codex': Failed to probe Codex skills for '/tmp/t3-clone-proof/before/parent/picked'\n" +
+
+after, project cwd is the cloned Hello-World directory:
+    cause: "ProviderDriverError: Provider driver 'codex' failed to create instance 'codex': Failed to probe Codex skills for '/tmp/t3-clone-proof/after/parent/picked/Hello-World'\n" +

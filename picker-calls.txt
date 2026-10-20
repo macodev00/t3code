@@ -1,0 +1,9 @@
+before pickFolder options: {"initialPath":"~"}
+before pickFolder returned: /tmp/t3-clone-proof/before/parent/picked
+before destination input before the click: ~/Hello-World
+before Open in Files button: enabled
+
+after pickFolder options: {"initialPath":"~"}
+after pickFolder returned: /tmp/t3-clone-proof/after/parent/picked
+after destination input before the click: ~/Hello-World
+after Open in Files button: enabled
