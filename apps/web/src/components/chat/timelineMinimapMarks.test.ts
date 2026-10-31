@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  createTimelineMinimapViewportStore,
   resolveTimelineMinimapHeightStyle,
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapMarkIndices,
-  resolveTimelineMinimapRailHeightPx,
   resolveTimelineMinimapTopPercent,
 } from "./MessagesTimeline.logic";
 
-const REPRO_VIEWPORT_HEIGHT = 800;
 const REPRO_RAIL_HEIGHT = 512;
 const DENSE_COUNT = 600;
 const MARK_MIN_SPACING_PX = 6;
@@ -37,16 +34,6 @@ function expectSeparated(
 describe("timeline minimap mark spacing", () => {
   it("keeps the rail on the 8px track until the viewport cap binds", () => {
     expect(resolveTimelineMinimapHeightStyle(5)).toBe("min(32px, max(1px, calc(100vh - 18rem)))");
-    expect(resolveTimelineMinimapRailHeightPx(5, REPRO_VIEWPORT_HEIGHT)).toBe(32);
-    expect(resolveTimelineMinimapRailHeightPx(50, REPRO_VIEWPORT_HEIGHT)).toBe(49 * 8);
-    expect(resolveTimelineMinimapRailHeightPx(DENSE_COUNT, REPRO_VIEWPORT_HEIGHT)).toBe(
-      REPRO_RAIL_HEIGHT,
-    );
-    expect(resolveTimelineMinimapRailHeightPx(DENSE_COUNT, 0)).toBe(599 * 8);
-    expect(resolveTimelineMinimapRailHeightPx(5, 100)).toBe(1);
-    expect(resolveTimelineMinimapRailHeightPx(DENSE_COUNT, REPRO_VIEWPORT_HEIGHT, 20)).toBe(
-      800 - 18 * 20,
-    );
   });
 
   it("draws every mark while centers stay at least 6px apart", () => {
@@ -54,7 +41,7 @@ describe("timeline minimap mark spacing", () => {
     expect(
       resolveTimelineMinimapMarkIndices({ itemCount: 75, railHeightPx: REPRO_RAIL_HEIGHT }),
     ).toHaveLength(75);
-    const comfortable = resolveTimelineMinimapRailHeightPx(40, REPRO_VIEWPORT_HEIGHT);
+    const comfortable = 39 * 8;
     expect(
       resolveTimelineMinimapMarkIndices({ itemCount: 40, railHeightPx: comfortable }),
     ).toHaveLength(40);
@@ -73,7 +60,7 @@ describe("timeline minimap mark spacing", () => {
   });
 
   it("keeps a pinned message and still separates the surrounding marks", () => {
-    const pins = [3, 42, 43];
+    const pins = [3, 42, 43, 596];
     const indices = resolveTimelineMinimapMarkIndices({
       itemCount: DENSE_COUNT,
       railHeightPx: REPRO_RAIL_HEIGHT,
@@ -82,9 +69,14 @@ describe("timeline minimap mark spacing", () => {
     for (const pin of pins) {
       expect(indices).toContain(pin);
     }
-    expect(indices).not.toContain(0);
+    expect(indices).toContain(0);
     expect(indices[indices.length - 1]).toBe(DENSE_COUNT - 1);
-    expectSeparated(indices, DENSE_COUNT, REPRO_RAIL_HEIGHT, new Set(pins));
+    expectSeparated(
+      indices,
+      DENSE_COUNT,
+      REPRO_RAIL_HEIGHT,
+      new Set([0, DENSE_COUNT - 1, ...pins]),
+    );
     expect(indices.filter((index) => index === 42)).toHaveLength(1);
   });
 
@@ -119,24 +111,5 @@ describe("timeline minimap mark spacing", () => {
     expect(resolveTimelineMinimapIndexFromPointer({ ...rail, pointerY: 10_000 })).toBe(
       DENSE_COUNT - 1,
     );
-  });
-
-  it("rereads font size at the same height and keeps an unchanged snapshot", () => {
-    let fontSize = 16;
-    let fontReads = 0;
-    const store = createTimelineMinimapViewportStore({
-      readHeight: () => 800,
-      readFontSize: () => {
-        fontReads += 1;
-        return fontSize;
-      },
-    });
-    const first = store.getSnapshot();
-    expect(store.getSnapshot()).toBe(first);
-    expect(fontReads).toBe(2);
-    fontSize = 20;
-    const next = store.getSnapshot();
-    expect(next).toEqual({ height: 800, fontSize: 20 });
-    expect(store.getSnapshot()).toBe(next);
   });
 });

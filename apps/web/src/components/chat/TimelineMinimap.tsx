@@ -1,45 +1,19 @@
 import { resolveTimelineMinimapPreview, type TimelineMinimapItem } from "./timelineMinimapItems";
-import { useRef, useState, useSyncExternalStore, type MouseEvent } from "react";
+import { useRef, useState, type MouseEvent } from "react";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import {
-  createTimelineMinimapViewportStore,
   resolveTimelineMinimapHeightStyle,
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapMarkIndices,
   resolveTimelineMinimapNavigationInteractive,
-  resolveTimelineMinimapRailHeightPx,
   resolveTimelineMinimapTopPercent,
   TIMELINE_MINIMAP_MIN_ITEMS,
 } from "./MessagesTimeline.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
-
-const SERVER_MINIMAP_VIEWPORT = { height: 0, fontSize: 16 };
-const minimapViewportStore = createTimelineMinimapViewportStore({
-  initial: SERVER_MINIMAP_VIEWPORT,
-  readHeight: () => window.innerHeight,
-  readFontSize: () => Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
-});
-
-function subscribeTimelineMinimapViewport(onChange: () => void) {
-  window.addEventListener("resize", onChange);
-  // Interface font size is written to the root style after paint, with no resize.
-  const rootStyle = new MutationObserver(onChange);
-  rootStyle.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["style"],
-  });
-  return () => {
-    window.removeEventListener("resize", onChange);
-    rootStyle.disconnect();
-  };
-}
-
-function getServerTimelineMinimapViewport() {
-  return SERVER_MINIMAP_VIEWPORT;
-}
+import { observeResize } from "~/lib/observeResize";
 
 function timelineMinimapEventTargetsPreview(target: EventTarget): boolean {
   return target instanceof Element && target.closest("[data-minimap-preview]") !== null;
@@ -80,11 +54,14 @@ export function TimelineMinimap({
   onSelect: (item: TimelineMinimapItem) => void;
 }) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
-  const viewport = useSyncExternalStore(
-    subscribeTimelineMinimapViewport,
-    minimapViewportStore.getSnapshot,
-    getServerTimelineMinimapViewport,
-  );
+  const [railHeight, setRailHeight] = useState(0);
+  const railRef = (node: HTMLDivElement | null) => {
+    if (!node) return;
+    setRailHeight(node.getBoundingClientRect().height);
+    return observeResize(node, ([entry]) => {
+      if (entry) setRailHeight(entry.contentRect.height);
+    });
+  };
   const wheelTargetRef = (node: HTMLDivElement | null) => {
     if (!node) return;
     node.addEventListener("wheel", onWheel, { passive: false });
@@ -143,11 +120,7 @@ export function TimelineMinimap({
 
   const paintedMarks = resolveTimelineMinimapMarkIndices({
     itemCount: items.length,
-    railHeightPx: resolveTimelineMinimapRailHeightPx(
-      items.length,
-      viewport.height,
-      viewport.fontSize,
-    ),
+    railHeightPx: railHeight,
     pinnedIndices: [resolvedActiveIndex, resolvedCurrentIndex],
   });
   const paintedMarkSet = paintedMarks.length === items.length ? null : new Set(paintedMarks);
@@ -174,6 +147,7 @@ export function TimelineMinimap({
             "absolute top-1/2 left-3 -translate-y-1/2",
             hitStripWidth > 0 && !passThrough ? "pointer-events-auto" : "pointer-events-none",
           )}
+          ref={railRef}
           onMouseDown={() => {
             if (pressedOnStripRef.current) return;
             pressedOnStripRef.current = true;
